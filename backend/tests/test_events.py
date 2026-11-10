@@ -35,5 +35,6 @@ async def test_sse_response_sends_without_disconnect_listener() -> None:
 
     await response({"type": "http"}, receive, send)
     assert messages[0]["type"] == "http.response.start"
+    assert all(key.lower() != b"content-length" for key, _ in messages[0]["headers"])
     assert messages[1]["body"] == b"event: ping\n\n"
     assert messages[2]["more_body"] is False

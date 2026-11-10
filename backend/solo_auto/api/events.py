@@ -24,6 +24,7 @@ class SSEStreamingResponse(Response):
     def __init__(self, content: AsyncIterable[str], headers: dict[str, str]) -> None:
         super().__init__(content=None, media_type=self.media_type, headers=headers)
         self.body_iterator = content
+        self.raw_headers = [(key, value) for key, value in self.raw_headers if key.lower() != b"content-length"]
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         del receive
