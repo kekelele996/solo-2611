@@ -1,0 +1,455 @@
+"""System, configuration and task-source routes."""
+
+from __future__ import annotations
+
+import shutil
+import sqlite3
+import tempfile
+import zipfile
+from contextlib import suppress
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from fastapi import APIRouter, Depends, Query, Response
+
+from solo_auto.api.dependencies import context
+from solo_auto.api.types import (
+    ClaimRequest,
+    ConfigPatchRequest,
+    ConfigTestRequest,
+    CreateTaskRequest,
+    PruneRequest,
+    SourceLoginRequest,
+)
+from solo_auto.context import AppContext
+from solo_auto.errors import ApiError, SourceAuthError, SourceOfflineError
+
+router = APIRouter(prefix="/api")
+
+
+@router.get("/health")
+async def health(ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "uptime_s": round((datetime.now().astimezone() - ctx.started_at).total_seconds(), 1),
+        "version": "0.1.0",
+    }
+
+
+@router.get("/version")
+async def version(ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    skill_config = await ctx.gateway.config()
+    claude = skill_config.get("claude") if isinstance(skill_config.get("claude"), dict) else {}
+    return {
+        "app": "0.1.0",
+        "git_sha": ctx.git_sha(),
+        "skill_version": ctx.skill_version,
+        "skill_schema": "solo-2611/1",
+        "image": claude.get("image", ""),
+        "harness_version": skill_config.get("harnessVersion", ""),
+    }
+
+
+@router.get("/system/status")
+async def system_status(ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    return await ctx.system_status()
+
+
+@router.post("/system/reconcile")
+async def reconcile(ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    corrected = await ctx.reconciler.run()
+    return {"corrected": corrected}
+
+
+@router.get("/system/config")
+async def get_config(ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    skill_config = await ctx.gateway.config()
+    return {
+        "host": ctx.settings.host,
+        "port": ctx.settings.port,
+        "skill_root": str(ctx.settings.skill_root),
+        "skill_version": ctx.skill_version,
+        "tasks_dir": str(ctx.settings.tasks_dir),
+        "source": {
+            **ctx.settings.source.model_dump(),
+            "password": "<set>" if ctx.secrets.has("projecthub.password") else "<unset>",
+            "bearer_token": "<set>" if ctx.secrets.has("projecthub.bearer") else "<unset>",
+        },
+        "execution": ctx.settings.execution.model_dump(),
+        "storage": ctx.settings.storage.model_dump(),
+        "recording": ctx.settings.recording.model_dump(),
+        "skill_config": skill_config,
+        "github_token": "<set>"
+        if ctx.secrets.has("github.token") or _skill_has_github_token(skill_config)
+        else "<unset>",
+    }
+
+
+@router.patch("/system/config")
+async def patch_config(payload: ConfigPatchRequest, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    payload_data = payload.model_dump(exclude_none=True)
+    allowed_top = {"host", "port", "skill_root", "tasks_dir"}
+    for key in payload_data:
+        if key not in allowed_top | {"source", "execution", "storage", "recording", "secrets"}:
+            raise ApiError(400, "CONFIG_KEY_INVALID", f"不支持的配置项：{key}")
+    for key in allowed_top:
+        if key in payload_data:
+            setattr(ctx.settings, key, payload_data[key])
+    nested = {
+        "source": ctx.settings.source,
+        "execution": ctx.settings.execution,
+        "storage": ctx.settings.storage,
+        "recording": ctx.settings.recording,
+    }
+    for group, model in nested.items():
+        patch = payload_data.get(group)
+        if not isinstance(patch, dict):
+            continue
+        allowed = {name: field for name, field in model.__class__.model_fields.items()}
+        cleaned = {
+            key: value for key, value in patch.items() if key in allowed and key not in {"password", "bearer_token"}
+        }
+        for key, value in cleaned.items():
+            setattr(model, key, value)
+    secrets = payload_data.get("secrets")
+    if isinstance(secrets, dict):
+        for key, account in (
+            ("source_password", "projecthub.password"),
+            ("source_bearer", "projecthub.bearer"),
+        ):
+            if key in secrets:
+                value = str(secrets[key] or "")
+                if value:
+                    ctx.secrets.set(account, value)
+                else:
+                    ctx.secrets.delete(account)
+    ctx.save_settings()
+    ctx.reconciler.tasks_dir = ctx.settings.tasks_dir
+    source_change = isinstance(payload_data.get("source"), dict)
+    if source_change:
+        await ctx.source.close()
+        from solo_auto.sources.project_hub import ProjectHubClient
+
+        ctx.source = ProjectHubClient(ctx.settings.source, ctx.secrets)
+        ctx.source_online = False
+    execution = payload_data.get("execution")
+    if isinstance(execution, dict):
+        pairs: list[str] = []
+        if "max_containers" in execution:
+            pairs.append(f"claude.maxContainers={execution['max_containers']}")
+        if "run_timeout_seconds" in execution:
+            pairs.append(f"claude.timeoutSeconds={execution['run_timeout_seconds']}")
+        if "attempts" in execution:
+            pairs.append(f"claude.attempts={execution['attempts']}")
+        if pairs:
+            result = await ctx.gateway.call(["config", "set", *pairs], timeout=60)
+            if result.code != 0:
+                raise ApiError(500, "SKILL_CONFIG_UPDATE_FAILED", result.err.strip() or "技能配置更新失败")
+            await ctx.scheduler.refresh_limit()
+    ctx.repo.add_event("system.config_updated", "系统配置已更新", actor="user")
+    return await get_config(ctx)
+
+
+@router.post("/system/config/test")
+async def test_config(payload: ConfigTestRequest, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    if payload.target == "skill":
+        try:
+            version_value = await ctx.gateway.version()
+            return {"ok": True, "message": f"技能可用，版本 {version_value}", "detail": {}}
+        except Exception as exc:
+            return {"ok": False, "message": str(exc), "detail": {}}
+    if payload.target == "source":
+        return await ctx.source.test()
+    if payload.target == "docker":
+        ok = await ctx.docker_ok()
+        return {
+            "ok": ok,
+            "message": "Docker 可用" if ok else "Docker daemon 不可用",
+            "detail": {},
+        }
+    raise ApiError(400, "TEST_TARGET_INVALID", "未知测试目标")
+
+
+@router.get("/system/logs")
+async def logs(
+    tail: int = Query(default=200, ge=1, le=1000),
+    ctx: AppContext = Depends(context),
+) -> dict[str, Any]:
+    return {"items": ctx.repo.events(limit=tail)}
+
+
+@router.post("/system/backup")
+async def backup(ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    stamp = datetime.now().strftime("%Y%m%d-%H%M")
+    target = ctx.paths.backups / f"backup-{stamp}.zip"
+    with tempfile.TemporaryDirectory(prefix="solo-auto-backup-") as temporary:
+        snapshot = Path(temporary) / "solo-auto.db"
+        if ctx.paths.database.is_file():
+            source_db = sqlite3.connect(ctx.paths.database)
+            target_db = sqlite3.connect(snapshot)
+            try:
+                source_db.backup(target_db)
+            finally:
+                target_db.close()
+                source_db.close()
+        with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
+            if snapshot.is_file():
+                archive.write(snapshot, "solo-auto.db")
+            if ctx.paths.config.is_file():
+                archive.write(ctx.paths.config, "config.toml")
+            for path in ctx.paths.drafts.rglob("*"):
+                if path.is_file():
+                    archive.write(path, Path("drafts") / path.relative_to(ctx.paths.drafts))
+    ctx.repo.add_event("system.backup", f"备份已生成：{target}", actor="user")
+    return {"path": str(target), "size": target.stat().st_size}
+
+
+@router.post("/system/prune")
+async def prune(payload: PruneRequest, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    candidates: list[Path] = []
+    if "staging" in payload.scopes:
+        candidates.extend(
+            path for path in ctx.paths.staging.iterdir() if path.is_dir() and not (path / "meta.json").exists()
+        )
+    if "logs" in payload.scopes:
+        cutoff = datetime.now().timestamp() - ctx.settings.storage.skill_log_retention_days * 86400
+        candidates.extend(path for path in ctx.paths.skill_logs.rglob("*.log") if path.stat().st_mtime < cutoff)
+    items = [{"path": str(path), "size": _path_size(path)} for path in candidates]
+    if not payload.dry_run:
+        if not payload.confirm:
+            raise ApiError(422, "PRUNE_CONFIRM_REQUIRED", "实际清理前必须确认文件清单")
+        for path in candidates:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
+        ctx.repo.add_event("system.pruned", f"已清理 {len(candidates)} 个路径", level="warn", actor="user")
+    return {"dry_run": payload.dry_run, "items": items, "total_bytes": sum(item["size"] for item in items)}
+
+
+@router.post("/source/login")
+async def source_login(payload: SourceLoginRequest, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    try:
+        data = await ctx.source.login(payload.username or None, payload.password or None)
+        ctx.settings.source.username = payload.username or ctx.settings.source.username
+        ctx.save_settings()
+        if payload.password:
+            ctx.secrets.set("projecthub.password", payload.password)
+        ctx.source_online = True
+        return {
+            "ok": True,
+            "user": data.get("user") or {},
+            "csrf_received": bool(data.get("csrf") or data.get("csrf_token")),
+        }
+    except SourceAuthError as exc:
+        raise ApiError(401, "SOURCE_AUTH_FAILED", str(exc)) from exc
+    except SourceOfflineError as exc:
+        raise ApiError(503, "SOURCE_OFFLINE", str(exc)) from exc
+
+
+@router.get("/source/projects")
+async def projects(
+    refresh: bool = False,
+    ctx: AppContext = Depends(context),
+) -> dict[str, Any]:
+    try:
+        items = await ctx.source.list_projects(refresh=refresh)
+    except SourceAuthError as exc:
+        raise ApiError(401, "SOURCE_AUTH_REQUIRED", str(exc)) from exc
+    except SourceOfflineError as exc:
+        raise ApiError(503, "SOURCE_OFFLINE", str(exc)) from exc
+    ctx.source_online = True
+    return {"items": items, "total": len(items), "page": 1, "page_size": len(items)}
+
+
+@router.get("/source/projects/{project_id}/engineering")
+async def engineering(
+    project_id: str,
+    q: str = "",
+    language: str = "",
+    min_files: int | None = None,
+    max_files: int | None = None,
+    tag_ids: list[str] = Query(default=[]),
+    scope: str = "available",
+    page: int = 1,
+    page_size: int = 50,
+    ctx: AppContext = Depends(context),
+) -> dict[str, Any]:
+    if not project_id.strip():
+        raise ApiError(400, "PROJECT_REQUIRED", "请先选择项目")
+    try:
+        return await ctx.source.list_engineering(
+            project_id,
+            q=q,
+            language=language,
+            min_files=min_files,
+            max_files=max_files,
+            tag_ids=tag_ids,
+            scope=scope,
+            page=page,
+            page_size=page_size,
+        )
+    except SourceAuthError as exc:
+        raise ApiError(401, "SOURCE_AUTH_REQUIRED", str(exc)) from exc
+    except SourceOfflineError as exc:
+        raise ApiError(503, "SOURCE_OFFLINE", str(exc)) from exc
+
+
+@router.get("/source/projects/{project_id}/engineering/{engineering_id}")
+async def engineering_detail(
+    project_id: str,
+    engineering_id: str,
+    ctx: AppContext = Depends(context),
+) -> dict[str, Any]:
+    return await ctx.source.detail(project_id, engineering_id)
+
+
+@router.get("/source/assets/{asset_id}")
+async def source_asset(asset_id: str, ctx: AppContext = Depends(context)) -> Response:
+    try:
+        content, media_type = await ctx.source.fetch_asset(asset_id)
+    except SourceAuthError as exc:
+        raise ApiError(401, "SOURCE_AUTH_REQUIRED", str(exc)) from exc
+    except SourceOfflineError as exc:
+        raise ApiError(503, "SOURCE_OFFLINE", str(exc)) from exc
+    return Response(content=content, media_type=media_type, headers={"Cache-Control": "private, max-age=300"})
+
+
+@router.post("/claims")
+async def claim(payload: ClaimRequest, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    if not ctx.source_online:
+        raise ApiError(503, "SOURCE_OFFLINE", "题源离线，禁止领取新工程")
+    _require_disk(ctx)
+    claimed: dict[str, Any] | None = None
+    try:
+        claimed = await ctx.source.claim(payload.project_id, payload.engineering_id)
+        engineering_id = str(claimed.get("engineering_id") or payload.engineering_id)
+        claim_id = str(claimed.get("claim_id") or engineering_id)
+        meta = await ctx.staging.stage(ctx.source, payload.project_id, engineering_id, claimed, claim_id)
+        ctx.repo.upsert_claim(
+            {
+                "id": claim_id,
+                "project_id": payload.project_id,
+                "engineering_id": engineering_id,
+                "engineering_name": str(meta.get("name") or engineering_id),
+                "claimed_at": str(meta.get("downloadedAt") or datetime.now().astimezone().isoformat()),
+                "released_at": None,
+                "task_id": None,
+                "zip_sha256": meta.get("zipSha256"),
+            }
+        )
+        ctx.repo.add_event(
+            "claim.created",
+            f"{meta.get('name')} 已领取并校验 ZIP",
+            actor="user",
+            details={"claim_id": claim_id, "sha256": meta.get("zipSha256")},
+        )
+        return {
+            "claim_id": claim_id,
+            "staging_id": engineering_id,
+            "staging_path": meta.get("stagingPath"),
+            "sha256_verified": bool(meta.get("zipSha256") == meta.get("expectedSha256")),
+        }
+    except SourceAuthError as exc:
+        raise ApiError(401, "SOURCE_AUTH_REQUIRED", str(exc)) from exc
+    except SourceOfflineError as exc:
+        raise ApiError(503, "SOURCE_OFFLINE", str(exc)) from exc
+    except Exception:
+        if claimed:
+            with suppress(Exception):
+                await ctx.source.release(
+                    payload.project_id,
+                    payload.engineering_id,
+                    str(claimed.get("claim_id") or payload.engineering_id),
+                )
+        raise
+
+
+@router.delete("/claims/{claim_id}")
+async def release_claim(
+    claim_id: str,
+    force: bool = False,
+    ctx: AppContext = Depends(context),
+) -> dict[str, Any]:
+    meta = next((item for item in ctx.staging.list() if str(item.get("claimId")) == claim_id), None)
+    if not meta:
+        raise ApiError(404, "CLAIM_NOT_FOUND", f"领取记录不存在：{claim_id}")
+    task_root = Path(str(meta.get("taskRoot") or ""))
+    if task_root and meta.get("taskRoot"):
+        task = ctx.repo.get_task_by_root(task_root)
+        if task and task.get("job_status") not in {"exported", "archived", "aborted"} and not force:
+            raise ApiError(409, "CLAIM_HAS_ACTIVE_TASK", "领取关联的任务尚未归档；确认放弃后才可归还")
+        if task_root.is_dir():
+            cleanup = await ctx.gateway.call(["cleanup", "--task-root", str(task_root)], timeout=120)
+            if cleanup.code != 0:
+                raise ApiError(
+                    500,
+                    "CLEANUP_FAILED",
+                    cleanup.err.strip() or "容器清理失败，工程未归还",
+                    detail={"stdout": cleanup.out, "stderr": cleanup.err},
+                )
+    try:
+        await ctx.source.release(str(meta["projectId"]), str(meta["engineeringId"]), claim_id)
+    except ApiError as exc:
+        if exc.status_code != 404:
+            raise
+    ctx.repo.execute(
+        "UPDATE claims SET released_at = ? WHERE id = ?",
+        (datetime.now().astimezone().isoformat(), claim_id),
+    )
+    ctx.staging.remove(str(meta["engineeringId"]))
+    ctx.repo.add_event("claim.released", f"{meta.get('name')} 已归还", actor="user")
+    return {"ok": True, "claim_id": claim_id}
+
+
+@router.get("/claims")
+async def claims(ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    items = [item for item in ctx.staging.list() if not item.get("taskRoot")]
+    return {"items": items, "total": len(items), "page": 1, "page_size": len(items)}
+
+
+@router.get("/staging")
+async def staging(ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    items = [
+        {
+            **item,
+            "size": _path_size(Path(str(item.get("stagingPath") or ""))),
+        }
+        for item in ctx.staging.list()
+    ]
+    return {"items": items, "total": len(items)}
+
+
+@router.post("/tasks", status_code=201)
+async def create_task(payload: CreateTaskRequest, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    _require_disk(ctx)
+    return await ctx.tasks.create(
+        staging_id=payload.staging_id,
+        task_name=payload.task_name,
+        domain=payload.domain,
+        sub_direction=payload.sub_direction,
+    )
+
+
+def _skill_has_github_token(config: dict[str, Any]) -> bool:
+    github = config.get("github")
+    return bool(isinstance(github, dict) and github.get("accessTokens"))
+
+
+def _path_size(path: Path) -> int:
+    if path.is_file():
+        return path.stat().st_size
+    if not path.is_dir():
+        return 0
+    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+
+
+def _require_disk(ctx: AppContext) -> None:
+    free_gb = shutil.disk_usage(ctx.paths.home).free / 1024**3
+    if free_gb < ctx.settings.storage.disk_floor_gb:
+        raise ApiError(
+            503,
+            "DISK_LOW",
+            f"磁盘剩余 {free_gb:.1f}GB，低于阈值 {ctx.settings.storage.disk_floor_gb:g}GB，禁止新开工",
+        )

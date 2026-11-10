@@ -1,0 +1,30 @@
+{
+  "schema": "solo-2611/1",
+  "skillVersion": "0.2.2",
+  "taskName": "fixture-running-stale",
+  "taskRoot": "${FIXTURE_ROOT}",
+  "workspace": "${FIXTURE_ROOT}/workspace",
+  "createdAt": "2026-11-11T02:00:00+00:00",
+  "createdDate": "2026-11-11",
+  "status": "running",
+  "source": {"kind": "dir", "path": "/tmp/source"},
+  "initialSha": "2222222222222222222222222222222222222222",
+  "fields": {
+    "所属领域": "数据工程",
+    "子方向": "其他",
+    "Harness": "Claude Code",
+    "操作系统": "MacOS/Linux"
+  },
+  "promptPath": "${FIXTURE_ROOT}/delivery/提示词.md",
+  "promptSha256": "PLACEHOLDER",
+  "attempts": [
+    {
+      "index": 1,
+      "container": "solo2611-fixture-01-abcd",
+      "mode": "print",
+      "startedAt": "2026-11-11T02:00:01+00:00",
+      "status": "running",
+      "dir": "${FIXTURE_ROOT}/monitor/runs/attempt-01"
+    }
+  ]
+}

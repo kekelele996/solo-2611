@@ -1,0 +1,19 @@
+{
+  "schema": "solo-2611/1",
+  "skillVersion": "0.2.2",
+  "taskName": "fixture-prompt-only",
+  "taskRoot": "${FIXTURE_ROOT}",
+  "workspace": "${FIXTURE_ROOT}/workspace",
+  "createdAt": "2026-11-11T01:00:00+00:00",
+  "createdDate": "2026-11-11",
+  "status": "prepared",
+  "source": {"kind": "dir", "path": "/tmp/source"},
+  "initialSha": "1111111111111111111111111111111111111111",
+  "fields": {
+    "所属领域": "数据工程",
+    "子方向": "其他",
+    "Harness": "Claude Code",
+    "操作系统": "MacOS/Linux"
+  },
+  "attempts": []
+}

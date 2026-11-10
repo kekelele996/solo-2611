@@ -1,0 +1,1 @@
+"""Application event fan-out."""

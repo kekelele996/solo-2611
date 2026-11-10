@@ -1,0 +1,91 @@
+{
+  "schema": "solo-2611/1",
+  "skillVersion": "0.2.2",
+  "taskName": "fixture-exported",
+  "taskRoot": "${FIXTURE_ROOT}",
+  "workspace": "${FIXTURE_ROOT}/workspace",
+  "createdAt": "2026-11-11T03:00:00+00:00",
+  "createdDate": "2026-11-11",
+  "status": "exported",
+  "source": {"kind": "dir", "path": "/tmp/source"},
+  "initialSha": "3333333333333333333333333333333333333333",
+  "fields": {
+    "所属领域": "数据工程",
+    "子方向": "其他",
+    "Harness": "Claude Code",
+    "操作系统": "MacOS/Linux",
+    "任务类型": "功能开发",
+    "任务难度": "困难",
+    "语言/框架": "Python",
+    "环境可复现等级": "已容器化，可一键起环境"
+  },
+  "attempts": [
+    {
+      "index": 1,
+      "container": "solo2611-fixture-01-efgh",
+      "mode": "print",
+      "startedAt": "2026-11-11T03:01:00+00:00",
+      "status": "accepted",
+      "dir": "${FIXTURE_ROOT}/monitor/runs/attempt-01",
+      "exitCode": 0
+    }
+  ],
+  "promptPath": "${FIXTURE_ROOT}/delivery/提示词.md",
+  "promptSha256": "PLACEHOLDER",
+  "promptReview": "${FIXTURE_ROOT}/monitor/prompt/ra-renhua-review.json",
+  "difficultyReview": "${FIXTURE_ROOT}/monitor/prompt/difficulty-review.json",
+  "remote": {
+    "fullName": "fixture/exported",
+    "web": "https://github.com/fixture/exported",
+    "url": "https://github.com/fixture/exported.git",
+    "branch": "main",
+    "initialPushed": "2026-11-11T03:00:10+00:00",
+    "artifactSha": "4444444444444444444444444444444444444444",
+    "artifactPushed": "2026-11-11T03:20:00+00:00",
+    "verified": {"initial": true, "artifact": true}
+  },
+  "session": {
+    "sessionId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "promptId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "harnessVersion": "2.1.319",
+    "entrypoint": "sdk-cli",
+    "models": ["auto_model/urm"],
+    "trace": "${FIXTURE_ROOT}/traces/-workspace/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.jsonl",
+    "tracesDir": "${FIXTURE_ROOT}/traces",
+    "subagentFiles": 0,
+    "toolUses": 2
+  },
+  "artifact": {
+    "sha": "4444444444444444444444444444444444444444",
+    "modelCommits": [],
+    "shortStat": "1 file changed, 2 insertions(+)",
+    "stat": "src/app.py | 2 ++"
+  },
+  "recording": {
+    "video": "${FIXTURE_ROOT}/recording/运行录屏.mp4",
+    "durationSeconds": 42.5,
+    "width": 1280,
+    "height": 720,
+    "sizeMB": 1.2,
+    "source": "screen-capture-kit",
+    "captureKind": "window-id",
+    "captureBackend": "screen-capture-kit",
+    "windowCaptureOk": true,
+    "pointerStrategy": "none",
+    "recordPlanMode": "terminal"
+  },
+  "feedbackCheck": {
+    "ok": true,
+    "score": 4,
+    "warnings": [],
+    "sha256": "PLACEHOLDER",
+    "checkedAt": "2026-11-11T03:30:00+00:00"
+  },
+  "export": {
+    "xlsx": "${FIXTURE_ROOT}/delivery/交付表.xlsx",
+    "guide": "${FIXTURE_ROOT}/delivery/字段说明.md",
+    "missing": [],
+    "exportedAt": "2026-11-11T03:40:00+00:00",
+    "exportedDate": "2026-11-11"
+  }
+}
