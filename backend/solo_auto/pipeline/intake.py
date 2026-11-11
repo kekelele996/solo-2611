@@ -244,7 +244,8 @@ class IntakeService:
                 )
                 self.notifier.notify(title="solo-auto 计划暂停", status="达到领取上限")
                 return
-            if self._in_hand(plan) >= self.max_in_hand:
+            remaining_target = max(0, target - counts["completed"])
+            if self._in_hand(plan) >= min(self.max_in_hand, remaining_target):
                 return
             free_gb = shutil.disk_usage(self.paths.home).free / 1024**3
             if free_gb < self.settings.storage.disk_floor_gb:
@@ -374,7 +375,16 @@ class IntakeService:
         for task_id in plan.get("task_ids") or []:
             job = self.autopilot.job(str(task_id))
             if not job:
-                active += 1
+                task = self.repo.get_task(str(task_id))
+                if task is None or task.get("job_status") == "aborted":
+                    failed += 1
+                elif task.get("job_status") == "archived":
+                    if task.get("exported_at"):
+                        completed += 1
+                    else:
+                        failed += 1
+                else:
+                    active += 1
             elif job.get("stage") in {"done", "awaiting_audit"}:
                 completed += 1
             elif job.get("active"):

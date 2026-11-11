@@ -12,6 +12,7 @@ import pytest
 from solo_auto.app import create_app
 from solo_auto.errors import ApiError
 from solo_auto.gateway.skill import SkillGateway
+from solo_auto.pipeline.autopilot import Job
 from solo_auto.pipeline.prompt_templates import PromptTemplates
 from solo_auto.settings import app_paths
 
@@ -398,6 +399,45 @@ async def test_intake_requires_explicit_project(
             response = await client.post("/api/intake", json={"project_id": "", "target": 3})
         assert response.status_code == 400
         assert response.json()["error"]["code"] == "PROJECT_REQUIRED"
+    finally:
+        await ctx.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_intake_target_one_never_claims_a_second_task(
+    fixture_factory: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _ = await _app(tmp_path, monkeypatch, fixture_factory)
+    ctx = app.state.context
+
+    class NeverClaimSource:
+        calls = 0
+
+        async def list_engineering(self, *_: Any, **__: Any) -> dict[str, Any]:
+            self.calls += 1
+            return {"items": [{"engineering_id": "second"}], "total": 1, "page_size": 100}
+
+    source = NeverClaimSource()
+    ctx.intake.source = source  # type: ignore[assignment]
+    ctx.intake.plan = {
+        "id": "target-one",
+        "project_id": "project-1",
+        "project_name": "项目一",
+        "target": 1,
+        "status": "running",
+        "task_ids": ["active-task"],
+        "attempted_engineering_ids": [],
+        "failed_claims": [],
+        "claim_limit": 4,
+        "filters": {},
+    }
+    ctx.autopilot.jobs["active-task"] = Job(task_id="active-task", task_name="第一题", stage="authoring")
+    try:
+        await ctx.intake.tick()
+        assert source.calls == 0
+        assert ctx.intake.plan["task_ids"] == ["active-task"]
     finally:
         await ctx.shutdown()
 
