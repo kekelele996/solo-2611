@@ -114,7 +114,7 @@ class RevealRequest(BaseModel):
 
 
 class ConfigTestRequest(BaseModel):
-    target: Literal["skill", "source", "docker"]
+    target: Literal["skill", "source", "docker", "solo2"]
 
 
 class SourceConfigPatch(BaseModel):
@@ -192,9 +192,16 @@ class NotifyConfigPatch(BaseModel):
     webhook_url: str | None = None
 
 
+class Solo2ConfigPatch(BaseModel):
+    base_url: str | None = None
+    username: str | None = None
+    timeout_seconds: float | None = None
+
+
 class SecretConfigPatch(BaseModel):
     source_password: str | None = None
     source_bearer: str | None = None
+    solo2_password: str | None = None
 
 
 class ConfigPatchRequest(BaseModel):
@@ -212,6 +219,7 @@ class ConfigPatchRequest(BaseModel):
     trash: TrashConfigPatch | None = None
     slim: SlimConfigPatch | None = None
     notify: NotifyConfigPatch | None = None
+    solo2: Solo2ConfigPatch | None = None
     secrets: SecretConfigPatch | None = None
 
 

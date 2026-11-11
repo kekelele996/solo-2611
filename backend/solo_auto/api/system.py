@@ -160,6 +160,10 @@ async def get_config(ctx: AppContext = Depends(context)) -> dict[str, Any]:
             **ctx.settings.notify.model_dump(),
             "webhook_url": "<set>" if ctx.secrets.has("notify.webhook") else "",
         },
+        "solo2": {
+            **ctx.settings.solo2.model_dump(),
+            "password": "<set>" if ctx.secrets.has("solo2.password") else "<unset>",
+        },
         "skill_config": skill_config,
         "github_token": "<set>"
         if ctx.secrets.has("github.token") or _skill_has_github_token(skill_config)
@@ -198,6 +202,7 @@ async def patch_config(payload: ConfigPatchRequest, ctx: AppContext = Depends(co
         "trash",
         "slim",
         "notify",
+        "solo2",
         "secrets",
     }
     for key in payload_data:
@@ -215,6 +220,7 @@ async def patch_config(payload: ConfigPatchRequest, ctx: AppContext = Depends(co
         "intake": ctx.settings.intake,
         "trash": ctx.settings.trash,
         "slim": ctx.settings.slim,
+        "solo2": ctx.settings.solo2,
     }
     for group, model in nested.items():
         patch = payload_data.get(group)
@@ -256,6 +262,7 @@ async def patch_config(payload: ConfigPatchRequest, ctx: AppContext = Depends(co
         for key, account in (
             ("source_password", "projecthub.password"),
             ("source_bearer", "projecthub.bearer"),
+            ("solo2_password", "solo2.password"),
         ):
             if key in secrets:
                 value = str(secrets[key] or "")
@@ -319,6 +326,8 @@ async def test_config(payload: ConfigTestRequest, ctx: AppContext = Depends(cont
             "message": "Docker 可用" if ok else "Docker daemon 不可用",
             "detail": {},
         }
+    if payload.target == "solo2":
+        return await ctx.solo2.test()
     raise ApiError(400, "TEST_TARGET_INVALID", "未知测试目标")
 
 

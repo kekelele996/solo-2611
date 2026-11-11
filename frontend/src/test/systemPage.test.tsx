@@ -46,6 +46,12 @@ const CONFIG: ConfigResponse = {
   trash: { retention_days: 7 },
   slim: { enabled: false, after_days: 3, patterns: ["node_modules", ".venv"] },
   notify: { macos: true, webhook_url: "" },
+  solo2: {
+    base_url: "https://solo2.jzxhnh.com/app",
+    username: "reviewer",
+    timeout_seconds: 30,
+    password: "<set>",
+  },
   skill_config: {},
   github_token: "<set>",
 };
@@ -76,6 +82,8 @@ describe("settings page", () => {
     ["任务目录", "/other", (body: Record<string, unknown>) => body.tasks_dir],
     ["磁盘阈值 GB", "10", (body: Record<string, { [key: string]: unknown }>) => body.storage.disk_floor_gb],
     ["Chrome URL", "http://127.0.0.1:5000", (body: Record<string, { [key: string]: unknown }>) => body.recording.chrome_url],
+    ["平台地址", "https://solo2.example/app", (body: Record<string, { [key: string]: unknown }>) => body.solo2.base_url],
+    ["平台账号", "new-user", (body: Record<string, { [key: string]: unknown }>) => body.solo2.username],
   ])("saves an edit to %s", async (label, value, pick) => {
     const patch = vi.spyOn(api, "patchConfig").mockResolvedValue(CONFIG);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -99,5 +107,24 @@ describe("settings page", () => {
     await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
     expect(String(pick(patch.mock.calls[0][0] as never))).toBe(value);
     await screen.findByRole("button", { name: "配置已保存" });
+  });
+
+  it("stores the Solo2 password as a secret", async () => {
+    const patch = vi.spyOn(api, "patchConfig").mockResolvedValue(CONFIG);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <ToastProvider>
+          <SystemPage />
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+    await screen.findByText("提交平台");
+    fireEvent.change(field("平台密码"), { target: { value: "new-password" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存配置" }));
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+    expect((patch.mock.calls[0][0] as { secrets?: { solo2_password?: string } }).secrets?.solo2_password).toBe(
+      "new-password",
+    );
   });
 });

@@ -529,6 +529,12 @@ export type ConfigResponse = {
   trash: { retention_days: number };
   slim: { enabled: boolean; after_days: number; patterns: string[] };
   notify: { macos: boolean; webhook_url: string };
+  solo2: {
+    base_url: string;
+    username: string;
+    timeout_seconds: number;
+    password: string;
+  };
   skill_config: Record<string, unknown>;
   github_token: string;
 };

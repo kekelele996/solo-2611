@@ -33,6 +33,7 @@ from solo_auto.pipeline.usage import UsageLedger
 from solo_auto.secrets import SecretStore
 from solo_auto.settings import Paths, Settings, app_paths, load_settings, save_settings
 from solo_auto.sources.project_hub import ProjectHubClient
+from solo_auto.sources.solo2 import Solo2Client
 from solo_auto.sources.staging import StagingManager
 from solo_auto.spec_loader import load_spec
 from solo_auto.store.repo import Repository
@@ -62,6 +63,7 @@ class AppContext:
         self.reconciler = Reconciler(self.repo, self.paths, self.settings.tasks_dir)
         self.staging = StagingManager(self.paths)
         self.source = ProjectHubClient(self.settings.source, self.secrets)
+        self.solo2 = Solo2Client(self.settings.solo2, self.secrets)
         self.watcher = StateWatcher(self.settings.tasks_dir)
         self.scheduler = RunScheduler(
             paths=self.paths,

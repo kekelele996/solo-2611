@@ -52,6 +52,30 @@ async def test_api_fact_routes_without_real_skill(
             assert prompt.json()["draft"].startswith("真实项目里")
             assert prompt.json()["readonly"] is True
 
+            saved = await client.patch(
+                "/api/system/config",
+                json={
+                    "solo2": {
+                        "base_url": "https://solo2.jzxhnh.com/app",
+                        "username": "reviewer",
+                    },
+                    "secrets": {"solo2_password": "saved-password"},
+                },
+            )
+            assert saved.status_code == 200
+            assert saved.json()["solo2"]["username"] == "reviewer"
+            assert saved.json()["solo2"]["password"] == "<set>"
+            assert "saved-password" not in saved.text
+            assert context.secrets.get("solo2.password") == "saved-password"
+
+            async def fake_solo2_test() -> dict[str, object]:
+                return {"ok": True, "message": "Solo2 登录成功：reviewer", "detail": {"status": 200}}
+
+            monkeypatch.setattr(context.solo2, "test", fake_solo2_test)
+            solo2_test = await client.post("/api/system/config/test", json={"target": "solo2"})
+            assert solo2_test.status_code == 200
+            assert solo2_test.json()["ok"] is True
+
             timeline = await client.get(f"/api/tasks/{task['id']}/timeline")
             assert timeline.status_code == 200
             assert timeline.json()["counts"]["total"] == 1

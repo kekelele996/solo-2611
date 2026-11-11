@@ -5247,6 +5247,16 @@
               }
             ]
           },
+          "solo2": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Solo2ConfigPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "secrets": {
             "anyOf": [
               {
@@ -5268,7 +5278,8 @@
             "enum": [
               "skill",
               "source",
-              "docker"
+              "docker",
+              "solo2"
             ],
             "title": "Target"
           }
@@ -5840,6 +5851,17 @@
               }
             ],
             "title": "Source Bearer"
+          },
+          "solo2_password": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Solo2 Password"
           }
         },
         "type": "object",
@@ -5886,6 +5908,45 @@
         },
         "type": "object",
         "title": "SlimConfigPatch"
+      },
+      "Solo2ConfigPatch": {
+        "properties": {
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          },
+          "timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Seconds"
+          }
+        },
+        "type": "object",
+        "title": "Solo2ConfigPatch"
       },
       "SourceConfigPatch": {
         "properties": {

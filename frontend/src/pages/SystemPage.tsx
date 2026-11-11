@@ -28,7 +28,7 @@ import { errorText } from "../utils/display";
 import { formatDateTime } from "../utils/time";
 import { APP_BUILD_ID } from "../utils/build";
 
-type TestTarget = "skill" | "source" | "docker";
+type TestTarget = "skill" | "source" | "docker" | "solo2";
 type TestOutcome = { ok: boolean; message: string };
 
 export function SystemPage() {
@@ -39,6 +39,7 @@ export function SystemPage() {
   const status = useQuery({ queryKey: ["system-status"], queryFn: api.systemStatus, refetchInterval: 3000 });
   const [form, setForm] = useState<ConfigResponse | null>(null);
   const [password, setPassword] = useState("");
+  const [solo2Password, setSolo2Password] = useState("");
   const [logQuery, setLogQuery] = useState("");
   const [logLevel, setLogLevel] = useState("");
   const [dirty, setDirty] = useState(false);
@@ -77,12 +78,19 @@ export function SystemPage() {
         trash: form.trash,
         slim: form.slim,
         notify: { macos: form.notify.macos, webhook_url: webhook || undefined },
-        secrets: password ? { source_password: password } : undefined,
+        solo2: form.solo2,
+        secrets: password || solo2Password
+          ? {
+              ...(password ? { source_password: password } : {}),
+              ...(solo2Password ? { solo2_password: solo2Password } : {}),
+            }
+          : undefined,
       });
     },
     onSuccess: () => {
       toast("已保存。自动交付/抽检/计划设置将在下一次阶段或抽样时生效；通知立即生效。", "ok");
       setPassword("");
+      setSolo2Password("");
       setWebhook("");
       setDirty(false);
       void queryClient.invalidateQueries();
@@ -216,11 +224,11 @@ export function SystemPage() {
             variant="primary"
             data-primary
             data-save
-            disabled={!dirty && !password}
+            disabled={!dirty && !password && !solo2Password}
             onClick={() => save.mutate()}
             loading={save.isPending}
           >
-            {dirty || password ? "保存配置" : "配置已保存"}
+            {dirty || password || solo2Password ? "保存配置" : "配置已保存"}
           </Button>
         </div>
       </header>
@@ -259,6 +267,32 @@ export function SystemPage() {
             />
           </Field>
           {testRow("source", "测试连接")}
+        </Panel>
+
+        <Panel title="提交平台">
+          <Field label="平台地址">
+            <input
+              value={form.solo2.base_url}
+              onChange={(event) => update({ ...form, solo2: { ...form.solo2, base_url: event.target.value } })}
+            />
+          </Field>
+          <Field label="平台账号">
+            <input
+              autoComplete="username"
+              value={form.solo2.username}
+              onChange={(event) => update({ ...form, solo2: { ...form.solo2, username: event.target.value } })}
+            />
+          </Field>
+          <Field label="平台密码" hint={`当前：${form.solo2.password}`}>
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={solo2Password}
+              onChange={(event) => setSolo2Password(event.target.value)}
+              placeholder="留空则不修改 Keychain"
+            />
+          </Field>
+          {testRow("solo2", "测试登录")}
         </Panel>
 
         <Panel title="执行">

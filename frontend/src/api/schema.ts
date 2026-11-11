@@ -1952,6 +1952,7 @@ export interface components {
             trash?: components["schemas"]["TrashConfigPatch"] | null;
             slim?: components["schemas"]["SlimConfigPatch"] | null;
             notify?: components["schemas"]["NotifyConfigPatch"] | null;
+            solo2?: components["schemas"]["Solo2ConfigPatch"] | null;
             secrets?: components["schemas"]["SecretConfigPatch"] | null;
         };
         /** ConfigTestRequest */
@@ -1960,7 +1961,7 @@ export interface components {
              * Target
              * @enum {string}
              */
-            target: "skill" | "source" | "docker";
+            target: "skill" | "source" | "docker" | "solo2";
         };
         /** CreateTaskRequest */
         CreateTaskRequest: {
@@ -2192,6 +2193,8 @@ export interface components {
             source_password?: string | null;
             /** Source Bearer */
             source_bearer?: string | null;
+            /** Solo2 Password */
+            solo2_password?: string | null;
         };
         /** SlimConfigPatch */
         SlimConfigPatch: {
@@ -2201,6 +2204,15 @@ export interface components {
             after_days?: number | null;
             /** Patterns */
             patterns?: string[] | null;
+        };
+        /** Solo2ConfigPatch */
+        Solo2ConfigPatch: {
+            /** Base Url */
+            base_url?: string | null;
+            /** Username */
+            username?: string | null;
+            /** Timeout Seconds */
+            timeout_seconds?: number | null;
         };
         /** SourceConfigPatch */
         SourceConfigPatch: {

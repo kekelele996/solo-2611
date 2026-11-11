@@ -139,6 +139,19 @@ class NotifySettings(BaseModel):
     webhook_url: str = ""
 
 
+class Solo2Settings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    base_url: str = "https://solo2.jzxhnh.com/app"
+    username: str = ""
+    timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
+
+    @field_validator("base_url")
+    @classmethod
+    def _base_url(cls, value: str) -> str:
+        return value.strip().rstrip("/")
+
+
 class Settings(BaseSettings):
     """Configuration loaded from ``config.toml`` and a small env override set."""
 
@@ -163,6 +176,7 @@ class Settings(BaseSettings):
     trash: TrashSettings = Field(default_factory=TrashSettings)
     slim: SlimSettings = Field(default_factory=SlimSettings)
     notify: NotifySettings = Field(default_factory=NotifySettings)
+    solo2: Solo2Settings = Field(default_factory=Solo2Settings)
 
     @field_validator("skill_root", "tasks_dir", mode="before")
     @classmethod
@@ -281,6 +295,8 @@ def config_toml(settings: Settings) -> str:
         *_dump_table("slim", settings.slim),
         "",
         *_dump_table("notify", settings.notify, exclude={"webhook_url"}),
+        "",
+        *_dump_table("solo2", settings.solo2),
         "",
     ]
     return "\n".join(lines)

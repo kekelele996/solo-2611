@@ -125,7 +125,7 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
-  testConfig: (target: "skill" | "source" | "docker") =>
+  testConfig: (target: "skill" | "source" | "docker" | "solo2") =>
     request<{ ok: boolean; message: string; detail: Record<string, unknown> }>("/api/system/config/test", {
       method: "POST",
       body: JSON.stringify({ target }),
