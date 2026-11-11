@@ -56,6 +56,16 @@ async def test_api_fact_routes_without_real_skill(
             assert timeline.status_code == 200
             assert timeline.json()["counts"]["total"] == 1
 
+            video = await client.get(f"/api/tasks/{task['id']}/recording/video")
+            assert video.status_code == 200
+            assert video.headers["content-type"] == "video/mp4"
+            assert video.headers["content-disposition"].startswith("inline;")
+            assert video.headers["accept-ranges"] == "bytes"
+
+            video_download = await client.get(f"/api/tasks/{task['id']}/recording/video?download=1")
+            assert video_download.status_code == 200
+            assert video_download.headers["content-disposition"].startswith("attachment;")
+
             queue = await client.get("/api/queue")
             assert queue.status_code == 200
             assert queue.json()["limit"] == 4

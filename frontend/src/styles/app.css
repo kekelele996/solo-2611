@@ -2068,6 +2068,18 @@ select:focus {
   white-space: normal;
 }
 
+.recording-preview {
+  padding: 12px;
+}
+
+.recording-preview video {
+  display: block;
+  width: 100%;
+  max-height: min(62vh, 560px);
+  background: var(--ink);
+  object-fit: contain;
+}
+
 .chrome-controls {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;

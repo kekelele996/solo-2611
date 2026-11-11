@@ -103,7 +103,11 @@ async def verify(task_id: str, ctx: AppContext = Depends(context)) -> dict[str, 
 
 
 @router.get("/tasks/{task_id}/recording/video")
-async def recording_video(task_id: str, ctx: AppContext = Depends(context)) -> FileResponse:
+async def recording_video(
+    task_id: str,
+    download: bool = False,
+    ctx: AppContext = Depends(context),
+) -> FileResponse:
     task = ctx.repo.get_task(task_id)
     if not task:
         raise ApiError(404, "TASK_NOT_FOUND", f"任务不存在：{task_id}")
@@ -113,7 +117,12 @@ async def recording_video(task_id: str, ctx: AppContext = Depends(context)) -> F
     path = Path(envelope.state.recording.video).resolve()
     if not path.is_file():
         raise ApiError(404, "RECORDING_NOT_FOUND", "录屏文件不存在")
-    return FileResponse(path, media_type="video/mp4", filename=path.name)
+    return FileResponse(
+        path,
+        media_type="video/mp4",
+        filename=path.name,
+        content_disposition_type="attachment" if download else "inline",
+    )
 
 
 @router.post("/tasks/{task_id}/record/delete")

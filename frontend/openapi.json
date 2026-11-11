@@ -2731,6 +2731,16 @@
               "type": "string",
               "title": "Task Id"
             }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Download"
+            }
           }
         ],
         "responses": {

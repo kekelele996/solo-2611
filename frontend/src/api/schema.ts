@@ -4278,7 +4278,9 @@ export interface operations {
     };
     recording_video_api_tasks__task_id__recording_video_get: {
         parameters: {
-            query?: never;
+            query?: {
+                download?: boolean;
+            };
             header?: never;
             path: {
                 task_id: string;

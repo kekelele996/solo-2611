@@ -1088,6 +1088,31 @@ export function RecordingTab({ task }: { task: TaskDetail }) {
         )}
       </Panel>
 
+      {hasRecording ? (
+        <Panel
+          title="录屏预览"
+          actions={
+            <a
+              className="button button-secondary button-small"
+              href={`/api/tasks/${encodeURIComponent(task.id)}/recording/video?download=1`}
+            >
+              <Download size={13} /> 下载原片
+            </a>
+          }
+        >
+          <div className="recording-preview">
+            <video
+              controls
+              playsInline
+              preload="metadata"
+              src={`/api/tasks/${encodeURIComponent(task.id)}/recording/video`}
+            >
+              当前浏览器不支持视频播放，请下载原片查看。
+            </video>
+          </div>
+        </Panel>
+      ) : null}
+
       {counting ? (
         <div className="countdown-layer" role="alertdialog" aria-label="录制倒计时" data-last={count <= 1 || undefined}>
           <div className="countdown">
