@@ -35,6 +35,7 @@ v3 已在独立分支 `v3-dispatch-center` 落地为可运行的调度中心。�
 - Docker 连续失败挂起容器与录屏范围；磁盘带回滞恢复；题源只影响领取。
 - 挂起解除后会把同一故障族导致中断的任务重新排队，并安排 0–60 秒分散重试。
 - 15 分钟内出现两次未正常关闭时，新启动登记 `crash_loop` 人工挂起。
+- 后端重启后会把仍可跟踪的 ChatGPT 桌面会话重新计入会话池；超过 5 分钟仍找不到 rollout 的会话按 `agent.launch_lost` 退避重试，而不是永久占用名额。
 
 ### 失败分类与重试
 
@@ -86,7 +87,7 @@ v3 已在独立分支 `v3-dispatch-center` 落地为可运行的调度中心。�
 
 ```text
 make check
-backend: 95 passed
+backend: 96 passed
 frontend: 22 passed
 Ruff / mypy --strict / TypeScript / ESLint / Vite build / OpenAPI contract / grep rules
 ```
@@ -98,6 +99,10 @@ Ruff / mypy --strict / TypeScript / ESLint / Vite build / OpenAPI contract / gre
 - `GET /api/health` 返回五个循环 `ok`、有效状态、挂起列表和启动记录；
 - `/dispatch` 由同一 FastAPI 实例返回 v0.3.0 前端资源；
 - 该实例没有触碰 8099 上正在运行的任务。
+
+随后已应用到本机 `main` 并重启 8099 作业台。实测接管 5 个在途任务：
+4 个 ChatGPT 桌面会话（达到并发 4/4）和 1 个等待任务；容器占用 1/3，五个调度循环均为 `ok`。
+重启期间没有清理任何运行容器，3 个原先无 rollout 的旧会话已按新策略重新排队并恢复成可跟踪会话。
 
 ## 6. 仍未满足的完整 DoD
 
