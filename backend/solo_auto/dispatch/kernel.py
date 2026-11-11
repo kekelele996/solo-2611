@@ -195,6 +195,7 @@ class Dispatcher:
         snapshot = await self.facts.snapshot(force=True)
         self._fact_snapshot = snapshot
         self.pools_book.occupy_from_facts(snapshot)
+        self._sync_runtime_pools()
         self._configure_pools()
         self._check_clock()
         if snapshot.disk_free_gb < self.config.disk.floor_gb:
@@ -928,11 +929,35 @@ class Dispatcher:
             recording=self.config.recording,
         )
 
+    def _sync_runtime_pools(self) -> None:
+        if self.autopilot is None:
+            return
+        jobs = getattr(self.autopilot, "jobs", {})
+        agents = getattr(self.autopilot, "agents", {})
+        sessions: set[str] = set()
+        authoring: set[str] = set()
+        delivering: set[str] = set()
+        if isinstance(jobs, dict):
+            for task_id, job in jobs.items():
+                key = f"task:{task_id}"
+                if bool(getattr(job, "desktop_running", False)):
+                    sessions.add(key)
+                if task_id in agents:
+                    stage = str(getattr(agents[task_id], "stage", ""))
+                    if stage == "authoring":
+                        authoring.add(key)
+                    elif stage == "delivering":
+                        delivering.add(key)
+        self.pools_book.observe("sessions", sessions)
+        self.pools_book.observe("authoring", authoring)
+        self.pools_book.observe("delivering", delivering)
+
     async def _facts_loop(self, name: str, interval: float) -> None:
         while not self._stopping:
             async with self.health.beat(name):
                 self._fact_snapshot = await self.facts.snapshot(force=True)
                 self.pools_book.occupy_from_facts(self._fact_snapshot)
+                self._sync_runtime_pools()
                 self._configure_pools()
                 self._check_clock()
             await asyncio.sleep(interval)

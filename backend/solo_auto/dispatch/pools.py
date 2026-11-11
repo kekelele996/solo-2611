@@ -15,6 +15,7 @@ class PoolState:
     used: int = 0
     limit: int = 0
     reserved: dict[str, float] = field(default_factory=dict)
+    observed: set[str] = field(default_factory=set)
 
     @property
     def available(self) -> int:
@@ -79,13 +80,18 @@ class PoolBook:
         if state.used >= state.limit:
             return False
         state.reserved[key] = time.monotonic()
-        state.used = len(state.reserved)
+        state.used = len(set(state.reserved) | state.observed)
         return True
 
     def release(self, pool: str, key: str) -> None:
         state = self.pools[pool]
         state.reserved.pop(key, None)
-        state.used = len(state.reserved)
+        state.used = len(set(state.reserved) | state.observed)
+
+    def observe(self, pool: str, keys: set[str]) -> None:
+        state = self.pools[pool]
+        state.observed = set(keys)
+        state.used = len(set(state.reserved) | state.observed)
 
     def release_task(self, task_id: str) -> None:
         self.release_container(task_id)

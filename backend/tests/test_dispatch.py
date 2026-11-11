@@ -14,6 +14,7 @@ from solo_auto.dispatch.facts import DockerFacts, FactsSnapshot
 from solo_auto.dispatch.gates import evaluate_container_gates
 from solo_auto.dispatch.holds import HoldRegistry
 from solo_auto.dispatch.policy import RecoveryPolicy
+from solo_auto.dispatch.pools import PoolBook
 from solo_auto.dispatch.queue import DispatchItem, DispatchQueue
 from solo_auto.gateway.skill import SkillGateway
 from solo_auto.settings import DispatchSettings, app_paths, load_settings, save_settings
@@ -146,6 +147,17 @@ def test_queue_order_persistence_and_retry(tmp_path: Path) -> None:
         assert [item.task_id for item in reopened.due_retry()] == ["first"]
     finally:
         repo.close()
+
+
+def test_observed_runtime_sessions_are_not_double_counted() -> None:
+    pools = PoolBook()
+    pools.configure(containers=3, sessions=5, authoring=2, delivering=1, recording=1)
+    pools.observe("sessions", {"task:a", "task:b", "task:c"})
+    assert pools.pools["sessions"].used == 3
+    assert pools.acquire("sessions", "task:a")
+    assert pools.pools["sessions"].used == 3
+    assert pools.acquire("sessions", "task:d")
+    assert pools.pools["sessions"].used == 4
 
 
 def test_classifier_and_backoff_policy(tmp_path: Path) -> None:
