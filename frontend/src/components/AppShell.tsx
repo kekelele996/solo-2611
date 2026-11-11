@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   ClipboardCheck,
   AlertTriangle,
@@ -21,8 +21,6 @@ import { useHotkeys } from "../hooks/useHotkeys";
 import { useUIStore } from "../stores/ui";
 import { CommandPalette } from "./CommandPalette";
 import { Button, EmptyState, Modal, StatusDot } from "./ui";
-import { useToast } from "./toast-context";
-import { errorText } from "../utils/display";
 import { APP_BUILD_ID } from "../utils/build";
 
 const navItems = [
@@ -44,7 +42,6 @@ export function AppShell() {
   const helpOpen = useUIStore((state) => state.helpOpen);
   const setCommandOpen = useUIStore((state) => state.setCommandOpen);
   const setHelpOpen = useUIStore((state) => state.setHelpOpen);
-  const { toast } = useToast();
   const status = useQuery({
     queryKey: ["system-status"],
     queryFn: api.systemStatus,
@@ -55,18 +52,6 @@ export function AppShell() {
     queryKey: ["audits", "pending"],
     queryFn: () => api.audits("pending"),
     refetchInterval: 5000,
-  });
-  const restart = useMutation({
-    mutationFn: (force: boolean) => api.restart(force),
-    onSuccess: (result) => {
-      toast(result.hint, "info");
-      window.setTimeout(() => window.location.reload(), 2500);
-    },
-    onError: (error) => {
-      if (window.confirm(`${errorText(error)}\n\n是否强制重启？运行中的容器不会被中断。`)) {
-        restart.mutate(true);
-      }
-    },
   });
   const versionMismatch = Boolean(version.data && version.data.build_id !== APP_BUILD_ID);
 
@@ -113,10 +98,10 @@ export function AppShell() {
         <div className="system-banner version-banner">
           <AlertTriangle size={15} />
           <span>
-            页面与后端版本不一致，需要重启后端（页面 {APP_BUILD_ID} / 后端 {version.data?.build_id || "旧版"}）
+            页面与后端版本不一致，请刷新页面加载当前构建（页面 {APP_BUILD_ID} / 后端 {version.data?.build_id || "旧版"}）
           </span>
-          <Button size="small" loading={restart.isPending} onClick={() => restart.mutate(false)}>
-            重启后端
+          <Button size="small" onClick={() => window.location.reload()}>
+            刷新页面
           </Button>
         </div>
       ) : null}

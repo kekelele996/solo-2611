@@ -5,6 +5,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 LABEL="com.gaobo.solo-auto"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 PYTHON="$ROOT/backend/.venv/bin/python"
+NPM=$(command -v npm || true)
 LOG_DIR="${SOLO_AUTO_HOME:-$HOME/solo-auto}/logs"
 
 if [ "${1:-}" = "uninstall" ]; then
@@ -22,6 +23,10 @@ if [ ! -x "$PYTHON" ]; then
   echo "缺少 $PYTHON，请先运行 make setup" >&2
   exit 1
 fi
+if [ -z "$NPM" ] || [ ! -x "$NPM" ]; then
+  echo "找不到 npm，请先安装 Node.js 20+" >&2
+  exit 1
+fi
 
 mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
 cat >"$PLIST" <<EOF
@@ -32,14 +37,13 @@ cat >"$PLIST" <<EOF
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$PYTHON</string>
-    <string>-m</string>
-    <string>solo_auto</string>
+    <string>$ROOT/scripts/run-service.sh</string>
   </array>
   <key>WorkingDirectory</key><string>$ROOT</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>SOLO_AUTO_HOME</key><string>${SOLO_AUTO_HOME:-$HOME/solo-auto}</string>
+    <key>SOLO_AUTO_NPM</key><string>$NPM</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

@@ -37,6 +37,10 @@ async def test_api_fact_routes_without_real_skill(
             assert health.status_code == 200
             assert health.json()["ok"] is True
 
+            page = await client.get("/")
+            assert page.status_code == 200
+            assert page.headers["cache-control"] == "no-cache"
+
             listing = await client.get("/api/tasks", params={"page_size": 20})
             assert listing.status_code == 200
             assert listing.json()["total"] == 3

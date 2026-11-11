@@ -158,7 +158,7 @@ def create_app(home: Path | None = None, *, auto_start: bool = True) -> FastAPI:
             candidate = (dist / full_path).resolve()
             if full_path and candidate.is_file() and candidate.is_relative_to(dist.resolve()):
                 return FileResponse(candidate)
-            return FileResponse(dist / "index.html")
+            return FileResponse(dist / "index.html", headers={"Cache-Control": "no-cache"})
 
     else:
 
