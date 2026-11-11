@@ -3376,6 +3376,12 @@ select:focus {
   white-space: nowrap;
 }
 
+.production-live {
+  color: var(--ok);
+  font: 9px var(--font-mono);
+  white-space: nowrap;
+}
+
 .production-log-toggle {
   display: inline-flex;
   align-items: center;

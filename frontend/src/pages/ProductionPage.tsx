@@ -337,7 +337,10 @@ function JobCard({
   onOpenChatGPT: () => void;
   openingChatGPT: boolean;
 }) {
-  const [logOpen, setLogOpen] = useState(false);
+  const [logOpen, setLogOpen] = useState(job.stage === "chatgpt" && job.desktop_running);
+  useEffect(() => {
+    if (job.stage === "chatgpt" && job.desktop_running) setLogOpen(true);
+  }, [job.desktop_running, job.stage]);
   const failed = job.stage === "failed";
   return (
     <article className={`production-card ${failed ? "is-failed" : ""}`}>
@@ -357,6 +360,11 @@ function JobCard({
         </span>
         {job.stage === "awaiting_audit" ? <Link to={`/audit?task=${job.task_id}`}><Badge tone="warn">去抽检</Badge></Link> : null}
         {job.audit?.verdict === "pass" ? <Badge tone="ok">抽检通过</Badge> : null}
+        {job.desktop_running ? (
+          <span className="production-live" title={job.desktop_last_progress_at || "等待日志"}>
+            日志 {job.desktop_last_progress_at ? formatDateTime(job.desktop_last_progress_at, true).slice(11) : "连接中"}
+          </span>
+        ) : null}
       </div>
       {job.desktop_running || job.desktop_rollout ? (
         <Button size="small" variant="ghost" loading={openingChatGPT} onClick={onOpenChatGPT}>
