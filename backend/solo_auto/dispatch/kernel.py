@@ -880,7 +880,8 @@ class Dispatcher:
             "job_status": str(task.get("job_status") or ""),
             "failure_label": str((item.last_failure or {}).get("kind") or ""),
             "matched_by": str((item.last_failure or {}).get("matched_by") or ""),
-            "reason": decision.text or ("可启动" if position == 1 else f"排队第 {position} 位"),
+            "reason": decision.text
+            or ("可启动" if position == 1 else f"排队第 {position} 位" if position else item.wait_text or "等待人工处理"),
             "gate": decision.view(),
         }
 

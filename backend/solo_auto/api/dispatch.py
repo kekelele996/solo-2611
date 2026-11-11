@@ -234,6 +234,8 @@ async def retry(task_id: str, ctx: AppContext = Depends(context)) -> dict[str, A
         wait_code="",
         wait_text="",
         wait_until="",
+        last_failure={},
+        repeat_signature="",
     )
     return {"ok": True, "snapshot": ctx.dispatcher.snapshot()}
 

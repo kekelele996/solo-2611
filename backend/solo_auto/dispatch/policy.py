@@ -55,6 +55,8 @@ class RecoveryPolicy:
         evidence_stage = str(failure.evidence.get("stage") or item.stage)
         stage_attempts = int(item.attempts.get(evidence_stage, 0))
         charged = stage_attempts + (1 if failure.charge else 0)
+        if failure.kind == "agent.launch_lost" and item.total_attempts >= failure.max_retries:
+            return PolicyDecision("quarantine", "quarantined", detail="会话拉起连续失败，已隔离")
         if failure.kind == f"unknown.{evidence_stage}" and charged > self.settings.unknown_retries:
             return PolicyDecision("quarantine", "quarantined", detail="未知失败重试已用尽")
         if failure.charge and stage_attempts >= failure.max_retries:

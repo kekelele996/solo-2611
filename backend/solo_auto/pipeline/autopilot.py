@@ -893,7 +893,7 @@ class Autopilot:
                 Evidence(
                     stage="chatgpt",
                     trace_tail=detail,
-                    context={"failure_kind": kind.replace("_", ".") if kind else "agent.reported"},
+                    context={"failure_kind": _dispatch_failure_kind(kind)},
                 ),
                 actor=ACTOR,
             )
@@ -1263,6 +1263,25 @@ class Autopilot:
 def _signal_group(process: asyncio.subprocess.Process, sig: int) -> None:
     with suppress(ProcessLookupError, PermissionError):
         os.killpg(process.pid, sig)
+
+
+def _dispatch_failure_kind(kind: str) -> str:
+    return {
+        "agent_launch_lost": "agent.launch_lost",
+        "agent_timeout": "agent.timeout",
+        "agent_reported": "agent.reported",
+        "agent_no_progress": "agent.no_progress",
+        "agent_aborted": "agent.aborted",
+        "recording_failed": "recording.failed",
+        "recording_permission": "recording.permission",
+        "recording_privacy": "recording.privacy",
+        "export_failed": "export.failed",
+        "gate_rejected": "gate.rejected",
+        "auth": "gateway.auth",
+        "environment": "docker.unavailable",
+        "run_timeout": "run.timeout",
+        "run_incomplete": "run.incomplete",
+    }.get(kind, kind or "agent.reported")
 
 
 def _parse_datetime(value: str) -> datetime | None:

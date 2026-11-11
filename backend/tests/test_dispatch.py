@@ -176,6 +176,22 @@ def test_classifier_and_backoff_policy(tmp_path: Path) -> None:
     assert 48 <= decision.delay_seconds <= 72
 
 
+def test_launch_lost_is_retried_before_quarantine(tmp_path: Path) -> None:
+    classifier = FailureClassifier(tmp_path)
+    failure = classifier.classify(
+        Evidence(
+            stage="chatgpt",
+            context={"failure_kind": "agent.launch_lost"},
+        )
+    )
+    policy = RecoveryPolicy(DispatchSettings().retry)
+    first = policy.decide(DispatchItem("task"), failure)
+    second = policy.decide(DispatchItem("task", total_attempts=2), failure)
+    assert failure.kind == "agent.launch_lost"
+    assert first.status == "backoff"
+    assert second.status == "quarantined"
+
+
 @pytest.mark.asyncio
 async def test_dispatch_api_queue_and_explain(
     fixture_factory: Any,
