@@ -7,6 +7,7 @@ PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 PYTHON="$ROOT/backend/.venv/bin/python"
 NPM=$(command -v npm || true)
 LOG_DIR="${SOLO_AUTO_HOME:-$HOME/solo-auto}/logs"
+SERVICE_PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 if [ "${1:-}" = "uninstall" ]; then
   launchctl bootout "gui/$(id -u)" "$PLIST" >/dev/null 2>&1 || true
@@ -44,6 +45,7 @@ cat >"$PLIST" <<EOF
   <dict>
     <key>SOLO_AUTO_HOME</key><string>${SOLO_AUTO_HOME:-$HOME/solo-auto}</string>
     <key>SOLO_AUTO_NPM</key><string>$NPM</string>
+    <key>PATH</key><string>$SERVICE_PATH</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
