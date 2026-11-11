@@ -26,8 +26,12 @@ const CONFIG: ConfigResponse = {
   recording: { max_seconds: 90, chrome_url: "http://127.0.0.1:3000" },
   autopilot: {
     enabled: true,
+    agent_mode: "chatgpt",
     agent_bin: "",
     agent_args: [],
+    chatgpt_folder_id: "",
+    chatgpt_push_helper: "",
+    chatgpt_timeout_seconds: 43200,
     restricted: false,
     stage_timeout_seconds: 3600,
     stage_attempts: 2,

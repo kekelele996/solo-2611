@@ -126,10 +126,19 @@ export type AutopilotJob = {
   retry_stages: string[];
   retry_options: Array<{ stage: string; label: string; available: boolean; reason: string }>;
   audit?: AuditRow | null;
+  desktop_running: boolean;
+  desktop_marker: string;
+  desktop_prompt_file: string;
+  desktop_rollout: string;
+  desktop_thread_id: string;
+  desktop_started_at: string;
+  desktop_last_progress_at: string;
 };
 
 export type AutopilotSnapshot = {
   enabled: boolean;
+  agent_mode: "chatgpt" | "cli";
+  chatgpt_available: boolean;
   paused: boolean;
   paused_by_breaker: boolean;
   breaker: {
@@ -147,6 +156,7 @@ export type AutopilotSnapshot = {
   parallel_authoring: number;
   parallel_delivering: number;
   stage_timeout_seconds: number;
+  chatgpt_timeout_seconds: number;
   jobs: AutopilotJob[];
 };
 
@@ -499,8 +509,12 @@ export type ConfigResponse = {
   recording: { max_seconds: number; chrome_url: string };
   autopilot: {
     enabled: boolean;
+    agent_mode: "chatgpt" | "cli";
     agent_bin: string;
     agent_args: string[];
+    chatgpt_folder_id: string;
+    chatgpt_push_helper: string;
+    chatgpt_timeout_seconds: number;
     restricted: boolean;
     stage_timeout_seconds: number;
     stage_attempts: number;

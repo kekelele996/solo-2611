@@ -6,6 +6,7 @@ import {
   Clock3,
   FileWarning,
   ListRestart,
+  MessageCircle,
   Play,
   RefreshCw,
   Square,
@@ -106,6 +107,10 @@ export function ProductionPage() {
       void queryClient.invalidateQueries();
     },
   });
+  const openChatGPT = useMutation({
+    mutationFn: api.openChatGPT,
+    onError: (error) => toast(errorText(error), "error"),
+  });
   const intakeAction = useMutation({
     mutationFn: (action: "pause" | "resume" | "stop") =>
       action === "pause" ? api.pauseIntake() : action === "resume" ? api.resumeIntake() : api.stopIntake(true),
@@ -124,7 +129,7 @@ export function ProductionPage() {
     const result = new Map<string, AutopilotJob[]>(COLUMNS.map((column) => [column.key, []]));
     for (const job of jobs) {
       if (job.stage === "stopped") continue;
-      const key = job.stage === "pending" ? "authoring" : job.stage;
+      const key = job.stage === "pending" || job.stage === "chatgpt" ? "authoring" : job.stage;
       result.get(key)?.push(job);
     }
     return result;
@@ -191,7 +196,9 @@ export function ProductionPage() {
 
       <div className="production-toolbar">
         <span className="mono">
-          Agent {snapshot.agent_available ? "可用" : "缺失"} · 起草并发 {snapshot.parallel_authoring} · 交付并发 {snapshot.parallel_delivering} · 阶段超时 {Math.round(snapshot.stage_timeout_seconds / 60)} 分钟
+          {snapshot.agent_mode === "chatgpt"
+            ? `ChatGPT 桌面 ${snapshot.chatgpt_available ? "可用" : "不可用"} · 显式会话 · ${Math.round(snapshot.chatgpt_timeout_seconds / 60)} 分钟无进展超时`
+            : `CLI Agent ${snapshot.agent_available ? "可用" : "缺失"} · 起草并发 ${snapshot.parallel_authoring} · 交付并发 ${snapshot.parallel_delivering}`}
         </span>
         <label>
           失败类别
@@ -247,6 +254,8 @@ export function ProductionPage() {
                       job={job}
                       onRetry={(stage) => retry.mutate({ id: job.task_id, stage })}
                       retrying={retry.isPending && retry.variables?.id === job.task_id}
+                      onOpenChatGPT={() => openChatGPT.mutate(job.task_id)}
+                      openingChatGPT={openChatGPT.isPending && openChatGPT.variables === job.task_id}
                     />
                   ))}
                   {items.length > 8 ? <div className="production-more">另有 {items.length - 8} 题</div> : null}
@@ -319,10 +328,14 @@ function JobCard({
   job,
   onRetry,
   retrying,
+  onOpenChatGPT,
+  openingChatGPT,
 }: {
   job: AutopilotJob;
   onRetry: (stage: string) => void;
   retrying: boolean;
+  onOpenChatGPT: () => void;
+  openingChatGPT: boolean;
 }) {
   const [logOpen, setLogOpen] = useState(false);
   const failed = job.stage === "failed";
@@ -345,6 +358,11 @@ function JobCard({
         {job.stage === "awaiting_audit" ? <Link to={`/audit?task=${job.task_id}`}><Badge tone="warn">去抽检</Badge></Link> : null}
         {job.audit?.verdict === "pass" ? <Badge tone="ok">抽检通过</Badge> : null}
       </div>
+      {job.desktop_running || job.desktop_rollout ? (
+        <Button size="small" variant="ghost" loading={openingChatGPT} onClick={onOpenChatGPT}>
+          <MessageCircle size={12} /> 打开 ChatGPT 会话
+        </Button>
+      ) : null}
       {job.log ? (
         <button type="button" className="production-log-toggle" onClick={() => setLogOpen((open) => !open)}>
           <Terminal size={12} /> {logOpen ? "收起实时日志" : "展开实时日志"}

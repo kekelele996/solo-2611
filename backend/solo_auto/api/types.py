@@ -150,8 +150,12 @@ class BreakerConfigPatch(BaseModel):
 
 class AutopilotConfigPatch(BaseModel):
     enabled: bool | None = None
+    agent_mode: Literal["chatgpt", "cli"] | None = None
     agent_bin: str | None = None
     agent_args: list[str] | None = None
+    chatgpt_folder_id: str | None = None
+    chatgpt_push_helper: str | None = None
+    chatgpt_timeout_seconds: int | None = None
     restricted: bool | None = None
     stage_timeout_seconds: int | None = None
     stage_attempts: int | None = None

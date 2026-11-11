@@ -357,6 +357,11 @@ export const api = {
     request<{ task_id: string; stage: string; file: string; lines: Array<{ kind: string; text: string }> }>(
       `/api/autopilot/${encodeURIComponent(id)}/log${qs({ stage })}`,
     ),
+  openChatGPT: (id: string) =>
+    request<{ ok: boolean; thread_id: string; target: string }>(
+      `/api/autopilot/${encodeURIComponent(id)}/chatgpt/open`,
+      { method: "POST" },
+    ),
   recordTerminal: (id: string) =>
     request<{ ok: boolean; window_id: number; title: string }>(
       `/api/tasks/${encodeURIComponent(id)}/record/terminal`,

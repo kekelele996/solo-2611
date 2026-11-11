@@ -170,6 +170,22 @@ async def get_config(ctx: AppContext = Depends(context)) -> dict[str, Any]:
 @router.patch("/system/config")
 async def patch_config(payload: ConfigPatchRequest, ctx: AppContext = Depends(context)) -> dict[str, Any]:
     payload_data = payload.model_dump(exclude_none=True)
+    autopilot_mode = (payload_data.get("autopilot") or {}).get("agent_mode") if isinstance(
+        payload_data.get("autopilot"), dict
+    ) else None
+    if autopilot_mode and autopilot_mode != ctx.settings.autopilot.agent_mode:
+        busy = [
+            job.task_id
+            for job in ctx.autopilot.jobs.values()
+            if job.active and (job.desktop_running or job.task_id in ctx.autopilot.agents)
+        ]
+        if busy:
+            raise ApiError(
+                409,
+                "AUTOPILOT_ACTIVE",
+                "执行方式切换前必须先停止当前运行中的 Agent",
+                detail={"task_ids": busy},
+            )
     allowed_top = {"host", "port", "skill_root", "tasks_dir"}
     groups = {
         "source",

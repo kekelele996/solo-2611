@@ -9,7 +9,7 @@ from typing import Any
 from solo_auto.errors import ApiError
 from solo_auto.settings import Paths
 
-STAGES = ("authoring", "delivering")
+STAGES = ("authoring", "delivering", "chatgpt")
 BANNED_LINES = (
     "跳过门禁",
     "绕过门禁",
@@ -60,6 +60,29 @@ AUTOPILOT: FAILED <一句话原因>
 不伪造任何证据文件。门禁确实过不去时如实报告失败。
 全部结束后，最后一行只输出下面两种之一：
 AUTOPILOT: OK
+AUTOPILOT: FAILED <一句话原因>
+{notes}""",
+    "chatgpt": """使用 `$solo-2611`，在当前 ChatGPT 桌面会话中完成下面这道题，直到平台要求的前 10 项交付门禁全部通过。
+先完整阅读 {skill_root}/SKILL.md 及对应 references。任务目录 ROOT={root}，脚本 S={script}。
+
+本次由 solo-auto 生产线明确投递到 ChatGPT 桌面端，不是后台 CLI。必须让工作过程和证据真实发生，禁止只回复计划或总结。
+
+执行顺序：
+1. 先运行 python3 $S status --task-root ROOT，读取磁盘现状；已完成的步骤不得重复破坏。
+2. 题面尚未通过时完成出题、两份审核、prompt 安装与 repo 初始快照，直到前 3 项通过。
+3. 执行 python3 $S run --task-root ROOT，真实运行单轮容器并收集原生产物、SessionID、PromptID、轨迹与产物快照。
+4. 按技能规则复核产物。随后生成 record-plan，执行 python3 $S record auto --task-root ROOT 完成 720p 录屏和隐私门禁。
+5. 执行 feedback --init，依据轨迹和真实产物起草 Feedback，运行 feedback --check，修正到机器检查通过。
+6. 再次运行 status，确认第 1 到第 10 项全部通过。不要执行 export，最终自动确认和导出由平台完成。
+
+边界：
+- 不修改技能目录或平台文件，不使用强制通过、允许缺项或绕过门禁的参数。
+- 不伪造轨迹、截图、录屏、Feedback、分数或命令输出。
+- 遇到可恢复错误时按技能规则修正后继续；真实失败时保留证据并停止。
+- 所有结论必须能回查到轨迹或亲手执行的结果。
+最后一行只输出：
+AUTOPILOT: OK
+或
 AUTOPILOT: FAILED <一句话原因>
 {notes}""",
 }

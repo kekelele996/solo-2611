@@ -85,8 +85,12 @@ class AutopilotSettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     enabled: bool = True
+    agent_mode: Literal["chatgpt", "cli"] = "chatgpt"
     agent_bin: str = ""
     agent_args: list[str] = Field(default_factory=list)
+    chatgpt_folder_id: str = ""
+    chatgpt_push_helper: str = ""
+    chatgpt_timeout_seconds: int = Field(default=12 * 60 * 60, ge=300)
     restricted: bool = False
     stage_timeout_seconds: int = Field(default=3600, ge=60)
     stage_attempts: int = Field(default=2, ge=1, le=10)

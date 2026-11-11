@@ -3623,6 +3623,46 @@
         }
       }
     },
+    "/api/autopilot/{task_id}/chatgpt/open": {
+      "post": {
+        "summary": "Open Chatgpt",
+        "operationId": "open_chatgpt_api_autopilot__task_id__chatgpt_open_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Open Chatgpt Api Autopilot  Task Id  Chatgpt Open Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/autopilot/{task_id}/log": {
       "get": {
         "summary": "Log",
@@ -4709,6 +4749,21 @@
             ],
             "title": "Enabled"
           },
+          "agent_mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "chatgpt",
+                  "cli"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Mode"
+          },
           "agent_bin": {
             "anyOf": [
               {
@@ -4733,6 +4788,39 @@
               }
             ],
             "title": "Agent Args"
+          },
+          "chatgpt_folder_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chatgpt Folder Id"
+          },
+          "chatgpt_push_helper": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chatgpt Push Helper"
+          },
+          "chatgpt_timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chatgpt Timeout Seconds"
           },
           "restricted": {
             "anyOf": [

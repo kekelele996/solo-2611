@@ -117,6 +117,8 @@ async def test_audit_redo_feedback_returns_to_agent_before_reack(
     ack = roots["exported"] / "monitor" / "review-ack.json"
     ctx.audits.settings.mode = "all"
     ctx.audits.assess(task_id)
+    ctx.settings.autopilot.agent_mode = "cli"
+    ctx.autopilot.apply_settings(ctx.settings.autopilot)
     agent = tmp_path / "rewrite_agent.py"
     agent.write_text(
         "import json\n"
@@ -475,5 +477,47 @@ async def test_janitor_slims_only_clean_exported_workspace(
         assert removed and not (workspace / "node_modules").exists()
         assert (workspace / "app.py").is_file()
         assert (root / "delivery" / "交付表.xlsx").is_file()
+    finally:
+        await ctx.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_mode_launches_a_visible_desktop_session(
+    fixture_factory: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, roots = await _app(tmp_path, monkeypatch, fixture_factory, ("prompt-only",))
+    ctx = app.state.context
+    task_id = ctx.repo.get_task_by_root(roots["prompt-only"])["id"]
+    ctx.settings.autopilot.agent_mode = "chatgpt"
+    ctx.autopilot.apply_settings(ctx.settings.autopilot)
+    launched: dict[str, Any] = {}
+
+    def fake_launch(**kwargs: Any) -> dict[str, Any]:
+        launched.update(kwargs)
+        prompt = tmp_path / "chatgpt-prompt.md"
+        prompt.write_text(str(kwargs["prompt"]), encoding="utf-8")
+        return {
+            "marker": f"solo-auto-chatgpt:{task_id}:test",
+            "prompt_path": str(prompt),
+            "deep_link": "codex://threads/new?path=test&mode=work&prompt=test",
+            "opened_with": "test-helper",
+            "started_at": "2026-11-11T17:00:00+08:00",
+        }
+
+    ctx.autopilot.desktop.available = lambda: True  # type: ignore[method-assign]
+    ctx.autopilot.desktop.launch = fake_launch  # type: ignore[method-assign]
+    try:
+        await ctx.autopilot.enroll([task_id])
+        await ctx.autopilot.tick()
+        job = ctx.autopilot.jobs[task_id]
+        assert job.stage == "chatgpt"
+        assert job.desktop_running is True
+        assert job.desktop_marker.startswith(f"solo-auto-chatgpt:{task_id}:")
+        assert launched["task_root"] == roots["prompt-only"]
+        assert "ChatGPT 桌面会话" in str(launched["prompt"])
+        assert not ctx.autopilot.agents
+        await ctx.autopilot.cancel([task_id], kill_containers=False)
     finally:
         await ctx.shutdown()

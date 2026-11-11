@@ -1406,6 +1406,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/autopilot/{task_id}/chatgpt/open": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Open Chatgpt */
+        post: operations["open_chatgpt_api_autopilot__task_id__chatgpt_open_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/autopilot/{task_id}/log": {
         parameters: {
             query?: never;
@@ -1821,10 +1838,18 @@ export interface components {
         AutopilotConfigPatch: {
             /** Enabled */
             enabled?: boolean | null;
+            /** Agent Mode */
+            agent_mode?: ("chatgpt" | "cli") | null;
             /** Agent Bin */
             agent_bin?: string | null;
             /** Agent Args */
             agent_args?: string[] | null;
+            /** Chatgpt Folder Id */
+            chatgpt_folder_id?: string | null;
+            /** Chatgpt Push Helper */
+            chatgpt_push_helper?: string | null;
+            /** Chatgpt Timeout Seconds */
+            chatgpt_timeout_seconds?: number | null;
             /** Restricted */
             restricted?: boolean | null;
             /** Stage Timeout Seconds */
@@ -4937,6 +4962,37 @@ export interface operations {
         };
     };
     stages_api_autopilot__task_id__stages_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    open_chatgpt_api_autopilot__task_id__chatgpt_open_post: {
         parameters: {
             query?: never;
             header?: never;

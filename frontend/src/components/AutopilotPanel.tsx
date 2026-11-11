@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ScrollText, Square } from "lucide-react";
+import { MessageCircle, ScrollText, Square } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -10,7 +10,12 @@ import { useToast } from "./toast-context";
 import { Button, EmptyState, Modal, Panel, StatusDot } from "./ui";
 
 const STAGE_STATE: Record<string, string> = { done: "exported", failed: "blocked", stopped: "archived" };
-const ATTEMPT_LABELS: Record<string, string> = { authoring: "出题", running: "运行", delivering: "交付" };
+const ATTEMPT_LABELS: Record<string, string> = {
+  chatgpt: "ChatGPT",
+  authoring: "出题",
+  running: "运行",
+  delivering: "交付",
+};
 
 /** 自动交付的监看面板：每题走到哪一步、Agent 在干什么，随时能停。没有任务时不占位。 */
 export function AutopilotPanel() {
@@ -24,6 +29,10 @@ export function AutopilotPanel() {
       toast(result.stopped.length ? `已停止 ${result.stopped.length} 题的自动交付` : "没有进行中的自动交付", "info");
       void queryClient.invalidateQueries();
     },
+    onError: (error) => toast(errorText(error), "error"),
+  });
+  const openChatGPT = useMutation({
+    mutationFn: api.openChatGPT,
     onError: (error) => toast(errorText(error), "error"),
   });
   const jobs = pilot.data?.jobs ?? [];
@@ -64,6 +73,16 @@ export function AutopilotPanel() {
             <Button size="small" variant="ghost" disabled={!job.log} onClick={() => setLogFor(job)}>
               <ScrollText size={12} /> Agent 日志
             </Button>
+            {job.desktop_running || job.desktop_rollout ? (
+              <Button
+                size="small"
+                variant="ghost"
+                loading={openChatGPT.isPending && openChatGPT.variables === job.task_id}
+                onClick={() => openChatGPT.mutate(job.task_id)}
+              >
+                <MessageCircle size={12} /> ChatGPT
+              </Button>
+            ) : null}
             {job.active ? (
               <Button size="small" variant="ghost" onClick={() => stop.mutate([job.task_id])}>
                 停止

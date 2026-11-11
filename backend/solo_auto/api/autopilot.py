@@ -67,6 +67,11 @@ async def stages(task_id: str, ctx: AppContext = Depends(context)) -> dict[str, 
     return {"items": ctx.autopilot.stages(task_id)}
 
 
+@router.post("/{task_id}/chatgpt/open")
+async def open_chatgpt(task_id: str, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    return await ctx.autopilot.open_chatgpt(task_id)
+
+
 @router.get("/{task_id}/log")
 async def log(
     task_id: str,

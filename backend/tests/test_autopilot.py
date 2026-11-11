@@ -34,6 +34,8 @@ async def _app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fixture_factory:
 
     monkeypatch.setattr(SkillGateway, "version", fake_version)
     app = create_app(tmp_path / "app", auto_start=False)
+    app.state.context.settings.autopilot.agent_mode = "cli"
+    app.state.context.autopilot.apply_settings(app.state.context.settings.autopilot)
 
     async def fake_preflight() -> dict[str, Any]:
         return {"ok": True, "items": [], "checked_at": "2026-11-11T00:00:00+08:00"}

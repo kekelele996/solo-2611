@@ -193,7 +193,12 @@ class AuditService:
                 if job:
                     job.redo_feedback = True
                     job.reconfirm_required = True
-                await self.autopilot.retry(task_id, from_stage="delivering")
+                await self.autopilot.retry(
+                    task_id,
+                    from_stage="chatgpt"
+                    if self.autopilot.settings.agent_mode == "chatgpt"
+                    else "delivering",
+                )
         elif verdict == "reject" and disposition == "void":
             self.repo.set_job_status(task_id, "aborted", notes=f"抽检打回作废：{reason}")
             if self.autopilot and self.autopilot.ledger:

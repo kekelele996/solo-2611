@@ -25,6 +25,15 @@ from solo_auto.events.bus import EventBus
 from solo_auto.gateway.skill import SkillGateway
 from solo_auto.pipeline.agent_stream import AgentLogStreamer, read_log, usage
 from solo_auto.pipeline.breaker import Breaker
+from solo_auto.pipeline.desktop_chatgpt import (
+    ChatGPTDesktop,
+    latest_activity,
+    read_rollout,
+    rollout_delta,
+    rollout_last_assistant,
+    rollout_terminal,
+    thread_id_from_rollout,
+)
 from solo_auto.pipeline.export_service import ExportService
 from solo_auto.pipeline.feedback_service import FeedbackService
 from solo_auto.pipeline.notify import Notifier
@@ -39,10 +48,11 @@ from solo_auto.store.state import load_state
 LOGGER = logging.getLogger(__name__)
 
 ACTOR = "autopilot"
-ACTIVE_STAGES = ("pending", "authoring", "running", "delivering", "exporting")
+ACTIVE_STAGES = ("pending", "chatgpt", "authoring", "running", "delivering", "exporting")
 AGENT_STAGES = ("authoring", "delivering")
 STAGE_LABELS = {
     "pending": "等待调度",
+    "chatgpt": "ChatGPT 桌面全流程",
     "authoring": "Agent 出题",
     "running": "容器单轮执行",
     "delivering": "Agent 复核、录屏与 Feedback",
@@ -89,6 +99,16 @@ class Job:
     redo_feedback: bool = False
     reconfirm_required: bool = False
     agent_pid: int = 0
+    desktop_running: bool = False
+    desktop_marker: str = ""
+    desktop_prompt_file: str = ""
+    desktop_workdir: str = ""
+    desktop_deep_link: str = ""
+    desktop_rollout: str = ""
+    desktop_thread_id: str = ""
+    desktop_started_at: str = ""
+    desktop_last_progress_at: str = ""
+    desktop_stage_id: int = 0
 
     @property
     def active(self) -> bool:
@@ -131,6 +151,7 @@ class Autopilot:
         self.exports = exports
         self.gateway = gateway
         self.settings = settings
+        self.desktop = ChatGPTDesktop(home=paths.home, helper=settings.chatgpt_push_helper)
         self.breaker = Breaker(paths.home / "breaker.json", bus, settings)
         self.prompt_templates = PromptTemplates(paths)
         self.notifier: Notifier | None = None
@@ -143,6 +164,8 @@ class Autopilot:
         self.log_root = paths.logs / "autopilot"
         self.jobs: dict[str, Job] = {}
         self.agents: dict[str, AgentRun] = {}
+        self.desktop_followers: dict[str, asyncio.Task[None]] = {}
+        self.desktop_terminal_seen: set[str] = set()
         self._loop_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
         self.paused = False
@@ -154,6 +177,7 @@ class Autopilot:
         self.agent_timeout_seconds = settings.stage_timeout_seconds
         self.stage_attempts = settings.stage_attempts
         self.run_attempts = settings.run_attempts
+        self.desktop = ChatGPTDesktop(home=self.paths.home, helper=settings.chatgpt_push_helper)
         self.parallel = {
             "authoring": settings.parallel_authoring,
             "delivering": settings.parallel_delivering,
@@ -197,6 +221,10 @@ class Autopilot:
             self._loop_task = None
         for task_id in list(self.agents):
             await self._kill_agent(task_id)
+        for task in list(self.desktop_followers.values()):
+            task.cancel()
+        await asyncio.gather(*self.desktop_followers.values(), return_exceptions=True)
+        self.desktop_followers.clear()
 
     async def _loop(self) -> None:
         while True:
@@ -212,16 +240,21 @@ class Autopilot:
         jobs = sorted(self.jobs.values(), key=lambda job: job.started_at, reverse=True)
         return {
             "enabled": self.settings.enabled,
+            "agent_mode": self.settings.agent_mode,
+            "chatgpt_available": self.desktop.available(),
             "paused": self.paused or self.breaker.tripped,
             "paused_by_breaker": self.breaker.tripped,
             "breaker": self.breaker.state,
             "agent_command": self.agent_command[0],
-            "agent_available": bool(shutil.which(self.agent_command[0])),
-            "agents_running": len(self.agents),
+            "agent_available": self.desktop.available()
+            if self.settings.agent_mode == "chatgpt"
+            else bool(shutil.which(self.agent_command[0])),
+            "agents_running": len(self.agents) + sum(job.desktop_running for job in jobs),
             "active": sum(1 for job in jobs if job.active),
             "parallel_authoring": self.settings.parallel_authoring,
             "parallel_delivering": self.settings.parallel_delivering,
             "stage_timeout_seconds": self.settings.stage_timeout_seconds,
+            "chatgpt_timeout_seconds": self.settings.chatgpt_timeout_seconds,
             "jobs": [self._job_view(job) for job in jobs],
         }
 
@@ -234,7 +267,10 @@ class Autopilot:
             raise ApiError(409, "AUTOPILOT_DISABLED", "自动交付总开关已关闭")
         if self.breaker.tripped:
             raise ApiError(409, "AUTOPILOT_BREAKER_OPEN", "自动交付已熔断，请先恢复")
-        if not shutil.which(self.agent_command[0]):
+        if self.settings.agent_mode == "chatgpt":
+            if not self.desktop.available():
+                raise ApiError(409, "CHATGPT_APP_MISSING", "找不到 ChatGPT.app 或桌面深链接辅助程序")
+        elif not shutil.which(self.agent_command[0]):
             raise ApiError(
                 409,
                 "AGENT_NOT_FOUND",
@@ -273,6 +309,9 @@ class Autopilot:
             if not job or not job.active:
                 continue
             await self._kill_agent(task_id)
+            await self._stop_desktop_follower(task_id)
+            desktop_stopped = job.desktop_running
+            job.desktop_running = False
             cleanup_detail = ""
             if should_kill:
                 task = self.repo.get_task(task_id)
@@ -290,7 +329,8 @@ class Autopilot:
                         if cleanup.code == 0
                         else f"；容器清理失败：{cleanup.err.strip() or cleanup.code}"
                     )
-            self._finish(job, "stopped", "已手动停止" + cleanup_detail)
+            chatgpt_detail = "；平台已停止跟踪，但已打开的 ChatGPT 会话可能需要你手动停止" if desktop_stopped else ""
+            self._finish(job, "stopped", "已手动停止" + cleanup_detail + chatgpt_detail)
             stopped.append(task_id)
         self._changed()
         return {"stopped": stopped, **self.snapshot()}
@@ -329,7 +369,7 @@ class Autopilot:
         if not target:
             raise ApiError(409, "AUTOPILOT_NO_RETRY_STAGE", "磁盘事实不允许从任何阶段续跑")
         remove = False
-        order = ["authoring", "running", "delivering", "exporting"]
+        order = ["chatgpt", "authoring", "running", "delivering", "exporting"]
         for stage in order:
             if stage == target:
                 remove = True
@@ -357,7 +397,7 @@ class Autopilot:
         job = self.jobs.get(task_id)
         if not job:
             raise ApiError(404, "AUTOPILOT_JOB_NOT_FOUND", "该任务没有自动交付记录")
-        path: Path | None = None
+        path: Path | None = Path(job.desktop_rollout) if job.desktop_rollout else None
         if stage:
             row = next(
                 (item for item in self.repo.autopilot_stages(task_id) if item.get("stage") == stage),
@@ -367,8 +407,35 @@ class Autopilot:
                 path = Path(str(row["log_path"]))
         if path is None and job.log:
             path = Path(job.log)
-        lines = read_log(path, limit) if path and path.is_file() else []
+        if self.settings.agent_mode == "chatgpt" and path and path.is_file() and path.name.startswith("rollout-"):
+            lines = read_rollout(path, limit)
+        else:
+            lines = read_log(path, limit) if path and path.is_file() else []
         return {"task_id": task_id, "stage": stage or job.stage, "file": str(path or ""), "lines": lines}
+
+    async def open_chatgpt(self, task_id: str) -> dict[str, Any]:
+        job = self.jobs.get(task_id)
+        if not job:
+            raise ApiError(404, "AUTOPILOT_JOB_NOT_FOUND", "该任务没有自动交付记录")
+        target = f"codex://threads/{job.desktop_thread_id}" if job.desktop_thread_id else "-a"
+        command = ["open", "-a", "ChatGPT"] if target == "-a" else ["open", target]
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await process.communicate()
+        if process.returncode != 0:
+            raise ApiError(
+                500,
+                "CHATGPT_OPEN_FAILED",
+                stderr.decode("utf-8", errors="replace").strip() or "打开 ChatGPT 会话失败",
+            )
+        return {
+            "ok": True,
+            "thread_id": job.desktop_thread_id,
+            "target": target,
+        }
 
     # ---- state machine ---------------------------------------------
 
@@ -395,6 +462,9 @@ class Autopilot:
             self._finish(job, "failed", "任务已不存在")
             return
         root = Path(task["task_root"])
+        if self.settings.agent_mode == "chatgpt":
+            await self._advance_chatgpt(job, task, root)
+            return
         envelope = load_state(root)
         if not envelope.compatible or envelope.state is None:
             self._finish(job, "failed", envelope.error or "任务状态不可读")
@@ -483,6 +553,255 @@ class Autopilot:
             return data if isinstance(data, dict) else {}
         except (OSError, json.JSONDecodeError):
             return {}
+
+    # ---- ChatGPT desktop executor ----------------------------------
+
+    async def _advance_chatgpt(self, job: Job, task: dict[str, Any], root: Path) -> None:
+        envelope = load_state(root)
+        if not envelope.compatible or envelope.state is None:
+            self._finish(job, "failed", envelope.error or "任务状态不可读")
+            return
+        facts = evaluate_steps(
+            root,
+            duplicate_sessions=self.repo.session_counts(),
+            require_review_ack=False,
+        )
+        final = evaluate_steps(root, duplicate_sessions=self.repo.session_counts())
+        if job.desktop_running:
+            if not job.desktop_workdir:
+                job.desktop_workdir = str(root)
+            self._ensure_desktop_follower(job)
+            progress_paths = [
+                root / "monitor" / "state.json",
+                root / "monitor" / "feedback-check.json",
+                root / "delivery" / "feedback.md",
+                root / "recording",
+                root / "delivery",
+            ]
+            if job.desktop_rollout:
+                progress_paths.append(Path(job.desktop_rollout))
+            progress = latest_activity(progress_paths)
+            if progress:
+                previous = _parse_datetime(job.desktop_last_progress_at)
+                if previous is None or progress > previous:
+                    job.desktop_last_progress_at = progress.replace(microsecond=0).isoformat()
+                    job.updated_at = _now()
+                    self._changed()
+            rollout = Path(job.desktop_rollout) if job.desktop_rollout else None
+            terminal = rollout_terminal(rollout) if rollout and rollout.is_file() else ""
+            if all(step.ok for step in facts.steps[:10]):
+                await self._finish_desktop_stage(job, outcome="ok", detail="ChatGPT 桌面会话完成前 10 项")
+                await self._export_chatgpt(job, task, root)
+                return
+            if terminal in {"turn_aborted", "stream_error", "error", "task_complete"}:
+                if terminal == "task_complete" and job.task_id not in self.desktop_terminal_seen:
+                    self.desktop_terminal_seen.add(job.task_id)
+                    self._stage(job, "chatgpt", "ChatGPT 回合已结束，等待磁盘门禁稳定")
+                    return
+                final_text = rollout_last_assistant(rollout) if rollout and rollout.is_file() else ""
+                kind = "agent_reported" if terminal == "task_complete" else self._failure_kind("chatgpt", final_text, 1)
+                detail = final_text or f"ChatGPT 会话终止：{terminal}"
+                await self._finish_desktop_stage(job, outcome="failed", kind=kind, detail=detail)
+                self._finish(job, "failed", f"ChatGPT 会话未完成前 10 项：{detail[:300]}")
+                return
+            started = _parse_datetime(job.desktop_started_at) or _parse_datetime(job.stage_started_at)
+            last_progress = _parse_datetime(job.desktop_last_progress_at) or started
+            now = datetime.now().astimezone()
+            if last_progress and (now - last_progress).total_seconds() >= self.settings.chatgpt_timeout_seconds:
+                detail = f"ChatGPT 会话超过 {self.settings.chatgpt_timeout_seconds // 3600} 小时无进展"
+                await self._finish_desktop_stage(
+                    job,
+                    outcome="failed",
+                    kind="agent_timeout",
+                    detail=detail,
+                )
+                self._finish(job, "failed", detail + "；已打开的 ChatGPT 会话可能仍需手动停止")
+                return
+            elapsed = int((now - started).total_seconds()) if started else 0
+            self._stage(job, "chatgpt", f"ChatGPT 桌面会话运行中（{elapsed // 60} 分钟）")
+            return
+        if final.complete and not job.reconfirm_required:
+            await self._complete_or_audit(job, task, root)
+            return
+        if all(step.ok for step in facts.steps[:10]):
+            await self._export_chatgpt(job, task, root)
+            return
+        await self._launch_chatgpt(job, root, facts.missing)
+
+    async def _launch_chatgpt(self, job: Job, root: Path, missing: list[str]) -> None:
+        used = job.attempts.get("chatgpt", 0)
+        if used >= self.stage_attempts:
+            self._finish(job, "failed", f"ChatGPT 桌面交付已尝试 {used} 次仍未通过")
+            return
+        job.attempts["chatgpt"] = used + 1
+        prompt = self.prompt_templates.render(
+            "chatgpt",
+            root=root,
+            skill_root=self.skill_root,
+            missing=missing,
+            previous=job.detail,
+        )
+        stage_id = self.repo.start_autopilot_stage(
+            task_id=job.task_id,
+            stage="chatgpt",
+            attempt=job.attempts["chatgpt"],
+            log_path="",
+        )
+        launched = await asyncio.to_thread(
+            self.desktop.launch,
+            task_id=job.task_id,
+            task_name=job.task_name,
+            task_root=root,
+            prompt=prompt,
+            folder_id=self.settings.chatgpt_folder_id,
+        )
+        job.desktop_running = True
+        job.desktop_marker = str(launched["marker"])
+        job.desktop_prompt_file = str(launched["prompt_path"])
+        job.desktop_workdir = str(root)
+        job.desktop_deep_link = str(launched["deep_link"])
+        job.desktop_started_at = str(launched["started_at"])
+        job.desktop_last_progress_at = str(launched["started_at"])
+        job.desktop_rollout = ""
+        job.desktop_thread_id = ""
+        job.desktop_stage_id = stage_id
+        self.desktop_terminal_seen.discard(job.task_id)
+        job.log = job.desktop_prompt_file
+        self._stage(job, "chatgpt", "已打开 ChatGPT 桌面会话，等待执行")
+        self.repo.add_event(
+            "autopilot.chatgpt.started",
+            "已在 ChatGPT 桌面端创建会话并提交任务",
+            actor=ACTOR,
+            task_id=job.task_id,
+            details={
+                "prompt": job.desktop_prompt_file,
+                "opened_with": launched["opened_with"],
+                "attempt": job.attempts["chatgpt"],
+            },
+        )
+        self._ensure_desktop_follower(job)
+
+    def _ensure_desktop_follower(self, job: Job) -> None:
+        if not job.desktop_running or not job.desktop_marker or job.task_id in self.desktop_followers:
+            return
+        started = _parse_datetime(job.desktop_started_at)
+        if started is None:
+            started = datetime.now().astimezone()
+        self.desktop_followers[job.task_id] = asyncio.create_task(
+            self._follow_chatgpt_rollout(job.task_id, job.desktop_marker, started)
+        )
+
+    async def _follow_chatgpt_rollout(self, task_id: str, marker: str, started: datetime) -> None:
+        offset = 0
+        announced = False
+        try:
+            while True:
+                job = self.jobs.get(task_id)
+                if not job or not job.desktop_running:
+                    return
+                path = Path(job.desktop_rollout) if job.desktop_rollout else None
+                if path is None:
+                    workdir = Path(job.desktop_workdir) if job.desktop_workdir else Path()
+                    path = await asyncio.to_thread(
+                        self.desktop.find_rollout,
+                        marker,
+                        started_at=started,
+                        workdir=workdir,
+                    )
+                    if path is not None:
+                        job.desktop_rollout = str(path)
+                        job.desktop_thread_id = thread_id_from_rollout(path)
+                        job.log = str(path)
+                        self._changed()
+                if path and path.is_file():
+                    frames, offset = rollout_delta(path, offset)
+                    if frames:
+                        self.bus.publish(
+                            "autopilot.log",
+                            {"task_id": task_id, "stage": "chatgpt", "frames": frames},
+                        )
+                    if not announced:
+                        announced = True
+                        self.repo.add_event(
+                            "autopilot.chatgpt.attached",
+                            "已连接到 ChatGPT 桌面会话轨迹",
+                            actor=ACTOR,
+                            task_id=task_id,
+                            details={"rollout": str(path), "thread_id": job.desktop_thread_id},
+                        )
+                await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception("ChatGPT rollout follower failed: %s", task_id)
+        finally:
+            self.desktop_followers.pop(task_id, None)
+
+    async def _finish_desktop_stage(
+        self,
+        job: Job,
+        *,
+        outcome: str,
+        kind: str = "",
+        detail: str = "",
+    ) -> None:
+        if job.desktop_stage_id:
+            self.repo.finish_autopilot_stage(
+                job.desktop_stage_id,
+                outcome=outcome,
+                failure_kind=kind,
+                failure_detail=detail,
+            )
+        job.desktop_running = False
+        job.desktop_stage_id = 0
+        job.agent_pid = 0
+        self.desktop_terminal_seen.discard(job.task_id)
+        if outcome == "ok":
+            self.breaker.record_success()
+        await self._stop_desktop_follower(job.task_id)
+        self.repo.add_event(
+            f"autopilot.chatgpt.{outcome}",
+            "ChatGPT 桌面会话完成" if outcome == "ok" else f"ChatGPT 桌面会话失败：{detail[:300]}",
+            level="info" if outcome == "ok" else "warn",
+            actor=ACTOR,
+            task_id=job.task_id,
+            details={"rollout": job.desktop_rollout, "thread_id": job.desktop_thread_id},
+        )
+        self._changed()
+
+    async def _stop_desktop_follower(self, task_id: str) -> None:
+        task = self.desktop_followers.pop(task_id, None)
+        if task and task is not asyncio.current_task():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _export_chatgpt(self, job: Job, task: dict[str, Any], root: Path) -> None:
+        with suppress(Exception):
+            await self.reconciler.run()
+        facts = evaluate_steps(
+            root,
+            duplicate_sessions=self.repo.session_counts(),
+            require_review_ack=False,
+        )
+        if not all(step.ok for step in facts.steps[:10]):
+            await self._launch_chatgpt(job, root, facts.missing)
+            return
+        self._stage(job, "exporting", "ChatGPT 已通过前 10 项，平台检查并导出")
+        check = await self.feedback.check(job.task_id)
+        if not check["ok"]:
+            await self._launch_chatgpt(
+                job,
+                root,
+                [str(item) for item in check["errors"]] or ["Feedback 检查未通过"],
+            )
+            return
+        self.feedback.ack(job.task_id, acked=True, actor=ACTOR)
+        result = await self.exports.export(task_ids=[job.task_id])
+        if evaluate_steps(root, duplicate_sessions=self.repo.session_counts()).complete:
+            await self._complete_or_audit(job, task, root)
+            return
+        reasons = [str(reason) for item in result.get("skipped") or [] for reason in item.get("reason") or []]
+        self._finish(job, "failed", "导出被拒绝：" + ("；".join(reasons[:3]) or "原因未知"))
 
     # ---- agent runner ----------------------------------------------
 
@@ -695,7 +1014,7 @@ class Autopilot:
             **asdict(job),
             "stage_label": STAGE_LABELS.get(job.stage, job.stage),
             "active": job.active,
-            "agent_running": job.task_id in self.agents,
+            "agent_running": job.task_id in self.agents or job.desktop_running,
             "elapsed_seconds": round(elapsed, 1),
             "stages": self.repo.autopilot_stages(job.task_id),
             "retry_stages": self._retry_stages(job),
@@ -712,6 +1031,8 @@ class Autopilot:
         }
 
     def _retry_stages(self, job: Job) -> list[str]:
+        if self.settings.agent_mode == "chatgpt":
+            return ["chatgpt"] if not self._retry_reason(job, "chatgpt") else []
         return [
             stage
             for stage in ("authoring", "running", "delivering", "exporting")
@@ -725,6 +1046,8 @@ class Autopilot:
         envelope = load_state(Path(task["task_root"]))
         if envelope.state is None:
             return envelope.error or "任务状态不可读"
+        if stage == "chatgpt":
+            return ""
         state = envelope.state
         if stage == "authoring" and state.session is not None:
             return "已有会话，不能重写题面"
@@ -774,6 +1097,14 @@ class Autopilot:
 def _signal_group(process: asyncio.subprocess.Process, sig: int) -> None:
     with suppress(ProcessLookupError, PermissionError):
         os.killpg(process.pid, sig)
+
+
+def _parse_datetime(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.astimezone()
 
 
 def _events(path: Path) -> list[dict[str, Any]]:

@@ -348,22 +348,71 @@ export function SystemPage() {
             />
             启用自动交付总开关 <span className="effect-tag">下次任务</span>
           </label>
-          <Field label="Agent 可执行文件" hint="留空时自动探测 codex">
-            <input
-              value={form.autopilot.agent_bin}
-              onChange={(event) => update({ ...form, autopilot: { ...form.autopilot, agent_bin: event.target.value } })}
-              placeholder="codex"
-            />
-          </Field>
-          <Field label="附加参数" hint="按空格拆分">
-            <input
-              value={form.autopilot.agent_args.join(" ")}
+          <Field label="执行方式" hint="ChatGPT 模式会在桌面端明确打开一条新会话">
+            <select
+              value={form.autopilot.agent_mode}
               onChange={(event) => update({
                 ...form,
-                autopilot: { ...form.autopilot, agent_args: event.target.value.split(/\s+/).filter(Boolean) },
+                autopilot: { ...form.autopilot, agent_mode: event.target.value as "chatgpt" | "cli" },
               })}
-            />
+            >
+              <option value="chatgpt">ChatGPT 桌面会话（可见）</option>
+              <option value="cli">无界面 Codex CLI</option>
+            </select>
           </Field>
+          {form.autopilot.agent_mode === "chatgpt" ? (
+            <>
+              <Field label="ChatGPT 文件夹 ID" hint="可留空；填写后新会话落到指定文件夹">
+                <input
+                  value={form.autopilot.chatgpt_folder_id}
+                  onChange={(event) => update({
+                    ...form,
+                    autopilot: { ...form.autopilot, chatgpt_folder_id: event.target.value },
+                  })}
+                  placeholder="projects.id，可留空"
+                />
+              </Field>
+              <Field label="CodexQueuePush 路径" hint="留空自动探测；用于把长提示词准确送入 ChatGPT">
+                <input
+                  value={form.autopilot.chatgpt_push_helper}
+                  onChange={(event) => update({
+                    ...form,
+                    autopilot: { ...form.autopilot, chatgpt_push_helper: event.target.value },
+                  })}
+                />
+              </Field>
+              <Field label="无进展超时（秒）">
+                <input
+                  type="number"
+                  min={300}
+                  value={form.autopilot.chatgpt_timeout_seconds}
+                  onChange={(event) => update({
+                    ...form,
+                    autopilot: { ...form.autopilot, chatgpt_timeout_seconds: Number(event.target.value) },
+                  })}
+                />
+              </Field>
+            </>
+          ) : (
+            <>
+              <Field label="Agent 可执行文件" hint="留空时自动探测 codex">
+                <input
+                  value={form.autopilot.agent_bin}
+                  onChange={(event) => update({ ...form, autopilot: { ...form.autopilot, agent_bin: event.target.value } })}
+                  placeholder="codex"
+                />
+              </Field>
+              <Field label="附加参数" hint="按空格拆分">
+                <input
+                  value={form.autopilot.agent_args.join(" ")}
+                  onChange={(event) => update({
+                    ...form,
+                    autopilot: { ...form.autopilot, agent_args: event.target.value.split(/\s+/).filter(Boolean) },
+                  })}
+                />
+              </Field>
+            </>
+          )}
           <div className="form-grid">
             <Field label="阶段超时（秒）" hint="下次阶段">
               <input type="number" min={60} value={form.autopilot.stage_timeout_seconds} onChange={(event) => update({

@@ -11,6 +11,7 @@
 | 2 | `02-design.md` | 架构增量、ADR-006~010、数据与配置变更、API 增量、界面与交互 | `02` `03` `04` `05` `08` `11` |
 | 3 | `03-plan-acceptance.md` | 里程碑 M6–M10、任务分解、验收用例、风险、待决策项 | `09` `10` `12` |
 | 4 | `implementation-status.md` | 已落地能力、关键行为、验证结果与外部待决项 | — |
+| 5 | `chatgpt-desktop-mode.md` | ChatGPT 桌面可见会话、深链接、rollout 定位与停止边界 | — |
 
 ## 一页摘要
 

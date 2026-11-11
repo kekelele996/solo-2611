@@ -49,6 +49,18 @@ class Preflight:
             for item in self.templates.validate()
             if not item["ok"]
         ]
+        if self.settings.autopilot.agent_mode == "chatgpt":
+            agent_ok = self.autopilot.desktop.available()
+            agent_message = (
+                f"ChatGPT 桌面深链接可用：{self.autopilot.desktop.helper or 'open'}"
+                if agent_ok
+                else "ChatGPT.app 或 CodexQueuePush 不可用"
+            )
+            agent_fix = "安装 ChatGPT 桌面端并授权 CodexQueuePush 辅助功能"
+        else:
+            agent_ok = bool(shutil.which(self.autopilot.agent_command[0]))
+            agent_message = f"Agent：{self.autopilot.agent_command[0]}"
+            agent_fix = "安装 Codex CLI，或在自动交付设置中填写 agent_bin"
         items = [
             _item(
                 "skill_version",
@@ -58,9 +70,9 @@ class Preflight:
             ),
             _item(
                 "agent",
-                bool(shutil.which(self.autopilot.agent_command[0])),
-                f"Agent：{self.autopilot.agent_command[0]}",
-                "安装 Codex CLI，或在自动交付设置中填写 agent_bin",
+                agent_ok,
+                agent_message,
+                agent_fix,
             ),
             _item(
                 "prompt_templates",
