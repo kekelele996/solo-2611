@@ -61,8 +61,9 @@ export function useHotkeys(handlers: HotkeyHandlers = {}): void {
       }
       if (prefix.current) {
         const destinations: Record<string, string> = {
-          d: "/",
-          p: "/production",
+          h: "/",
+          d: "/dispatch",
+          l: "/logs",
           a: "/audit",
           t: "/tasks",
           s: "/source",

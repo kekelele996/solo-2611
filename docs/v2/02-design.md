@@ -243,6 +243,10 @@ pending ─▶ authoring ─▶ running ─▶ delivering ─▶ exporting ─�
 - `awaiting_audit` 只在该题被抽中时出现；未抽中直接 `done`。
 - 「从阶段续跑」不是把状态改回去，而是清掉该阶段的尝试计数后让 `_advance` 重新由磁盘事实推导。
   因此不存在「跳过门禁续跑」的可能。
+- 「开始 / 继续」是一次幂等恢复：运行中的任务保持不变，失败、已停止或遗漏在队列外的任务
+  按磁盘事实重新进入 `pending`；已交付和待抽检任务不会被重复拉起。
+- 全局暂停同时冻结生产计划，但允许当前阶段自然结束；全局停止会终止当前阶段并冻结计划。
+  再次开始时先预检，再恢复计划内所有可恢复任务。
 - 打回处置 `redo_feedback`：删除平台侧的自动确认记录，调用技能已有的重置 Feedback 能力（若技能无此命令，
   见 Q-V2-2），回到 `delivering`。
 
@@ -258,7 +262,7 @@ pending ─▶ authoring ─▶ running ─▶ delivering ─▶ exporting ─�
 | POST | `/api/autopilot/preflight` | 返回预检项 `[{key, level, ok, message, fix}]` |
 | POST | `/api/autopilot/start` | v1 已有；预检 P0 项不过返回 409 `PREFLIGHT_FAILED` |
 | POST | `/api/autopilot/stop` | 增加 `kill_containers: bool` |
-| POST | `/api/autopilot/pause` · `/resume` | 全局暂停/继续；`resume` 同时复位熔断 |
+| POST | `/api/autopilot/pause` · `/resume` | 全局暂停/继续；`resume` 同时复位熔断、恢复计划并重新拉起可恢复任务 |
 | POST | `/api/autopilot/{task_id}/retry` | body `{from_stage?: string}`；不可选的阶段返回 409 并说明原因 |
 | GET | `/api/autopilot/{task_id}/stages` | 阶段记录 |
 | GET | `/api/autopilot/{task_id}/log` | v1 已有；增加 `stage`、`download=1` |
@@ -273,6 +277,9 @@ SSE 新事件：`autopilot.log {task_id, stage, frames[]}`、`autopilot.breaker 
 | GET | `/api/intake` | 当前计划与计数、预计完成时间 |
 | POST | `/api/intake` | `{project_id, filters, target}`；已有进行中的计划返回 409 |
 | POST | `/api/intake/pause` · `/resume` · `/stop` | `stop` 可带 `release_unstarted: bool` |
+
+生产计划建题与自动交付入队必须同时成功后才写入 `plan.task_ids`。任一步失败只记录失败领取，
+不得留下“计划认为在手、自动交付队列里却没有”的半成品任务。
 
 ### 4.3 抽检
 

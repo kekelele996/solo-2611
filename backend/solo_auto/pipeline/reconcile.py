@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+from solo_auto.dispatch.facts import docker_container_alive
 from solo_auto.pipeline.steps import derive_job_status, evaluate_steps
 from solo_auto.settings import Paths
 from solo_auto.store.repo import Repository
@@ -239,15 +240,4 @@ def _current_container(state: SoloState) -> str:
 
 
 async def _docker_container_alive(name: str) -> bool:
-    proc = await asyncio.create_subprocess_exec(
-        "docker",
-        "ps",
-        "--filter",
-        f"name={name}",
-        "--format",
-        "{{.Names}}",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    stdout, _ = await proc.communicate()
-    return name in stdout.decode("utf-8", errors="replace").split()
+    return await docker_container_alive(name)

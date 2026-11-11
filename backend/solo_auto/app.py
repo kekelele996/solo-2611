@@ -18,6 +18,7 @@ from solo_auto.api import (
     audit,
     autopilot,
     batches,
+    dispatch,
     events,
     evidence,
     feedback_export,
@@ -78,7 +79,7 @@ def create_app(home: Path | None = None, *, auto_start: bool = True) -> FastAPI:
 
     app = FastAPI(
         title="solo-auto",
-        version="0.2.0",
+        version="0.3.0",
         docs_url="/api/docs",
         redoc_url=None,
         openapi_url="/api/openapi.json",
@@ -93,6 +94,7 @@ def create_app(home: Path | None = None, *, auto_start: bool = True) -> FastAPI:
     app.include_router(evidence.router)
     app.include_router(recording.router)
     app.include_router(feedback_export.router)
+    app.include_router(dispatch.router)
     app.include_router(autopilot.router)
     app.include_router(audit.router)
     app.include_router(batches.router)

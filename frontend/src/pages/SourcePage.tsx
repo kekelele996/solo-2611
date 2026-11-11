@@ -254,6 +254,7 @@ export function SourcePage() {
                 <div>
                   <strong>{item.name}</strong>
                   <small className="mono">{item.zipSha256.slice(0, 16)}…</small>
+                  <small>{tagText(item)}</small>
                 </div>
                 <span>ZIP 已校验 · {formatDateTime(item.downloadedAt)}</span>
                 <div className="row-actions">
@@ -379,10 +380,14 @@ function engineeringId(item: EngineeringRow): string {
   return item.engineering_id ?? item.id ?? "";
 }
 
-function tagText(item: EngineeringRow): string {
+function tagText(item: { tags?: EngineeringRow["tags"] }): string {
   const tags = item.tags ?? [];
   return tags
-    .map((tag) => (typeof tag === "string" ? tag : tag.name))
+    .map((tag) => (
+      typeof tag === "string"
+        ? tag
+        : [tag.parent_name, tag.name].filter(Boolean).join(" / ")
+    ))
     .join(" / ") || "—";
 }
 

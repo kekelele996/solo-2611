@@ -10,7 +10,7 @@ import pytest
 
 from solo_auto.app import create_app
 from solo_auto.gateway.skill import SkillGateway
-from solo_auto.pipeline.autopilot import build_prompt
+from solo_auto.pipeline.autopilot import Job, build_prompt
 
 FAKE_AGENT = """
 import json, sys
@@ -115,6 +115,122 @@ async def test_autopilot_acks_as_autopilot_and_exports(
         assert (root / "delivery" / "交付表.xlsx").is_file()
         await pilot.cancel()
         assert pilot.jobs[task_id].stage == "done"
+    finally:
+        await ctx.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_resume_restarts_failed_job_without_duplicating_active_work(
+    fixture_factory: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, root = await _app(tmp_path, monkeypatch, fixture_factory, "prompt-only")
+    ctx = app.state.context
+    await ctx.startup()
+    pilot = ctx.autopilot
+    pilot.agent_command = [sys.executable]
+    task_id = ctx.repo.get_task_by_root(root)["id"]
+    pilot.paused = True
+    pilot.jobs[task_id] = Job(
+        task_id=task_id,
+        task_name="fixture-prompt-only",
+        stage="failed",
+        failure_kind="agent_reported",
+        detail="CodexQueuePush 缺少辅助功能权限",
+    )
+    try:
+        first = await pilot.resume([task_id])
+        assert first["recovered"] == [task_id]
+        assert pilot.paused is False
+        assert pilot.jobs[task_id].stage == "pending"
+        assert pilot.jobs[task_id].failure_kind == ""
+
+        second = await pilot.resume([task_id])
+        assert second["already_active"] == [task_id]
+        assert second["recovered"] == []
+        assert pilot.jobs[task_id].stage == "pending"
+    finally:
+        await ctx.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_global_stop_freezes_plan_and_resume_relaunches_stopped_job(
+    fixture_factory: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, root = await _app(tmp_path, monkeypatch, fixture_factory, "prompt-only")
+    ctx = app.state.context
+    await ctx.startup()
+    pilot = ctx.autopilot
+    pilot.agent_command = [sys.executable]
+    pilot.settings.stop_kills_containers = False
+    task_id = ctx.repo.get_task_by_root(root)["id"]
+    pilot.jobs[task_id] = Job(task_id=task_id, task_name="fixture-prompt-only", stage="authoring")
+    ctx.intake.plan = {
+        "id": "plan-stop-resume",
+        "project_id": "project-1",
+        "project_name": "项目一",
+        "target": 5,
+        "status": "running",
+        "task_ids": [task_id],
+        "attempted_engineering_ids": [],
+        "claimed_engineering_ids": [],
+        "failed_claims": [],
+        "claim_limit": 10,
+        "filters": {},
+    }
+
+    async def source_ok() -> dict[str, Any]:
+        return {"ok": True, "message": "工程台连接正常"}
+
+    monkeypatch.setattr(ctx.source, "test", source_ok)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            stopped = await client.post("/api/autopilot/stop", json={"task_ids": [], "kill_containers": False})
+            assert stopped.status_code == 200
+            assert stopped.json()["stopped"] == [task_id]
+            assert ctx.intake.plan["status"] == "paused"
+            assert "全部停止" in ctx.intake.plan["pause_reason"]
+
+            resumed = await client.post("/api/autopilot/resume")
+            assert resumed.status_code == 200
+            assert resumed.json()["recovered"] == [task_id]
+            assert ctx.intake.plan["status"] == "running"
+            assert "pause_reason" not in ctx.intake.plan
+            assert pilot.jobs[task_id].stage == "pending"
+    finally:
+        await ctx.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_desktop_mode_respects_shared_parallel_limit(
+    fixture_factory: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, root = await _app(tmp_path, monkeypatch, fixture_factory, "prompt-only")
+    ctx = app.state.context
+    await ctx.startup()
+    pilot = ctx.autopilot
+    task = ctx.repo.get_task_by_root(root)
+    current = Job(task_id=task["id"], task_name=task["task_name"])
+    pilot.jobs = {
+        "running-1": Job(task_id="running-1", task_name="运行一", desktop_running=True),
+        "running-2": Job(task_id="running-2", task_name="运行二", desktop_running=True),
+        "running-3": Job(task_id="running-3", task_name="运行三", desktop_running=True),
+        task["id"]: current,
+    }
+    launched: list[str] = []
+
+    async def fake_launch(job: Job, _root: Path, _missing: list[str]) -> None:
+        launched.append(job.task_id)
+
+    monkeypatch.setattr(pilot, "_launch_chatgpt", fake_launch)
+    try:
+        await pilot._advance_chatgpt(current, task, root)
+        assert launched == []
+        assert current.stage == "pending"
+        assert "3/3" in current.detail
+
+        pilot.jobs["running-3"].desktop_running = False
+        await pilot._advance_chatgpt(current, task, root)
+        assert launched == [task["id"]]
     finally:
         await ctx.shutdown()
 

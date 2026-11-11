@@ -160,6 +160,74 @@ CREATE TABLE IF NOT EXISTS usage_ledger (
 );
 CREATE INDEX IF NOT EXISTS idx_usage_project ON usage_ledger(source, project_id);
 CREATE INDEX IF NOT EXISTS idx_usage_eng ON usage_ledger(source, engineering_id);
+CREATE TABLE IF NOT EXISTS dispatch_items (
+  task_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  priority INTEGER NOT NULL DEFAULT 0,
+  position REAL NOT NULL,
+  enqueued_at TEXT NOT NULL,
+  not_before TEXT,
+  wait_code TEXT,
+  wait_text TEXT,
+  wait_until TEXT,
+  attempts TEXT NOT NULL DEFAULT '{}',
+  total_attempts INTEGER NOT NULL DEFAULT 0,
+  last_failure TEXT,
+  repeat_signature TEXT,
+  guard_flags TEXT NOT NULL DEFAULT '[]',
+  keep INTEGER NOT NULL DEFAULT 0,
+  plan_id TEXT,
+  project_id TEXT,
+  engineering_id TEXT,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dispatch_items_order
+  ON dispatch_items(status, priority DESC, position ASC, enqueued_at ASC);
+CREATE TABLE IF NOT EXISTS dispatch_intents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  key TEXT NOT NULL,
+  payload TEXT NOT NULL DEFAULT '{}',
+  state TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  resolved_at TEXT,
+  result TEXT,
+  UNIQUE(kind, key)
+);
+CREATE TABLE IF NOT EXISTS dispatch_outcomes (
+  task_id TEXT,
+  finished_at TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  queued_s REAL,
+  authoring_s REAL,
+  wait_container_s REAL,
+  running_s REAL,
+  delivering_s REAL,
+  recording_s REAL,
+  exporting_s REAL,
+  total_s REAL,
+  attempts INTEGER,
+  failure_kind TEXT,
+  project_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_dispatch_outcomes_at ON dispatch_outcomes(finished_at DESC);
+CREATE TABLE IF NOT EXISTS dispatch_capacity (
+  at TEXT PRIMARY KEY,
+  occupied INTEGER NOT NULL,
+  limit_effective INTEGER NOT NULL,
+  limit_floor INTEGER NOT NULL,
+  in_hand INTEGER NOT NULL,
+  sessions INTEGER NOT NULL,
+  held TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS engineering_cooldown (
+  engineering_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  until TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  failures INTEGER NOT NULL
+);
 """
 
 
@@ -188,6 +256,10 @@ class Repository:
                 "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(2, ?)",
                 (now(),),
             )
+            self._connection.execute(
+                "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(3, ?)",
+                (now(),),
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -199,7 +271,7 @@ class Repository:
             self._connection.execute("ALTER TABLE tasks ADD COLUMN ack_by TEXT")
         if "presence" not in columns:
             self._connection.execute("ALTER TABLE tasks ADD COLUMN presence TEXT NOT NULL DEFAULT 'present'")
-        self._connection.execute("PRAGMA user_version=2")
+        self._connection.execute("PRAGMA user_version=3")
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -215,7 +287,7 @@ class Repository:
         rows = self.query(sql, params)
         return rows[0] if rows else None
 
-    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> int:
+    def execute(self, sql: str, params: tuple[Any, ...] | dict[str, Any] = ()) -> int:
         with self.transaction() as conn:
             cursor = conn.execute(sql, params)
             return int(cursor.lastrowid or 0)

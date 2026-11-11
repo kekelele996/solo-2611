@@ -13,6 +13,7 @@ FIXTURES = Path(__file__).parent / "fixtures" / "tasks"
 FAKE_SKILL = Path(__file__).parent / "fixtures" / "skill"
 os.environ.setdefault("SOLO_AUTO_SKILL_ROOT", str(FAKE_SKILL))
 os.environ.setdefault("SOLO_AUTO_DISABLE_KEYCHAIN", "1")
+os.environ.setdefault("SOLO_AUTO_DISPATCH__ENGINE", "v2")
 os.environ.setdefault("SOLO_AUTO_HOME", str(Path(tempfile.gettempdir()) / f"solo-auto-pytest-import-{os.getpid()}"))
 
 

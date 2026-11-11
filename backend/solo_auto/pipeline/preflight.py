@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 import sys
 from typing import Any
@@ -35,10 +36,35 @@ class Preflight:
         self.source = source
         self.secrets = secrets
 
+    async def probe_api(self) -> dict[str, Any]:
+        try:
+            result = await self.gateway.call(["config", "test"], timeout=30)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "message": f"Claude Code API 探测失败：{type(exc).__name__}",
+                "detail": {},
+            }
+        raw = (result.out or result.err).strip()
+        if result.code == 0:
+            output = raw.splitlines()
+            message = output[-1] if output else "Claude Code API 可用"
+        else:
+            message = _safe_api_probe_failure(raw, result.code)
+        return {
+            "ok": result.code == 0,
+            "message": message[:500],
+            "detail": {"exit_code": result.code},
+        }
+
     async def run(self) -> dict[str, Any]:
         skill_version = await self.gateway.version()
         skill_config = await self.gateway.config()
-        docker_ok, source_result = await asyncio.gather(_docker_ok(), self.source.test())
+        docker_ok, source_result, api_result = await asyncio.gather(
+            _docker_ok(),
+            self.source.test(),
+            self.probe_api(),
+        )
         disk_free = shutil.disk_usage(self.paths.home).free / 1024**3
         raw_claude = skill_config.get("claude")
         raw_github = skill_config.get("github")
@@ -93,6 +119,12 @@ class Preflight:
                 "运行 solo2611 config set claude.baseUrl=<地址> claude.apiKey=<团队 Key>",
             ),
             _item(
+                "gateway_probe",
+                bool(api_result.get("ok")),
+                str(api_result.get("message") or "Claude Code API 探测失败"),
+                "检查网关地址、团队 Key、网络和账号额度后重新探测",
+            ),
+            _item(
                 "docker",
                 docker_ok,
                 "Docker daemon 可用" if docker_ok else "Docker daemon 不可用",
@@ -136,6 +168,22 @@ def _version_tuple(value: str) -> tuple[int, ...]:
             break
         output.append(int(digits))
     return tuple(output or [0])
+
+
+def _safe_api_probe_failure(raw: str, exit_code: int) -> str:
+    match = re.search(r"\bHTTP\s+(\d{3})\b", raw, re.I)
+    status = int(match.group(1)) if match else 0
+    if status in {401, 403}:
+        return f"HTTP {status}：网关 Key 无效、已失效或不属于当前地址"
+    if status == 429:
+        return "HTTP 429：API 已限流或额度不足"
+    if status >= 500:
+        return f"HTTP {status}：API 网关暂时不可用"
+    if "timed out" in raw.lower() or "timeout" in raw.lower():
+        return "API 探测超时，请检查网关和网络"
+    if "connection" in raw.lower() or "network" in raw.lower():
+        return "无法连接 API 网关，请检查地址和网络"
+    return f"Claude Code API 探测失败（退出码 {exit_code}）"
 
 
 async def _docker_ok() -> bool:

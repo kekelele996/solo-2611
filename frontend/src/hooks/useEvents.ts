@@ -18,6 +18,11 @@ export function useEvents(): void {
     source.addEventListener("export.updated", refresh);
     source.addEventListener("autopilot.updated", refresh);
     source.addEventListener("autopilot.breaker", refresh);
+    source.addEventListener("dispatch.updated", refresh);
+    source.addEventListener("dispatch.hold", refresh);
+    source.addEventListener("dispatch.limit", refresh);
+    source.addEventListener("dispatch.log", refresh);
+    source.addEventListener("guard.hit", refresh);
     source.addEventListener("audit.updated", refresh);
     source.addEventListener("intake.updated", refresh);
     source.addEventListener("batch.updated", refresh);

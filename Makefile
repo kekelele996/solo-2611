@@ -3,7 +3,7 @@ SHELL := /bin/zsh
 .PHONY: setup install check backend-check frontend-check contract-check gen-api grep-check test-linux dev app install-service uninstall-service
 
 setup:
-	python3.11 -m venv backend/.venv
+	python3.12 -m venv backend/.venv
 	backend/.venv/bin/python -m pip install -e 'backend[dev]'
 	cd frontend && npm install
 
@@ -14,9 +14,9 @@ install:
 check: backend-check contract-check frontend-check grep-check
 
 backend-check:
-	cd backend && .venv/bin/ruff check solo_auto tests scripts
-	cd backend && .venv/bin/mypy --strict solo_auto
-	cd backend && .venv/bin/pytest -q
+	cd backend && PYTHONPATH=. .venv/bin/ruff check solo_auto tests scripts
+	cd backend && PYTHONPATH=. .venv/bin/mypy --strict solo_auto
+	cd backend && PYTHONPATH=. .venv/bin/pytest -q
 
 frontend-check:
 	cd frontend && npm run typecheck
@@ -26,7 +26,7 @@ frontend-check:
 
 contract-check:
 	@tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
-		cd backend && .venv/bin/python scripts/export_openapi.py "$$tmp/openapi.json"; \
+		cd backend && PYTHONPATH=. .venv/bin/python scripts/export_openapi.py "$$tmp/openapi.json"; \
 		cd ../frontend && ./node_modules/.bin/openapi-typescript "$$tmp/openapi.json" -o "$$tmp/schema.ts"; \
 		cmp openapi.json "$$tmp/openapi.json" && cmp src/api/schema.ts "$$tmp/schema.ts" || \
 		(echo "OpenAPI 或 TypeScript schema 未同步，请运行 make gen-api" && exit 1)
@@ -41,11 +41,13 @@ grep-check:
 	@! rg -n -- "--allow-incomplete" backend/solo_auto
 	@! rg -n "<textarea|contentEditable|CodeMirror" frontend/src/pages/AuditPage*
 	@! rg -n 'ackedBy.*"user"' backend/solo_auto/pipeline/autopilot.py backend/solo_auto/pipeline/audit.py
+	@! rg -n '"docker",\s*"ps"' backend/solo_auto -g '!backend/solo_auto/dispatch/**'
+	@! rg -n 'desired_state\s*=\s*["\x27]running' backend/solo_auto -g '!dispatch/kernel.py'
 	@count=$$(rg -n "transition:|animation:" frontend/src | wc -l | tr -d ' '); \
 		test "$$count" -le 12 || (echo "动效声明过多: $$count" && exit 1)
 
 test-linux:
-	docker run --rm -v "$$PWD":/workspace -w /workspace/backend python:3.11-slim \
+	docker run --rm -v "$$PWD":/workspace -w /workspace/backend python:3.12-slim \
 		sh -lc "apt-get update >/tmp/apt.log && apt-get install -y git >/tmp/apt-install.log && \
 		pip install --no-cache-dir -e '.[dev]' >/tmp/pip.log && pytest -q"
 

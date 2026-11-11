@@ -1,6 +1,7 @@
 import type {
   AuditDetail,
   AuditRow,
+  AutopilotRecovery,
   AutopilotSnapshot,
   BatchCheck,
   BatchRow,
@@ -8,6 +9,9 @@ import type {
   ConfigPatchRequest,
   ConfigResponse,
   DiffResponse,
+  DispatchLimitsRequest,
+  DispatchLogRow,
+  DispatchSnapshot,
   EngineeringRow,
   EventRow,
   ExportHistoryRow,
@@ -125,7 +129,7 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
-  testConfig: (target: "skill" | "source" | "docker" | "solo2") =>
+  testConfig: (target: "skill" | "source" | "docker" | "solo2" | "api") =>
     request<{ ok: boolean; message: string; detail: Record<string, unknown> }>("/api/system/config/test", {
       method: "POST",
       body: JSON.stringify({ target }),
@@ -332,8 +336,103 @@ export const api = {
       body: JSON.stringify({ confirm: true }),
     }),
   autopilot: () => request<AutopilotSnapshot>("/api/autopilot"),
+  dispatch: () => request<DispatchSnapshot>("/api/dispatch"),
+  dispatchState: (desired: "running" | "paused" | "draining") =>
+    request<DispatchSnapshot>("/api/dispatch/state", {
+      method: "POST",
+      body: JSON.stringify({ desired }),
+    }),
+  dispatchInterrupt: (taskIds: string[] = [], killContainers = true) =>
+    request<Record<string, unknown>>("/api/dispatch/interrupt", {
+      method: "POST",
+      body: JSON.stringify({ task_ids: taskIds, kill_containers: killContainers }),
+    }),
+  dispatchLimits: (payload: DispatchLimitsRequest) =>
+    request<{
+      snapshot: DispatchSnapshot;
+      changed: Record<string, unknown[]>;
+      sync: { requested: number; actual: number; synced: boolean; ceiling: number };
+    }>(
+      "/api/dispatch/limits",
+      { method: "PATCH", body: JSON.stringify(payload) },
+    ),
+  dispatchExplain: (taskId = "") =>
+    request<{ task_id?: string; sentence: string; decision: Record<string, unknown> | null }>(
+      `/api/dispatch/explain${qs({ task_id: taskId })}`,
+    ),
+  dispatchUpcoming: () =>
+    request<{ items: DispatchSnapshot["upcoming"] }>("/api/dispatch/upcoming"),
+  dispatchThroughput: (hours = 24) =>
+    request<DispatchSnapshot["throughput"] & { hours: number }>(`/api/dispatch/throughput${qs({ hours })}`),
+  dispatchCapacity: (hours = 24) =>
+    request<{ items: Array<Record<string, unknown>> }>(`/api/dispatch/capacity${qs({ hours })}`),
+  dispatchLog: (params: {
+    afterSeq?: number;
+    family?: string;
+    level?: string;
+    taskId?: string;
+    limit?: number;
+  } = {}) =>
+    request<{ items: DispatchLogRow[]; after_seq: number }>(
+      `/api/dispatch/log${qs({
+        after_seq: params.afterSeq,
+        family: params.family,
+        level: params.level,
+        task_id: params.taskId,
+        limit: params.limit,
+      })}`,
+    ),
+  dispatchHolds: () =>
+    request<{ holds: DispatchSnapshot["holds"]; history: DispatchSnapshot["hold_history"] }>("/api/dispatch/holds"),
+  dispatchProbeHold: (id: string) =>
+    request<{ source: string; ok: boolean; message: string; detail: Record<string, unknown> }>(
+      `/api/dispatch/holds/${encodeURIComponent(id)}/probe`,
+      { method: "POST" },
+    ),
+  dispatchReleaseHold: (id: string) =>
+    request<{ ok: boolean; source: string; snapshot: DispatchSnapshot }>(
+      `/api/dispatch/holds/${encodeURIComponent(id)}/release`,
+      { method: "POST" },
+    ),
+  dispatchProbe: (source: string) =>
+    request<{ source: string; ok: boolean; message: string; detail: Record<string, unknown> }>(
+      `/api/dispatch/probes/${encodeURIComponent(source)}`,
+      { method: "POST" },
+    ),
+  dispatchRecover: (sinceMinutes = 120) =>
+    request<{ requeued: number; preserved: number; task_ids: string[] }>("/api/dispatch/recover", {
+      method: "POST",
+      body: JSON.stringify({ since_minutes: sinceMinutes }),
+    }),
+  dispatchQueue: (taskIds: string[], front = false) =>
+    request<DispatchSnapshot & { added: string[]; skipped: Array<{ task_id: string; reason: string }> }>(
+      "/api/dispatch/queue",
+      { method: "POST", body: JSON.stringify({ task_ids: taskIds, front }) },
+    ),
+  dispatchQueueAction: (
+    taskId: string,
+    action: "pin" | "move" | "retry" | "quarantine" | "release" | "keep",
+    direction?: "up" | "down" | "top",
+  ) =>
+    request<{ ok: boolean; snapshot?: DispatchSnapshot }>(
+      `/api/dispatch/queue/${encodeURIComponent(taskId)}/${action}`,
+      {
+        method: "POST",
+        body: direction ? JSON.stringify({ direction }) : undefined,
+      },
+    ),
+  dispatchClearFinished: () =>
+    request<{ removed: number; snapshot: DispatchSnapshot }>("/api/dispatch/queue/clear-finished", {
+      method: "POST",
+    }),
+  dispatchGuard: () =>
+    request<{ mode: string; items: Array<Record<string, unknown>> }>("/api/dispatch/guard"),
+  dispatchGuardAction: (hitId: string, action: "apply" | "dismiss") =>
+    request<Record<string, unknown>>(`/api/dispatch/guard/${encodeURIComponent(hitId)}/${action}`, {
+      method: "POST",
+    }),
   autopilotStart: (taskIds: string[]) =>
-    request<AutopilotSnapshot & { added: string[] }>("/api/autopilot/start", {
+    request<AutopilotSnapshot & AutopilotRecovery>("/api/autopilot/start", {
       method: "POST",
       body: JSON.stringify({ task_ids: taskIds }),
     }),
@@ -344,7 +443,7 @@ export const api = {
     }),
   autopilotPreflight: () => request<{ ok: boolean; items: PreflightItem[] }>("/api/autopilot/preflight", { method: "POST" }),
   autopilotPause: () => request<AutopilotSnapshot>("/api/autopilot/pause", { method: "POST" }),
-  autopilotResume: () => request<AutopilotSnapshot>("/api/autopilot/resume", { method: "POST" }),
+  autopilotResume: () => request<AutopilotSnapshot & AutopilotRecovery>("/api/autopilot/resume", { method: "POST" }),
   autopilotRetry: (id: string, fromStage = "") =>
     request<Record<string, unknown>>(`/api/autopilot/${encodeURIComponent(id)}/retry`, {
       method: "POST",

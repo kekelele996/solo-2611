@@ -155,9 +155,17 @@ export type AutopilotSnapshot = {
   active: number;
   parallel_authoring: number;
   parallel_delivering: number;
+  parallel_chatgpt: number;
   stage_timeout_seconds: number;
   chatgpt_timeout_seconds: number;
   jobs: AutopilotJob[];
+};
+
+export type AutopilotRecovery = {
+  added: string[];
+  recovered: string[];
+  already_active: string[];
+  skipped: Array<{ task_id: string; reason: string }>;
 };
 
 export type AutopilotStage = {
@@ -257,9 +265,20 @@ export type IntakeSnapshot = {
     updated_at: string;
     task_ids: string[];
     failed_claims: Array<{ engineering_id: string; code?: string; message?: string }>;
+    exclude_delivered?: boolean;
     pause_reason?: string;
   } | null;
-  counts: { target: number; completed: number; active: number; failed: number; claimed: number };
+  counts: {
+    target: number;
+    completed: number;
+    active: number;
+    failed: number;
+    recoverable: number;
+    orphaned: number;
+    claimed: number;
+    staged: number;
+    in_hand: number;
+  };
   max_in_hand: number;
   eta: string;
   attempts_left?: number;
@@ -350,7 +369,7 @@ export type EngineeringRow = {
   tech_stack?: Array<string | { name?: string; files?: number; percentage?: number }>;
   source_file_count?: number;
   version_number?: number;
-  tags?: Array<string | { id: string; name: string }>;
+  tags?: Array<string | { id: string; name: string; parent_name?: string }>;
   can_download?: boolean;
   claimed_by?: string | null;
   claimed_name?: string;
@@ -372,6 +391,7 @@ export type StagingRow = {
   engineeringId: string;
   projectId: string;
   name: string;
+  tags?: EngineeringRow["tags"];
   claimId: string;
   zipSha256: string;
   stagingPath: string;
@@ -489,6 +509,138 @@ export type RecordingVerify = {
   cursor_ok: boolean;
   errors: string[];
 };
+
+export type DispatchGateCheck = {
+  gate: string;
+  ok: boolean;
+  code: string;
+  text: string;
+  until: string;
+};
+
+export type DispatchDecision = {
+  item_id: string;
+  stage: string;
+  allowed: boolean;
+  code: string;
+  text: string;
+  until: string;
+  gate: string;
+  checks: DispatchGateCheck[];
+};
+
+export type DispatchHold = {
+  id: string;
+  source: string;
+  scope: string[];
+  reason_code: string;
+  reason: string;
+  since: string;
+  auto: boolean;
+  next_at: string;
+  count: number;
+  last_error: string;
+  self_heal_deadline: string;
+  caused_by_task: string;
+};
+
+export type DispatchQueueItem = {
+  task_id: string;
+  task_name: string;
+  status: string;
+  stage: string;
+  priority: number;
+  position: number;
+  enqueued_at: string;
+  not_before: string;
+  wait_code: string;
+  wait_text: string;
+  wait_until: string;
+  attempts: Record<string, number>;
+  total_attempts: number;
+  last_failure: Record<string, unknown>;
+  repeat_signature: string;
+  guard_flags: string[];
+  keep: boolean;
+  plan_id: string;
+  project_id: string;
+  engineering_id: string;
+  updated_at: string;
+  active: boolean;
+  queue_position: number | null;
+  job_status: string;
+  failure_label: string;
+  matched_by: string;
+  reason: string;
+  gate: DispatchDecision;
+};
+
+export type DispatchPool = {
+  name: string;
+  used: number;
+  limit: number;
+  available: number;
+  draining: boolean;
+};
+
+export type DispatchSnapshot = {
+  engine: "v2" | "v3";
+  enabled: boolean;
+  desired_state: "running" | "paused" | "draining";
+  effective_state: "running" | "paused" | "draining" | "held" | "degraded" | "idle";
+  sentence: string;
+  started_at: string;
+  uptime_seconds: number;
+  preset: "throughput" | "balanced" | "careful" | "custom";
+  settings: Record<string, unknown>;
+  limits: {
+    containers: number;
+    effective_containers: number;
+    sessions: number;
+    in_hand: number;
+    launch_spacing_seconds: number;
+    recording: number;
+    skill_limit: number;
+    synced: boolean;
+  };
+  pools: Record<string, DispatchPool>;
+  holds: DispatchHold[];
+  hold_history: Array<DispatchHold & { released_at: string; released_by: string; duration_seconds: number }>;
+  counts: { active: number; waiting: number; needs_action: number; finished: number; all: number };
+  queue: DispatchQueueItem[];
+  upcoming: Array<DispatchQueueItem & { estimated_start_at: string; estimated_seconds: number }>;
+  guard: { mode: "off" | "observe" | "enforce"; count: number; hits: Array<Record<string, unknown>> };
+  throughput: {
+    hours: number;
+    completed: number;
+    failed: number;
+    quarantined: number;
+    per_hour: number;
+    medians_seconds: Record<string, number>;
+    container_utilization: number;
+  };
+  capacity: { items: Array<Record<string, unknown>> };
+  plan: Record<string, unknown>;
+  elastic: { enabled: boolean; effective: number; floor: number; ceiling: number };
+  loops: Array<{ name: string; status: string; last_beat_at: number; errors: number }>;
+  keep_awake: boolean;
+};
+
+export type DispatchLimitsRequest = {
+  preset?: DispatchSnapshot["preset"];
+  containers?: number;
+  sessions?: number;
+  authoring?: number;
+  delivering?: number;
+  recording?: number;
+  in_hand?: number;
+  launch_spacing_seconds?: number;
+  session_spacing_seconds?: number;
+  keep_awake?: boolean;
+  elastic?: { enabled?: boolean; ceiling?: number };
+};
+
+export type DispatchLogRow = EventRow & { family: string };
 
 export type ConfigResponse = {
   host: string;

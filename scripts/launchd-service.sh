@@ -49,6 +49,7 @@ cat >"$PLIST" <<EOF
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
   <key>ProcessType</key><string>Interactive</string>
   <key>StandardOutPath</key><string>$LOG_DIR/launchd.stdout.log</string>
   <key>StandardErrorPath</key><string>$LOG_DIR/launchd.stderr.log</string>

@@ -9,8 +9,10 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from solo_auto.dispatch.classify import Evidence
+from solo_auto.dispatch.facts import docker_info_ok, docker_running_containers
 from solo_auto.errors import ApiError
 from solo_auto.events.bus import EventBus
 from solo_auto.gateway.skill import SkillGateway, StreamEvent
@@ -18,6 +20,9 @@ from solo_auto.pipeline.reconcile import Reconciler
 from solo_auto.settings import Paths
 from solo_auto.store.repo import Repository
 from solo_auto.store.state import load_state
+
+if TYPE_CHECKING:
+    from solo_auto.dispatch.kernel import Dispatcher
 
 LOGGER = logging.getLogger(__name__)
 
@@ -50,12 +55,16 @@ class RunScheduler:
         repo: Repository,
         reconciler: Reconciler,
         bus: EventBus,
+        dispatcher: Dispatcher | None = None,
+        attempt_total: int = 3,
     ) -> None:
         self.paths = paths
         self.gateway = gateway
         self.repo = repo
         self.reconciler = reconciler
         self.bus = bus
+        self.dispatcher = dispatcher
+        self.attempt_total = max(1, attempt_total)
         self.queue: list[QueueEntry] = []
         self.active: dict[str, ActiveRun] = {}
         self.limit = 4
@@ -65,7 +74,10 @@ class RunScheduler:
         self._last_log_publish: dict[str, float] = {}
 
     async def start(self) -> None:
-        await self.refresh_limit()
+        if self.dispatcher is not None and self.dispatcher.v3_enabled:
+            self.limit = self.dispatcher.effective_container_limit
+        else:
+            await self.refresh_limit()
         self._tick_task = asyncio.create_task(self._tick_loop())
         self._maintenance_task = asyncio.create_task(self._maintenance_loop())
 
@@ -178,7 +190,7 @@ class RunScheduler:
             return {
                 "state": "running",
                 "attempt_seq": active.attempt,
-                "attempt_total": 3,
+                "attempt_total": self.attempt_total,
                 "phase": active.phase,
                 "started_at": datetime.fromtimestamp(active.started_at).astimezone().isoformat(),
                 "elapsed_s": round(time.monotonic() - active.started_at, 1),
@@ -189,7 +201,7 @@ class RunScheduler:
             return {
                 "state": "queued",
                 "attempt_seq": 0,
-                "attempt_total": 3,
+                "attempt_total": self.attempt_total,
                 "phase": "queued",
                 "started_at": "",
                 "elapsed_s": 0,
@@ -197,7 +209,7 @@ class RunScheduler:
                 "log_tail": "",
             }
         attempt_seq = 0
-        attempt_total = 3
+        attempt_total = self.attempt_total
         phase = "idle"
         started_at = ""
         elapsed = 0.0
@@ -248,19 +260,28 @@ class RunScheduler:
             await asyncio.sleep(2)
 
     async def _tick(self) -> None:
-        await self.refresh_limit()
-        containers = await _running_containers()
-        self._clean_slot_files(containers)
-        used = max(len(containers), len(self.active))
-        if used >= self.limit or not self.queue:
-            return
-        if not containers and not self.active and not await _docker_ok():
-            return
+        if self.dispatcher is not None and self.dispatcher.v3_enabled:
+            if not self.queue:
+                return
+            decision = await self.dispatcher.request_container(self.queue[0].task_id)
+            if not decision.allowed:
+                return
+        else:
+            await self.refresh_limit()
+            containers = await _running_containers()
+            self._clean_slot_files(containers)
+            used = max(len(containers), len(self.active))
+            if used >= self.limit or not self.queue:
+                return
+            if not containers and not self.active and not await _docker_ok():
+                return
         entry = self.queue.pop(0)
         run = ActiveRun(entry=entry, started_at=time.time())
         self.active[entry.task_id] = run
         self._write_slot(entry, "starting")
         run.task = asyncio.create_task(self._execute(run))
+        if self.dispatcher is not None and self.dispatcher.v3_enabled:
+            self.dispatcher.mark_container_started(entry.task_id)
         self.repo.add_event("run.started", f"{entry.task_name} 开始运行", actor="scheduler", task_id=entry.task_id)
         self.bus.publish("queue.updated", self.queue_snapshot())
 
@@ -322,6 +343,18 @@ class RunScheduler:
                 )
                 if error_kind == "auth":
                     await self._trip_auth_breaker(task_id, detail)
+                if self.dispatcher is not None and self.dispatcher.v3_enabled:
+                    await self.dispatcher.on_failure(
+                        task_id,
+                        Evidence(
+                            stage="running",
+                            exit_code=result.code,
+                            skill_json=result.data if isinstance(result.data, dict) else {},
+                            skill_stderr=detail,
+                            trace_tail=result.out[-8000:] if result.out else "",
+                        ),
+                        actor="scheduler",
+                    )
                 self.bus.publish(
                     "toast",
                     {"level": "error", "message": detail[:500], "task_id": task_id},
@@ -343,6 +376,10 @@ class RunScheduler:
         finally:
             self.active.pop(task_id, None)
             (self.paths.slots / f"{task_id}.json").unlink(missing_ok=True)
+            if self.dispatcher is not None and self.dispatcher.v3_enabled:
+                if run.phase == "done":
+                    self.dispatcher.on_success(task_id, stage="running")
+                self.dispatcher.release_container(task_id, success=run.phase == "done")
             try:
                 await self.reconciler.run()
             except Exception:
@@ -353,6 +390,15 @@ class RunScheduler:
                 self._last_log_publish.pop(task_id, None)
 
     async def _trip_auth_breaker(self, failed_task_id: str, detail: str) -> None:
+        if self.dispatcher is not None and self.dispatcher.v3_enabled:
+            self.dispatcher.register_hold(
+                source="breaker",
+                scope=["global"],
+                reason_code="gateway.auth",
+                reason=detail,
+                auto=False,
+            )
+            return
         waiting = list(self.queue)
         self.queue.clear()
         for entry in waiting:
@@ -373,7 +419,11 @@ class RunScheduler:
     async def _maintenance_loop(self) -> None:
         while True:
             await asyncio.sleep(30)
-            containers = await _running_containers()
+            if self.dispatcher is not None and self.dispatcher.v3_enabled:
+                snapshot = await self.dispatcher.facts.snapshot(force=True)
+                containers = set(snapshot.docker.containers)
+            else:
+                containers = await _running_containers()
             self._clean_slot_files(containers)
 
     def _clean_slot_files(self, containers: set[str]) -> None:
@@ -481,30 +531,8 @@ def _tail_lines(path: Path, limit: int) -> list[str]:
 
 
 async def _running_containers() -> set[str]:
-    proc = await asyncio.create_subprocess_exec(
-        "docker",
-        "ps",
-        "--filter",
-        "label=solo2611=true",
-        "--format",
-        "{{.Names}}",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    stdout, _ = await proc.communicate()
-    if proc.returncode != 0:
-        return set()
-    return set(stdout.decode("utf-8", errors="replace").split())
+    return await docker_running_containers(managed_only=True) or set()
 
 
 async def _docker_ok() -> bool:
-    proc = await asyncio.create_subprocess_exec(
-        "docker",
-        "info",
-        "--format",
-        "{{.ServerVersion}}",
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    await proc.wait()
-    return proc.returncode == 0
+    return await docker_info_ok()

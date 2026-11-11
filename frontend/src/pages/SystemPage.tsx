@@ -28,7 +28,7 @@ import { errorText } from "../utils/display";
 import { formatDateTime } from "../utils/time";
 import { APP_BUILD_ID } from "../utils/build";
 
-type TestTarget = "skill" | "source" | "docker" | "solo2";
+type TestTarget = "skill" | "source" | "docker" | "solo2" | "api";
 type TestOutcome = { ok: boolean; message: string };
 
 export function SystemPage() {
@@ -244,6 +244,7 @@ export function SystemPage() {
             <span>Schema solo-2611/1</span>
           </div>
           {testRow("skill", "测试技能")}
+          {testRow("api", "探测 API")}
         </Panel>
 
         <Panel title="题源">
@@ -314,20 +315,10 @@ export function SystemPage() {
         </Panel>
 
         <Panel title="执行">
-          <Field label="容器并发">
-            <input
-              type="number"
-              min={1}
-              max={8}
-              value={form.execution.max_containers}
-              onChange={(event) =>
-                update({
-                  ...form,
-                  execution: { ...form.execution, max_containers: Number(event.target.value) },
-                })
-              }
-            />
-          </Field>
+          <div className="form-note">
+            容器并发、会话并发、在手上限、启动间隔与失败策略已移到 <a className="text-link" href="/dispatch">调度页</a>。
+            这里只保留技能本身的运行超时与尝试次数。
+          </div>
           <Field label="超时秒数">
             <input
               type="number"
@@ -484,18 +475,6 @@ export function SystemPage() {
                 autopilot: { ...form.autopilot, run_attempts: Number(event.target.value) },
               })} />
             </Field>
-            <Field label="起草并发">
-              <input type="number" min={1} max={8} value={form.autopilot.parallel_authoring} onChange={(event) => update({
-                ...form,
-                autopilot: { ...form.autopilot, parallel_authoring: Number(event.target.value) },
-              })} />
-            </Field>
-            <Field label="交付并发">
-              <input type="number" min={1} max={8} value={form.autopilot.parallel_delivering} onChange={(event) => update({
-                ...form,
-                autopilot: { ...form.autopilot, parallel_delivering: Number(event.target.value) },
-              })} />
-            </Field>
             <Field label="同类失败熔断阈值">
               <input type="number" min={1} max={50} value={form.autopilot.breaker.same_kind_failures} onChange={(event) => update({
                 ...form,
@@ -545,12 +524,6 @@ export function SystemPage() {
             <input type="number" min={0} max={1} step={0.05} value={form.audit.sample_rate} onChange={(event) => update({
               ...form,
               audit: { ...form.audit, sample_rate: Number(event.target.value) },
-            })} />
-          </Field>
-          <Field label="在手上限" hint="0 = 起草并发 + 容器并发">
-            <input type="number" min={0} max={100} value={form.intake.max_in_hand} onChange={(event) => update({
-              ...form,
-              intake: { ...form.intake, max_in_hand: Number(event.target.value) },
             })} />
           </Field>
           <Field label="计划排除标签" hint="逗号分隔；计划选择候选时排除">

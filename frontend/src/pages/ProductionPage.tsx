@@ -59,15 +59,21 @@ export function ProductionPage() {
   const pause = useMutation({
     mutationFn: api.autopilotPause,
     onSuccess: () => {
-      toast("自动交付已暂停；正在运行的阶段会正常结束", "info");
+      toast("自动交付和生产计划已暂停；正在运行的阶段会正常结束", "info");
       void queryClient.invalidateQueries();
     },
     onError: (error) => toast(errorText(error), "error"),
   });
   const resume = useMutation({
     mutationFn: api.autopilotResume,
-    onSuccess: () => {
-      toast("自动交付已继续，熔断状态已复位", "ok");
+    onSuccess: (result) => {
+      const recovered = result.recovered?.length ?? 0;
+      toast(
+        recovered
+          ? `已开始，重新拉起 ${recovered} 个中断任务`
+          : "已开始，当前没有需要恢复的中断任务",
+        "ok",
+      );
       void queryClient.invalidateQueries();
     },
     onError: (error) => toast(errorText(error), "error"),
@@ -75,7 +81,7 @@ export function ProductionPage() {
   const stop = useMutation({
     mutationFn: () => api.autopilotStop([]),
     onSuccess: (result) => {
-      toast(`已停止 ${result.stopped.length} 题并清理对应容器`, "info");
+      toast(`已停止 ${result.stopped.length} 题并冻结生产计划`, "info");
       void queryClient.invalidateQueries();
     },
     onError: (error) => toast(errorText(error), "error"),
@@ -115,10 +121,13 @@ export function ProductionPage() {
     mutationFn: (action: "pause" | "resume" | "stop") =>
       action === "pause" ? api.pauseIntake() : action === "resume" ? api.resumeIntake() : api.stopIntake(true),
     onSuccess: (_, action) => {
-      toast(
-        action === "stop" ? "生产计划已终止，未开工工程已归还" : action === "pause" ? "生产计划已暂停" : "生产计划已继续",
-        "ok",
-      );
+      const message =
+        action === "stop"
+          ? "生产计划已终止，未开工工程已归还"
+          : action === "pause"
+            ? "生产计划已暂停"
+            : "生产计划已继续，中断任务已重新拉起";
+      toast(message, "ok");
       void queryClient.invalidateQueries();
     },
     onError: (error) => toast(errorText(error), "error"),
@@ -128,8 +137,12 @@ export function ProductionPage() {
   const grouped = useMemo(() => {
     const result = new Map<string, AutopilotJob[]>(COLUMNS.map((column) => [column.key, []]));
     for (const job of jobs) {
-      if (job.stage === "stopped") continue;
-      const key = job.stage === "pending" || job.stage === "chatgpt" ? "authoring" : job.stage;
+      const key =
+        job.stage === "pending" || job.stage === "chatgpt"
+          ? "authoring"
+          : job.stage === "stopped"
+            ? "failed"
+            : job.stage;
       result.get(key)?.push(job);
     }
     return result;
@@ -165,7 +178,7 @@ export function ProductionPage() {
           </Button>
           {snapshot.paused ? (
             <Button size="small" variant="primary" onClick={() => resume.mutate()} loading={resume.isPending}>
-              <CirclePlay size={13} /> 继续
+              <CirclePlay size={13} /> 开始并恢复
             </Button>
           ) : (
             <Button size="small" onClick={() => pause.mutate()} loading={pause.isPending}>
@@ -188,7 +201,7 @@ export function ProductionPage() {
             <strong>{snapshot.paused_by_breaker ? `自动交付已熔断：${FAILURE_LABELS[snapshot.breaker.kind] ?? snapshot.breaker.kind}` : "自动交付已暂停"}</strong>
             <span>{snapshot.breaker.since ? `自 ${formatDateTime(snapshot.breaker.since)} 起不再拉起新阶段` : "已在运行的阶段会正常结束"}</span>
           </div>
-          <Button size="small" onClick={() => resume.mutate()}>恢复并复位熔断</Button>
+          <Button size="small" onClick={() => resume.mutate()}>开始并恢复中断任务</Button>
         </div>
       ) : null}
 
@@ -197,7 +210,7 @@ export function ProductionPage() {
       <div className="production-toolbar">
         <span className="mono">
           {snapshot.agent_mode === "chatgpt"
-            ? `ChatGPT 桌面 ${snapshot.chatgpt_available ? "可用" : "不可用"} · 显式会话 · ${Math.round(snapshot.chatgpt_timeout_seconds / 60)} 分钟无进展超时`
+            ? `ChatGPT 桌面 ${snapshot.chatgpt_available ? "可用" : "不可用"} · 并发 ${snapshot.parallel_chatgpt} · ${Math.round(snapshot.chatgpt_timeout_seconds / 60)} 分钟无进展超时`
             : `CLI Agent ${snapshot.agent_available ? "可用" : "缺失"} · 起草并发 ${snapshot.parallel_authoring} · 交付并发 ${snapshot.parallel_delivering}`}
         </span>
         <label>
@@ -304,17 +317,21 @@ function IntakeBar({
       <div className="intake-head">
         <strong>生产计划 · {plan.status}</strong>
         <span>
-          目标 {plan.target} · 完成 {counts?.completed ?? 0} · 进行中 {counts?.active ?? 0} · 失败 {counts?.failed ?? 0}
+          目标 {plan.target} · 完成 {counts?.completed ?? 0} · 进行中 {counts?.active ?? 0} ·
+          可恢复 {counts?.recoverable ?? 0} · 缺队列 {counts?.orphaned ?? 0} ·
+          暂存 {counts?.staged ?? 0} · 失败 {counts?.failed ?? 0}
         </span>
         {data?.eta ? <span>预计 {formatDateTime(data.eta)} 完成</span> : <span>样本不足 3 题，不估算完成时间</span>}
       </div>
       <div className="intake-progress"><span style={{ width: `${progress}%` }} /></div>
-      {plan.pause_reason ? <p className="danger-text">{plan.pause_reason}</p> : null}
+      {plan.status === "paused" && plan.pause_reason ? <p className="danger-text">{plan.pause_reason}</p> : null}
       <div className="row-actions">
         {plan.status === "running" ? (
           <Button size="small" onClick={() => action("pause")} loading={busy}>暂停计划</Button>
         ) : plan.status === "paused" ? (
-          <Button size="small" variant="primary" onClick={() => action("resume")} loading={busy}>继续计划</Button>
+          <Button size="small" variant="primary" onClick={() => action("resume")} loading={busy}>
+            开始并恢复计划
+          </Button>
         ) : null}
         {["running", "paused"].includes(plan.status) ? (
           <Button size="small" variant="danger" onClick={() => action("stop")} loading={busy}>终止并归还未开工</Button>
@@ -342,6 +359,7 @@ function JobCard({
     if (job.stage === "chatgpt" && job.desktop_running) setLogOpen(true);
   }, [job.desktop_running, job.stage]);
   const failed = job.stage === "failed";
+  const recoverable = failed || job.stage === "stopped";
   return (
     <article className={`production-card ${failed ? "is-failed" : ""}`}>
       <div className="production-card-head">
@@ -377,7 +395,7 @@ function JobCard({
         </button>
       ) : null}
       {logOpen ? <InlineLog job={job} /> : null}
-      {failed ? (
+      {recoverable ? (
         <details className="retry-menu">
           <summary><ListRestart size={12} /> 重试</summary>
           <div>
@@ -523,17 +541,18 @@ function PlanModal({
   const { toast } = useToast();
   const projects = useQuery({ queryKey: ["projects"], queryFn: () => api.projects(), enabled: open });
   const [projectId, setProjectId] = useState("");
-  const [target, setTarget] = useState(5);
+  const [target, setTarget] = useState(15);
   const [q, setQ] = useState("");
   const [language, setLanguage] = useState("");
   const [maxUses, setMaxUses] = useState(0);
+  const [excludeDelivered, setExcludeDelivered] = useState(false);
   const create = useMutation({
     mutationFn: () =>
       api.createIntake({
         project_id: projectId,
         target,
         filters: { q, language },
-        exclude_delivered: true,
+        exclude_delivered: excludeDelivered,
         max_uses: maxUses,
       }),
     onSuccess: () => {
@@ -564,7 +583,7 @@ function PlanModal({
           </select>
         </Field>
         <Field label="目标题数">
-          <input type="number" min={1} max={500} value={target} onChange={(event) => setTarget(Number(event.target.value))} />
+          <input type="number" min={1} max={15} value={target} onChange={(event) => setTarget(Number(event.target.value))} />
         </Field>
         <Field label="工程名筛选">
           <input value={q} onChange={(event) => setQ(event.target.value)} placeholder="可留空" />
@@ -572,12 +591,20 @@ function PlanModal({
         <Field label="语言">
           <input value={language} onChange={(event) => setLanguage(event.target.value)} placeholder="如 Python" />
         </Field>
-        <Field label="最大历史使用次数" hint="0 表示不按使用次数排除；已交付工程始终排除">
+        <Field label="最大历史使用次数" hint="0 表示允许复用；达到目标前优先使用次数较少的工程">
           <input type="number" min={0} max={100} value={maxUses} onChange={(event) => setMaxUses(Number(event.target.value))} />
         </Field>
       </div>
+      <label className="check-inline">
+        <input
+          type="checkbox"
+          checked={excludeDelivered}
+          onChange={(event) => setExcludeDelivered(event.target.checked)}
+        />
+        排除已经交付过的工程
+      </label>
       <p className="form-note">
-        已做过的工程按工程 ID 排除。每次只领取一个，达到在手上限即暂停领取；领取上限最多为目标的两倍或目标加三，失败不会无限循环。
+        单项目最多 15 题。先接回已领取但未建题的材料，再按在手上限补位；任务结束后归还原工程，并在需要时按使用次数从少到多复用。
       </p>
     </Modal>
   );

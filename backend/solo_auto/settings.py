@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tomllib
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _default_tasks_dir() -> Path:
@@ -160,6 +163,150 @@ class Solo2Settings(BaseModel):
         return value.strip().rstrip("/")
 
 
+class DispatchElasticSettings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    ceiling: int = Field(default=6, ge=1, le=8)
+    window_seconds: int = Field(default=300, ge=60, le=3600)
+    stall_percent: float = Field(default=3.0, ge=0, le=100)
+    severe_attempt: int = Field(default=6, ge=1, le=100)
+    step_up_seconds: int = Field(default=300, ge=30, le=3600)
+    cooldown_seconds: int = Field(default=600, ge=60, le=7200)
+    stable_seconds: int = Field(default=1800, ge=300, le=14400)
+
+
+class DispatchRetrySettings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    max_total_attempts: int = Field(default=8, ge=1, le=100)
+    backoff_seconds: list[int] = Field(default_factory=lambda: [60, 180, 600])
+    jitter: float = Field(default=0.2, ge=0, le=1)
+    unknown_retries: int = Field(default=1, ge=0, le=10)
+    engineering_cooldown_failures: int = Field(default=2, ge=1, le=20)
+    engineering_cooldown_hours: int = Field(default=72, ge=1, le=720)
+
+    @field_validator("backoff_seconds")
+    @classmethod
+    def _backoff(cls, value: list[int]) -> list[int]:
+        if not value:
+            raise ValueError("退避序列不能为空")
+        if any(item < 1 for item in value):
+            raise ValueError("退避时间必须大于 0")
+        return value
+
+
+class DispatchGuardSettings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    mode: Literal["off", "observe", "enforce"] = "observe"
+    run_overtime_factor: float = Field(default=1.25, ge=1.0, le=5.0)
+    no_progress_minutes: int = Field(default=30, ge=5, le=1440)
+    budget_authoring_minutes: int = Field(default=90, ge=5, le=1440)
+    budget_delivering_minutes: int = Field(default=120, ge=5, le=1440)
+    budget_recording_minutes: int = Field(default=20, ge=1, le=1440)
+    budget_exporting_minutes: int = Field(default=15, ge=1, le=1440)
+    zombie_grace_minutes: int = Field(default=5, ge=1, le=1440)
+    orphan_container_minutes: int = Field(default=30, ge=1, le=10080)
+    leaked_process_minutes: int = Field(default=60, ge=1, le=10080)
+    claim_leak_minutes: int = Field(default=30, ge=1, le=1440)
+    attempt_inflation: int = Field(default=50, ge=10, le=1000)
+
+
+class DispatchLLMGuardSettings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = True
+    probe_seconds: int = Field(default=1800, ge=30, le=86400)
+    retry_seconds: int = Field(default=30, ge=5, le=3600)
+    paused_probe_seconds: int = Field(default=300, ge=10, le=3600)
+    fail_threshold: int = Field(default=2, ge=1, le=10)
+    timeout_seconds: int = Field(default=30, ge=1, le=300)
+
+
+class DispatchDiskSettings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    floor_gb: float = Field(default=30.0, ge=0)
+    resume_factor: float = Field(default=1.2, ge=1.0, le=5.0)
+    emergency_gb: float = Field(default=10.0, ge=0)
+
+    @model_validator(mode="after")
+    def _thresholds(self) -> DispatchDiskSettings:
+        if self.emergency_gb > self.floor_gb:
+            raise ValueError("紧急磁盘阈值不能高于正常下限")
+        return self
+
+
+class DispatchRefillSettings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    mode: Literal["target", "continuous"] = "target"
+    target: int = Field(default=0, ge=0, le=10000)
+    daily_claim_cap: int = Field(default=30, ge=1, le=10000)
+    allow_reuse: bool = False
+    engineering_usage_limit: int = Field(default=1, ge=1, le=1000)
+    backpressure_threshold: int = Field(default=12, ge=1, le=1000)
+    refill_while_paused: bool = False
+
+    @model_validator(mode="after")
+    def _continuous_cap(self) -> DispatchRefillSettings:
+        if self.mode == "continuous" and self.daily_claim_cap < 1:
+            raise ValueError("持续生产必须设置每日领取上限")
+        return self
+
+
+class DispatchWatchdogSettings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    check_seconds: int = Field(default=30, ge=5, le=600)
+    exit_after_seconds: int = Field(default=300, ge=30, le=3600)
+
+
+class DispatchWindowSettings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    allow: list[str] = Field(default_factory=lambda: ["00:00-08:00", "20:00-24:00"])
+
+
+class DispatchSettings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    engine: Literal["v3", "v2"] = "v3"
+    enabled: bool = True
+    preset: Literal["throughput", "balanced", "careful", "custom"] = "balanced"
+    containers: int = Field(default=4, ge=1, le=8)
+    sessions: int = Field(default=0, ge=0, le=8)
+    authoring: int = Field(default=2, ge=1, le=8)
+    delivering: int = Field(default=1, ge=1, le=8)
+    recording: int = Field(default=1, ge=1, le=16)
+    in_hand: int = Field(default=0, ge=0, le=100)
+    launch_spacing_seconds: int = Field(default=45, ge=10, le=3600)
+    session_spacing_seconds: int = Field(default=20, ge=20, le=3600)
+    startup_grace_seconds: int = Field(default=20, ge=0, le=300)
+    phantom_seconds: int = Field(default=600, ge=30, le=7200)
+    docker_timeout_seconds: int = Field(default=20, ge=1, le=300)
+    docker_stale_seconds: int = Field(default=15, ge=1, le=300)
+    keep_awake: bool = True
+    elastic: DispatchElasticSettings = Field(default_factory=DispatchElasticSettings)
+    retry: DispatchRetrySettings = Field(default_factory=DispatchRetrySettings)
+    guard: DispatchGuardSettings = Field(default_factory=DispatchGuardSettings)
+    llm_guard: DispatchLLMGuardSettings = Field(default_factory=DispatchLLMGuardSettings)
+    disk: DispatchDiskSettings = Field(default_factory=DispatchDiskSettings)
+    refill: DispatchRefillSettings = Field(default_factory=DispatchRefillSettings)
+    watchdog: DispatchWatchdogSettings = Field(default_factory=DispatchWatchdogSettings)
+    window: DispatchWindowSettings = Field(default_factory=DispatchWindowSettings)
+
+    @model_validator(mode="after")
+    def _consistent_limits(self) -> DispatchSettings:
+        if self.in_hand and self.in_hand < self.containers:
+            raise ValueError("在手上限不能小于容器并发")
+        if self.elastic.enabled and self.elastic.ceiling < self.containers:
+            raise ValueError("弹性上限不能小于容器数")
+        return self
+
+
 class Settings(BaseSettings):
     """Configuration loaded from ``config.toml`` and a small env override set."""
 
@@ -186,6 +333,10 @@ class Settings(BaseSettings):
     slim: SlimSettings = Field(default_factory=SlimSettings)
     notify: NotifySettings = Field(default_factory=NotifySettings)
     solo2: Solo2Settings = Field(default_factory=Solo2Settings)
+    dispatch: DispatchSettings = Field(default_factory=DispatchSettings)
+
+    _dispatch_migrated: bool = PrivateAttr(default=False)
+    _dispatch_validation_error: str = PrivateAttr(default="")
 
     @field_validator("skill_root", "tasks_dir", mode="before")
     @classmethod
@@ -309,8 +460,65 @@ def config_toml(settings: Settings) -> str:
         "",
         *_dump_table("solo2", settings.solo2),
         "",
+        *_dump_table(
+            "dispatch",
+            settings.dispatch,
+            exclude={
+                "elastic",
+                "retry",
+                "guard",
+                "llm_guard",
+                "disk",
+                "refill",
+                "watchdog",
+                "window",
+            },
+        ),
+        "",
+        *_dump_table("dispatch.elastic", settings.dispatch.elastic),
+        "",
+        *_dump_table("dispatch.retry", settings.dispatch.retry),
+        "",
+        *_dump_table("dispatch.guard", settings.dispatch.guard),
+        "",
+        *_dump_table("dispatch.llm_guard", settings.dispatch.llm_guard),
+        "",
+        *_dump_table("dispatch.disk", settings.dispatch.disk),
+        "",
+        *_dump_table("dispatch.refill", settings.dispatch.refill),
+        "",
+        *_dump_table("dispatch.watchdog", settings.dispatch.watchdog),
+        "",
+        *_dump_table("dispatch.window", settings.dispatch.window),
+        "",
     ]
     return "\n".join(lines)
+
+
+def _migrated_dispatch(data: dict[str, Any]) -> dict[str, Any]:
+    execution = cast(dict[str, Any], data.get("execution")) if isinstance(data.get("execution"), dict) else {}
+    autopilot = cast(dict[str, Any], data.get("autopilot")) if isinstance(data.get("autopilot"), dict) else {}
+    intake = cast(dict[str, Any], data.get("intake")) if isinstance(data.get("intake"), dict) else {}
+    storage = cast(dict[str, Any], data.get("storage")) if isinstance(data.get("storage"), dict) else {}
+    containers = int(execution.get("max_containers") or 4)
+    authoring = int(autopilot.get("parallel_authoring") or 2)
+    delivering = int(autopilot.get("parallel_delivering") or 1)
+    sessions = authoring + delivering if {authoring, delivering} != {2, 1} else 0
+    in_hand = int(intake.get("max_in_hand") or 0)
+    if in_hand and in_hand < containers:
+        in_hand = containers
+    return {
+        "engine": "v3",
+        "enabled": bool(autopilot.get("enabled", True)),
+        "preset": "custom" if sessions else "balanced",
+        "containers": containers,
+        "authoring": authoring,
+        "delivering": delivering,
+        "sessions": min(8, sessions),
+        "in_hand": in_hand,
+        "elastic": {"ceiling": max(containers, min(8, containers + 2))},
+        "disk": {"floor_gb": float(storage.get("disk_floor_gb") or 30.0)},
+    }
 
 
 def load_settings(paths: Paths) -> Settings:
@@ -330,7 +538,24 @@ def load_settings(paths: Paths) -> Settings:
     if os.environ.get("SOLO_AUTO_SOURCE_URL"):
         source["base_url"] = os.environ["SOLO_AUTO_SOURCE_URL"]
     data["source"] = source
-    return Settings(**data)
+    migrated = not isinstance(data.get("dispatch"), dict)
+    if migrated:
+        data["dispatch"] = _migrated_dispatch(data)
+    else:
+        try:
+            DispatchSettings.model_validate(data["dispatch"])
+        except (TypeError, ValueError) as exc:
+            LOGGER.warning("invalid [dispatch] config, fallback to defaults: %s", exc)
+            data["dispatch"] = DispatchSettings().model_dump()
+            settings = Settings(**data)
+            settings._dispatch_validation_error = str(exc)
+            return settings
+    dispatch_env_engine = os.environ.get("SOLO_AUTO_DISPATCH__ENGINE", "").strip()
+    if dispatch_env_engine in {"v2", "v3"}:
+        data["dispatch"]["engine"] = dispatch_env_engine
+    settings = Settings(**data)
+    settings._dispatch_migrated = migrated
+    return settings
 
 
 def save_settings(paths: Paths, settings: Settings) -> None:

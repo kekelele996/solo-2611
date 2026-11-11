@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from solo_auto.dispatch.facts import docker_info_ok
+from solo_auto.dispatch.kernel import Dispatcher
 from solo_auto.events.bus import EventBus
 from solo_auto.gateway.skill import SkillGateway
 from solo_auto.instance_lock import InstanceLock
@@ -57,6 +59,29 @@ class AppContext:
         self.gateway = SkillGateway(self.settings.skill_root, self.paths.skill_logs)
         self.repo = Repository(self.paths.database)
         self.bus = EventBus()
+        self.dispatcher = Dispatcher(
+            paths=self.paths,
+            settings=self.settings,
+            repo=self.repo,
+            gateway=self.gateway,
+            bus=self.bus,
+        )
+        if self.settings._dispatch_migrated:
+            self.settings._dispatch_migrated = False
+            save_settings(self.paths, self.settings)
+            self.repo.add_event(
+                "dispatch.migrated",
+                "已生成 v3 [dispatch] 配置，原有 v2 配置键保持不变",
+                actor="system",
+            )
+        elif self.settings._dispatch_validation_error:
+            self.repo.add_event(
+                "dispatch.config_recovered",
+                "dispatch 配置校验失败，已回退默认值",
+                level="warn",
+                actor="system",
+                details={"error": self.settings._dispatch_validation_error},
+            )
         self.ledger = UsageLedger(self.repo, self.settings.source.base_url)
         self.notifier = Notifier(self.settings.notify)
         self.instance_lock = InstanceLock(self.paths.instance_lock, self.paths.pid)
@@ -71,6 +96,8 @@ class AppContext:
             repo=self.repo,
             reconciler=self.reconciler,
             bus=self.bus,
+            dispatcher=self.dispatcher,
+            attempt_total=self.settings.execution.attempts,
         )
         self.tasks = TaskService(
             self.settings,
@@ -131,6 +158,7 @@ class AppContext:
             exports=self.exports,
             settings=self.settings.autopilot,
             gateway=self.gateway,
+            dispatcher=self.dispatcher,
         )
         self.autopilot.attach_notifier(self.notifier)
         self.autopilot.breaker.attach_notifier(self.notifier)
@@ -183,6 +211,12 @@ class AppContext:
             bus=self.bus,
             notifier=self.notifier,
         )
+        self.dispatcher.attach_runtime(
+            autopilot=self.autopilot,
+            preflight=self.preflight,
+            source=self.source,
+            recording=self.recording,
+        )
         self.started_at = datetime.now().astimezone()
         self.skill_version = ""
         self.source_online = False
@@ -207,6 +241,7 @@ class AppContext:
                 asyncio.create_task(self._source_loop()),
                 asyncio.create_task(self._cleanup_loop()),
             ]
+            await self.dispatcher.start()
             await self.scheduler.start()
             await self.autopilot.start()
             await self.janitor.start()
@@ -226,6 +261,7 @@ class AppContext:
         await self.janitor.stop()
         await self.notifier.close()
         await self.scheduler.stop()
+        await self.dispatcher.stop()
         for task in self._background:
             task.cancel()
         await asyncio.gather(*self._background, return_exceptions=True)
@@ -273,6 +309,36 @@ class AppContext:
             await asyncio.sleep(3600)
 
     async def system_status(self) -> dict[str, Any]:
+        if self.dispatcher.v3_enabled:
+            snapshot = self.dispatcher.snapshot()
+            raw_pools = snapshot.get("pools")
+            pools = raw_pools if isinstance(raw_pools, dict) else {}
+            raw_containers = pools.get("containers")
+            containers = raw_containers if isinstance(raw_containers, dict) else {}
+            raw_sessions = pools.get("sessions")
+            sessions = raw_sessions if isinstance(raw_sessions, dict) else {}
+            facts = await self.dispatcher.facts.snapshot()
+            raw_counts = snapshot.get("counts")
+            counts = raw_counts if isinstance(raw_counts, dict) else {}
+            return {
+                "docker_ok": facts.docker.healthy,
+                "source_online": self.source_online,
+                "offline": not self.source_online,
+                "disk_free_gb": round(facts.disk_free_gb, 1),
+                "disk_low": facts.disk_free_gb < self.settings.dispatch.disk.floor_gb,
+                "running": int(containers.get("used") or 0),
+                "queued": int(counts.get("waiting") or 0),
+                "blocked": int(counts.get("needs_action") or 0),
+                "auth_blocked": 1 if "breaker" in self.dispatcher.holds.holds else 0,
+                "skill_version": self.skill_version,
+                "dispatch_effective_state": snapshot.get("effective_state", "unknown"),
+                "dispatch_sentence": snapshot.get("sentence", ""),
+                "containers_used": int(containers.get("used") or 0),
+                "containers_limit": int(containers.get("limit") or 0),
+                "sessions_used": int(sessions.get("used") or 0),
+                "sessions_limit": int(sessions.get("limit") or 0),
+                "holds": len(self.dispatcher.holds.active()),
+            }
         disk = shutil.disk_usage(self.paths.home)
         low_disk = disk.free / 1024**3 < self.settings.storage.disk_floor_gb
         auth_row = self.repo.query_one(
@@ -306,16 +372,7 @@ class AppContext:
         }
 
     async def docker_ok(self) -> bool:
-        proc = await asyncio.create_subprocess_exec(
-            "docker",
-            "info",
-            "--format",
-            "{{.ServerVersion}}",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.wait()
-        return proc.returncode == 0
+        return await docker_info_ok()
 
     def git_sha(self) -> str:
         try:

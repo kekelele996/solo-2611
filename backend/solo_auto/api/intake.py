@@ -46,6 +46,12 @@ async def pause(ctx: AppContext = Depends(context)) -> dict[str, Any]:
 async def resume(ctx: AppContext = Depends(context)) -> dict[str, Any]:
     report = await ctx.preflight.run()
     if not report["ok"]:
+        failed = [
+            str(item.get("message") or item.get("key") or "预检失败")
+            for item in report.get("items", [])
+            if not item.get("ok") and item.get("level") == "P0"
+        ]
+        ctx.intake.block("预检未通过，计划保持暂停：" + "；".join(failed[:3]))
         raise ApiError(409, "PREFLIGHT_FAILED", "生产计划预检未通过", detail=report)
     return await ctx.intake.resume()
 

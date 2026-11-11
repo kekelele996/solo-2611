@@ -1,0 +1,74 @@
+[[pattern]]
+kind = "gateway.rate_limited"
+where = ["skill_stderr", "trace_tail", "agent_verdict"]
+regex = '''(?i)\b429\b|rate.?limit|max_parallel_requests'''
+
+[[pattern]]
+kind = "gateway.auth"
+where = ["skill_stderr", "trace_tail", "agent_verdict"]
+regex = '''(?i)\b401\b|\b403\b|invalid.?api.?key|authentication|鉴权'''
+
+[[pattern]]
+kind = "gateway.quota"
+where = ["skill_stderr", "trace_tail", "agent_verdict"]
+regex = '''(?i)insufficient.?(quota|balance)|额度(不足|用尽)|\b402\b'''
+
+[[pattern]]
+kind = "container.image"
+where = ["skill_stderr", "trace_tail"]
+regex = '''(?i)pull access denied|manifest unknown|no such image|error pulling'''
+
+[[pattern]]
+kind = "docker.unavailable"
+where = ["skill_stderr", "trace_tail"]
+regex = '''(?i)cannot connect to the docker daemon|docker daemon|docker.*unavailable'''
+
+[[pattern]]
+kind = "recording.permission"
+where = ["skill_stderr", "trace_tail", "agent_verdict"]
+regex = '''(?i)screen recording|屏幕录制|录屏权限'''
+
+[[pattern]]
+kind = "recording.privacy"
+where = ["skill_stderr", "trace_tail", "agent_verdict"]
+regex = '''(?i)privacy|隐私门禁|账号|主机名|家目录'''
+
+[[pattern]]
+kind = "agent.usage_limited"
+where = ["trace_tail", "agent_verdict"]
+regex = '''(?i)usage limit|用量受限|额度用尽|reset at'''
+
+[[pattern]]
+kind = "agent.launch_lost"
+where = ["skill_stderr", "trace_tail"]
+regex = '''(?i)deep.?link|rollout.*not found|会话.*未建立'''
+
+[[pattern]]
+kind = "source.auth"
+where = ["skill_stderr", "trace_tail"]
+regex = '''(?i)SourceAuthError|登录态.*过期|session.*expired.*source|401.*source'''
+
+[[pattern]]
+kind = "source.unavailable"
+where = ["skill_stderr", "trace_tail"]
+regex = '''(?i)project.?hub.*(timeout|unavailable|5\\d\\d)|题源.*(超时|不可用)'''
+
+[[pattern]]
+kind = "github.auth"
+where = ["skill_stderr", "trace_tail"]
+regex = '''(?i)github.*(401|403).*(token|auth)|bad credentials'''
+
+[[pattern]]
+kind = "github.rate_limited"
+where = ["skill_stderr", "trace_tail"]
+regex = '''(?i)github.*rate.?limit|secondary rate limit'''
+
+[[pattern]]
+kind = "run.timeout"
+where = ["agent_verdict", "trace_tail"]
+regex = '''(?i)运行.*超时|run.*timeout|超过时限'''
+
+[[pattern]]
+kind = "agent.timeout"
+where = ["agent_verdict", "trace_tail"]
+regex = '''(?i)agent.*超时|超过阶段预算'''

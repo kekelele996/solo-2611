@@ -7,6 +7,7 @@ import json
 import shutil
 import statistics
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from solo_auto.errors import ApiError, SourceAuthError
@@ -80,7 +81,17 @@ class IntakeService:
         if not self.plan:
             return {
                 "plan": None,
-                "counts": {"target": 0, "completed": 0, "active": 0, "failed": 0, "claimed": 0},
+                "counts": {
+                    "target": 0,
+                    "completed": 0,
+                    "active": 0,
+                    "failed": 0,
+                    "recoverable": 0,
+                    "orphaned": 0,
+                    "claimed": 0,
+                    "staged": 0,
+                    "in_hand": 0,
+                },
                 "max_in_hand": self.max_in_hand,
                 "eta": "",
             }
@@ -122,8 +133,8 @@ class IntakeService:
             raise ApiError(400, "PROJECT_REQUIRED", "创建生产计划前必须选择项目")
         if self.plan and self.plan.get("status") in {"running", "paused"}:
             raise ApiError(409, "INTAKE_ACTIVE", "已有进行中的生产计划")
-        if target < 1 or target > 500:
-            raise ApiError(400, "INTAKE_TARGET_INVALID", "目标题数必须在 1–500 之间")
+        if target < 1 or target > 15:
+            raise ApiError(400, "INTAKE_TARGET_INVALID", "单个项目的目标题数必须在 1–15 之间")
         projects = await self.source.list_projects()
         project = next((item for item in projects if str(item.get("id") or "") == project_id), None)
         if project is None:
@@ -155,25 +166,51 @@ class IntakeService:
         await self.tick()
         return self.snapshot()
 
-    async def pause(self) -> dict[str, Any]:
+    async def pause(self, reason: str = "已手动暂停") -> dict[str, Any]:
         plan = self._require_plan()
         plan["status"] = "paused"
+        plan["pause_reason"] = reason
         plan["updated_at"] = _now()
         self._save()
+        self.bus.publish("intake.updated", {"status": "paused", "reason": reason})
         return self.snapshot()
+
+    def block(self, reason: str) -> None:
+        if not self.plan or self.plan.get("status") not in {"running", "paused"}:
+            return
+        self.plan["status"] = "paused"
+        self.plan["pause_reason"] = reason
+        self._save()
+        self.bus.publish("intake.updated", {"status": "paused", "reason": reason})
 
     async def resume(self) -> dict[str, Any]:
         plan = self._require_plan()
-        if plan.get("status") == "stopped":
-            raise ApiError(409, "INTAKE_STOPPED", "已终止的计划不能恢复，请新建计划")
+        if plan.get("status") in {"stopped", "completed"}:
+            raise ApiError(409, "INTAKE_FINISHED", "已结束的计划不能恢复，请新建计划")
         source_auth = self.source.test()
         result = await source_auth
         if not result.get("ok"):
             raise ApiError(409, "PREFLIGHT_FAILED", str(result.get("message") or "题源登录态不可用"))
+        recovery = await self.autopilot.start_tasks(
+            [str(task_id) for task_id in plan.get("task_ids") or []]
+        )
         plan["status"] = "running"
+        plan.pop("pause_reason", None)
         plan["updated_at"] = _now()
         self._save()
-        return self.snapshot()
+        self.repo.add_event(
+            "intake.resumed",
+            f"生产计划继续；重新拉起 {len(recovery.get('recovered') or [])} 题，"
+            f"补入队列 {len(recovery.get('added') or [])} 题",
+            actor="user",
+            details={
+                "recovered": recovery.get("recovered") or [],
+                "added": recovery.get("added") or [],
+                "skipped": recovery.get("skipped") or [],
+            },
+        )
+        self.bus.publish("intake.updated", {"status": "running", "counts": self._counts(plan)})
+        return {**self.snapshot(), "recovery": recovery}
 
     async def stop(self, *, release_unstarted: bool = False) -> dict[str, Any]:
         plan = self._require_plan()
@@ -221,6 +258,44 @@ class IntakeService:
                 plan["updated_at"] = _now()
                 self._save()
                 return
+            if self.autopilot.breaker.tripped:
+                plan["status"] = "paused"
+                plan["pause_reason"] = f"自动交付已熔断：{self.autopilot.breaker.kind or '连续失败'}"
+                plan["updated_at"] = _now()
+                self._save()
+                return
+            if self.autopilot.paused:
+                return
+            dispatcher = getattr(self.autopilot, "dispatcher", None)
+            if dispatcher is not None and dispatcher.v3_enabled:
+                if dispatcher.desired_state != "running" and not dispatcher.config.refill.refill_while_paused:
+                    return
+                backpressure = self.repo.query_one(
+                    """
+                    SELECT
+                      (SELECT COUNT(*) FROM tasks WHERE job_status='blocked')
+                      + (SELECT COUNT(*) FROM dispatch_items WHERE status='quarantined')
+                      + (SELECT COUNT(*) FROM audits WHERE sampled=1 AND verdict IS NULL) AS n
+                    """
+                ) or {"n": 0}
+                backlog = int(backpressure.get("n") or 0)
+                threshold = dispatcher.config.refill.backpressure_threshold
+                if backlog <= threshold * 0.7 and "backpressure" in dispatcher.holds.holds:
+                    dispatcher.release_hold("backpressure", actor="backpressure")
+                hold = dispatcher.holds.blocking(["intake"])
+                if hold is not None:
+                    return
+                if backlog > threshold:
+                    dispatcher.register_hold(
+                        source="backpressure",
+                        scope=["intake"],
+                        reason_code="backpressure",
+                        reason=f"待处理积压 {backlog}，超过阈值 {threshold}",
+                        auto=True,
+                    )
+                    return
+            await self._repair_missing_jobs(plan)
+            await self._release_finished_claims(plan)
             counts = self._counts(plan)
             target = int(plan.get("target") or 0)
             if counts["completed"] >= target:
@@ -244,11 +319,31 @@ class IntakeService:
                 )
                 self.notifier.notify(title="solo-auto 计划暂停", status="达到领取上限")
                 return
+            staged = self._pending_staged(plan)
+            remaining_capacity = max(
+                0,
+                min(self.max_in_hand, target - counts["completed"]) - counts["active"],
+            )
+            if staged:
+                if remaining_capacity > 0:
+                    await self._adopt_staged(plan, staged[0])
+                else:
+                    await self._release_staged_claim(staged[-1], "超过在手上限，已归还，等待后续补位")
+                return
             remaining_target = max(0, target - counts["completed"])
             if self._in_hand(plan) >= min(self.max_in_hand, remaining_target):
                 return
             free_gb = shutil.disk_usage(self.paths.home).free / 1024**3
             if free_gb < self.settings.storage.disk_floor_gb:
+                if dispatcher is not None and dispatcher.v3_enabled:
+                    dispatcher.register_hold(
+                        source="disk_guard",
+                        scope=["containers", "intake"],
+                        reason_code="disk.low",
+                        reason=f"磁盘剩余 {free_gb:.1f}GB，低于安全阈值",
+                        auto=True,
+                    )
+                    return
                 plan["status"] = "paused"
                 plan["pause_reason"] = f"磁盘剩余 {free_gb:.1f}GB，低于安全阈值"
                 plan["updated_at"] = _now()
@@ -258,6 +353,21 @@ class IntakeService:
             try:
                 candidate = await self._next_candidate(plan)
             except SourceAuthError as exc:
+                if dispatcher is not None and dispatcher.v3_enabled:
+                    dispatcher.register_hold(
+                        source="source_guard",
+                        scope=["intake"],
+                        reason_code="source.auth",
+                        reason=f"题源会话过期：{exc}",
+                        auto=True,
+                    )
+                    self.repo.add_event(
+                        "source.auth_expired",
+                        str(exc),
+                        level="error",
+                        actor="intake",
+                    )
+                    return
                 plan["status"] = "paused"
                 plan["pause_reason"] = f"题源会话过期：{exc}"
                 plan["updated_at"] = _now()
@@ -272,13 +382,26 @@ class IntakeService:
                 self.bus.publish("intake.updated", {"status": "paused"})
                 return
             if candidate is None:
+                if dispatcher is not None and dispatcher.v3_enabled:
+                    dispatcher.register_hold(
+                        source="source_guard",
+                        scope=["intake"],
+                        reason_code="source.empty",
+                        reason="当前筛选下没有可领取或可复用的工程",
+                        auto=True,
+                    )
+                    return
                 plan["status"] = "paused"
-                plan["pause_reason"] = "当前筛选下没有未使用过的候选工程"
+                plan["pause_reason"] = "当前筛选下没有可领取或可复用的工程"
                 plan["updated_at"] = _now()
                 self._save()
                 return
+            if dispatcher is not None and dispatcher.v3_enabled and "source_guard" in dispatcher.holds.holds:
+                dispatcher.release_hold("source_guard", actor="intake")
             engineering_id = str(_engineering_id(candidate))
             plan["attempted_engineering_ids"].append(engineering_id)
+            claimed_meta: dict[str, Any] | None = None
+            task_created = False
             try:
                 claimed = await self.source.claim(str(plan["project_id"]), engineering_id)
                 claim_id = str(claimed.get("claim_id") or engineering_id)
@@ -290,6 +413,7 @@ class IntakeService:
                     claim_id,
                     project_name=str(plan.get("project_name") or plan["project_id"]),
                 )
+                claimed_meta = meta
                 self.ledger.record_claim(meta)
                 self.repo.upsert_claim(
                     {
@@ -307,13 +431,16 @@ class IntakeService:
                     staging_id=engineering_id,
                     task_name=str(meta.get("name") or engineering_id),
                 )
+                task_created = True
                 task_id = str(task["task_id"])
+                await self.autopilot.enroll([task_id])
                 plan["task_ids"].append(task_id)
                 plan["claimed_engineering_ids"].append(engineering_id)
                 plan["updated_at"] = _now()
                 self._save()
-                await self.autopilot.enroll([task_id])
             except ApiError as exc:
+                if claimed_meta is not None and not task_created:
+                    await self._release_staged_claim(claimed_meta, "自动建题失败，已归还原工程")
                 plan["failed_claims"].append({"engineering_id": engineering_id, "code": exc.code, "message": exc.message})
                 plan["updated_at"] = _now()
                 self._save()
@@ -324,6 +451,9 @@ class IntakeService:
 
     @property
     def max_in_hand(self) -> int:
+        dispatcher = getattr(self.autopilot, "dispatcher", None)
+        if dispatcher is not None and dispatcher.v3_enabled:
+            return int(dispatcher.effective_in_hand)
         if self.intake_settings.max_in_hand > 0:
             return self.intake_settings.max_in_hand
         return max(1, self.settings.autopilot.parallel_authoring + self.settings.execution.max_containers)
@@ -331,12 +461,22 @@ class IntakeService:
     async def _next_candidate(self, plan: dict[str, Any]) -> dict[str, Any] | None:
         filters = dict(plan.get("filters") or {})
         page = 1
-        attempted = set(plan.get("attempted_engineering_ids") or [])
+        failed = {
+            str(item.get("engineering_id") or "")
+            for item in plan.get("failed_claims") or []
+            if isinstance(item, dict)
+        }
+        active_staging = {
+            str(item.get("engineeringId") or "")
+            for item in self.staging.list()
+            if str(item.get("projectId") or "") == str(plan.get("project_id"))
+        }
         stats = {
             str(row["engineering_id"]): row
             for row in self.ledger.engineering_stats(project_id=str(plan["project_id"]))
         }
         excluded_tags = {str(tag) for tag in self.intake_settings.exclude_tags}
+        candidates: list[dict[str, Any]] = []
         while page <= 20:
             response = await self.source.list_engineering(
                 str(plan["project_id"]),
@@ -352,7 +492,7 @@ class IntakeService:
             items = [item for item in response.get("items") or [] if isinstance(item, dict)]
             for item in items:
                 engineering_id = str(_engineering_id(item))
-                if not engineering_id or engineering_id in attempted:
+                if not engineering_id or engineering_id in failed or engineering_id in active_staging:
                     continue
                 tags = {_tag_name(tag) for tag in item.get("tags") or []}
                 if tags & excluded_tags:
@@ -363,49 +503,186 @@ class IntakeService:
                 max_uses = int(plan.get("max_uses") or 0)
                 if max_uses and usage and int(usage.get("used") or 0) >= max_uses:
                     continue
-                return item
+                candidates.append(item)
             total = int(response.get("total") or 0)
             if page * int(response.get("page_size") or 100) >= total:
                 break
             page += 1
-        return None
+        if not candidates:
+            return None
+
+        def priority(pair: tuple[int, dict[str, Any]]) -> tuple[int, int]:
+            index, item = pair
+            usage = stats.get(_engineering_id(item), {})
+            return int(usage.get("used") or 0), index
+
+        return min(
+            enumerate(candidates),
+            key=priority,
+        )[1]
 
     def _counts(self, plan: dict[str, Any]) -> dict[str, int]:
-        completed = active = failed = 0
+        completed = active = failed = recoverable = orphaned = 0
         for task_id in plan.get("task_ids") or []:
             job = self.autopilot.job(str(task_id))
             if not job:
                 task = self.repo.get_task(str(task_id))
                 if task is None or task.get("job_status") == "aborted":
                     failed += 1
+                    recoverable += 1
                 elif task.get("job_status") == "archived":
                     if task.get("exported_at"):
                         completed += 1
                     else:
                         failed += 1
                 else:
-                    active += 1
+                    orphaned += 1
+                    recoverable += 1
             elif job.get("stage") in {"done", "awaiting_audit"}:
                 completed += 1
             elif job.get("active"):
                 active += 1
             elif job.get("stage") in {"failed", "stopped"}:
                 failed += 1
-        return {
-            "target": int(plan.get("target") or 0),
-            "completed": completed,
-            "active": active,
-            "failed": failed,
-            "claimed": len(plan.get("task_ids") or []) + len(plan.get("failed_claims") or []),
-        }
-
-    def _in_hand(self, plan: dict[str, Any]) -> int:
+                recoverable += 1
         staged = sum(
             1
             for item in self.staging.list()
             if str(item.get("projectId") or "") == str(plan.get("project_id")) and not item.get("taskRoot")
         )
-        return self._counts(plan)["active"] + staged
+        return {
+            "target": int(plan.get("target") or 0),
+            "completed": completed,
+            "active": active,
+            "failed": failed,
+            "recoverable": recoverable,
+            "orphaned": orphaned,
+            "claimed": len(plan.get("task_ids") or []) + len(plan.get("failed_claims") or []),
+            "staged": staged,
+            "in_hand": active + orphaned + staged,
+        }
+
+    def _in_hand(self, plan: dict[str, Any]) -> int:
+        return self._counts(plan)["in_hand"]
+
+    async def _repair_missing_jobs(self, plan: dict[str, Any]) -> list[str]:
+        missing: list[str] = []
+        for task_id in plan.get("task_ids") or []:
+            task = self.repo.get_task(str(task_id))
+            if not task or str(task.get("job_status") or "") in {"archived", "aborted"}:
+                continue
+            if self.autopilot.job(str(task_id)) is None:
+                missing.append(str(task_id))
+        if not missing:
+            return []
+        await self.autopilot.enroll(missing)
+        self.repo.add_event(
+            "intake.recovered",
+            f"生产计划补齐 {len(missing)} 个未接入自动交付的任务",
+            actor="intake",
+            details={"task_ids": missing},
+        )
+        return missing
+
+    def _pending_staged(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
+        blocked = {
+            str(item.get("engineering_id") or "")
+            for item in plan.get("failed_claims") or []
+            if isinstance(item, dict)
+        }
+        return [
+            item
+            for item in self.staging.list()
+            if str(item.get("projectId") or "") == str(plan.get("project_id"))
+            and not item.get("taskRoot")
+            and Path(str(item.get("sourcePath") or "")).is_dir()
+            and str(item.get("engineeringId") or "") not in blocked
+        ]
+
+    async def _adopt_staged(self, plan: dict[str, Any], meta: dict[str, Any]) -> None:
+        engineering_id = str(meta.get("engineeringId") or "")
+        plan["attempted_engineering_ids"].append(engineering_id)
+        try:
+            task = await self.tasks.create(
+                staging_id=engineering_id,
+                task_name=str(meta.get("name") or engineering_id),
+            )
+            task_id = str(task["task_id"])
+            await self.autopilot.enroll([task_id])
+            plan["task_ids"].append(task_id)
+            plan["claimed_engineering_ids"].append(engineering_id)
+            plan["updated_at"] = _now()
+            self._save()
+            self.repo.add_event(
+                "intake.staged_adopted",
+                f"{meta.get('name') or engineering_id} 已从暂存材料接回生产计划",
+                actor="intake",
+                task_id=task_id,
+            )
+        except ApiError as exc:
+            plan["failed_claims"].append(
+                {
+                    "engineering_id": engineering_id,
+                    "code": exc.code,
+                    "message": exc.message,
+                }
+            )
+            plan["updated_at"] = _now()
+            self._save()
+            await self._release_staged_claim(meta, "暂存材料建题失败，已归还原工程")
+        self.bus.publish("intake.updated", {"counts": self._counts(plan), "status": plan["status"]})
+
+    async def _release_finished_claims(self, plan: dict[str, Any]) -> None:
+        tasks = {
+            str(task.get("task_root") or ""): task
+            for task in self.repo.query("SELECT * FROM tasks")
+        }
+        for meta in self.staging.list():
+            if str(meta.get("projectId") or "") != str(plan.get("project_id")) or not meta.get("taskRoot"):
+                continue
+            task = tasks.get(str(meta.get("taskRoot") or ""))
+            if not task:
+                continue
+            job = self.autopilot.job(str(task["id"]))
+            terminal_job = bool(job and job.get("stage") in {"done", "awaiting_audit", "failed", "stopped"})
+            terminal_task = str(task.get("job_status") or "") in {"exported", "archived", "aborted"}
+            if terminal_job or terminal_task:
+                await self._release_staged_claim(meta, "任务已结束，已归还原工程供后续复题")
+
+    async def _release_staged_claim(self, meta: dict[str, Any], event_message: str) -> None:
+        try:
+            await self.source.release(
+                str(meta.get("projectId") or ""),
+                str(meta.get("engineeringId") or ""),
+                str(meta.get("claimId") or ""),
+            )
+        except ApiError as exc:
+            if exc.status_code != 404:
+                self.repo.add_event(
+                    "claim.release_failed",
+                    f"{meta.get('name') or meta.get('engineeringId')} 归还失败：{exc.message}",
+                    level="warn",
+                    actor="intake",
+                )
+                return
+        except Exception as exc:
+            self.repo.add_event(
+                "claim.release_failed",
+                f"{meta.get('name') or meta.get('engineeringId')} 归还失败：{exc}",
+                level="warn",
+                actor="intake",
+            )
+            return
+        self.repo.execute(
+            "UPDATE claims SET released_at = ? WHERE id = ?",
+            (_now(), str(meta.get("claimId") or "")),
+        )
+        self.staging.remove(str(meta.get("engineeringId") or ""))
+        self.repo.add_event(
+            "claim.released",
+            f"{meta.get('name') or meta.get('engineeringId')}：{event_message}",
+            actor="intake",
+        )
 
     def _require_plan(self) -> dict[str, Any]:
         if not self.plan:

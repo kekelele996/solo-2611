@@ -19,7 +19,10 @@ const TaskDetailPage = lazy(() =>
 const SourcePage = lazy(() => import("./pages/SourcePage").then((module) => ({ default: module.SourcePage })));
 const ExportPage = lazy(() => import("./pages/ExportPage").then((module) => ({ default: module.ExportPage })));
 const SystemPage = lazy(() => import("./pages/SystemPage").then((module) => ({ default: module.SystemPage })));
-const ProductionPage = lazy(() => import("./pages/ProductionPage").then((module) => ({ default: module.ProductionPage })));
+const DispatchPage = lazy(() => import("./pages/DispatchPage").then((module) => ({ default: module.DispatchPage })));
+const DispatchLogPage = lazy(() =>
+  import("./pages/DispatchLogPage").then((module) => ({ default: module.DispatchLogPage })),
+);
 const AuditPage = lazy(() => import("./pages/AuditPage").then((module) => ({ default: module.AuditPage })));
 const UsagePage = lazy(() => import("./pages/UsagePage").then((module) => ({ default: module.UsagePage })));
 
@@ -44,7 +47,9 @@ const router = createBrowserRouter([
     errorElement: <NotFoundPage />,
     children: [
       { index: true, element: deferred(<DashboardPage />) },
-      { path: "production", element: deferred(<ProductionPage />) },
+      { path: "dispatch", element: deferred(<DispatchPage />) },
+      { path: "production", element: deferred(<DispatchPage />) },
+      { path: "logs", element: deferred(<DispatchLogPage />) },
       { path: "audit", element: deferred(<AuditPage />) },
       { path: "tasks", element: deferred(<TasksPage />) },
       { path: "tasks/:id", element: deferred(<TaskDetailPage />) },

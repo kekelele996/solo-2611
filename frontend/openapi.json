@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "solo-auto",
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "paths": {
     "/api/health": {
@@ -3389,6 +3389,1157 @@
         }
       }
     },
+    "/api/dispatch": {
+      "get": {
+        "summary": "Snapshot",
+        "operationId": "snapshot_api_dispatch_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Snapshot Api Dispatch Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/state": {
+      "post": {
+        "summary": "State",
+        "operationId": "state_api_dispatch_state_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchStateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response State Api Dispatch State Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/interrupt": {
+      "post": {
+        "summary": "Interrupt",
+        "operationId": "interrupt_api_dispatch_interrupt_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchInterruptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Interrupt Api Dispatch Interrupt Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/limits": {
+      "patch": {
+        "summary": "Limits",
+        "operationId": "limits_api_dispatch_limits_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchLimitsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Limits Api Dispatch Limits Patch"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/policies": {
+      "patch": {
+        "summary": "Policies",
+        "operationId": "policies_api_dispatch_policies_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchPoliciesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Policies Api Dispatch Policies Patch"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/explain": {
+      "get": {
+        "summary": "Explain",
+        "operationId": "explain_api_dispatch_explain_get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Explain Api Dispatch Explain Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/upcoming": {
+      "get": {
+        "summary": "Upcoming",
+        "operationId": "upcoming_api_dispatch_upcoming_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "default": 10,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Upcoming Api Dispatch Upcoming Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/throughput": {
+      "get": {
+        "summary": "Throughput",
+        "operationId": "throughput_api_dispatch_throughput_get",
+        "parameters": [
+          {
+            "name": "hours",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 720,
+              "minimum": 1,
+              "default": 24,
+              "title": "Hours"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Throughput Api Dispatch Throughput Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/capacity": {
+      "get": {
+        "summary": "Capacity",
+        "operationId": "capacity_api_dispatch_capacity_get",
+        "parameters": [
+          {
+            "name": "hours",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 168,
+              "minimum": 1,
+              "default": 24,
+              "title": "Hours"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Capacity Api Dispatch Capacity Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/log": {
+      "get": {
+        "summary": "Dispatch Log",
+        "operationId": "dispatch_log_api_dispatch_log_get",
+        "parameters": [
+          {
+            "name": "after_seq",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "After Seq"
+            }
+          },
+          {
+            "name": "family",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Family"
+            }
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Level"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "default": 200,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Dispatch Log Api Dispatch Log Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/holds": {
+      "get": {
+        "summary": "Holds",
+        "operationId": "holds_api_dispatch_holds_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Holds Api Dispatch Holds Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/holds/{hold_id}/probe": {
+      "post": {
+        "summary": "Probe Hold",
+        "operationId": "probe_hold_api_dispatch_holds__hold_id__probe_post",
+        "parameters": [
+          {
+            "name": "hold_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Hold Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Probe Hold Api Dispatch Holds  Hold Id  Probe Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/holds/{hold_id}/release": {
+      "post": {
+        "summary": "Release Hold",
+        "operationId": "release_hold_api_dispatch_holds__hold_id__release_post",
+        "parameters": [
+          {
+            "name": "hold_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Hold Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Release Hold Api Dispatch Holds  Hold Id  Release Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/holds/{hold_id}/convert": {
+      "post": {
+        "summary": "Convert Hold",
+        "operationId": "convert_hold_api_dispatch_holds__hold_id__convert_post",
+        "parameters": [
+          {
+            "name": "hold_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Hold Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Convert Hold Api Dispatch Holds  Hold Id  Convert Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/probes/{source}": {
+      "post": {
+        "summary": "Probe",
+        "operationId": "probe_api_dispatch_probes__source__post",
+        "parameters": [
+          {
+            "name": "source",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Source"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Probe Api Dispatch Probes  Source  Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/recover": {
+      "post": {
+        "summary": "Recover",
+        "operationId": "recover_api_dispatch_recover_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchRecoverRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Recover Api Dispatch Recover Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/queue": {
+      "post": {
+        "summary": "Enqueue",
+        "operationId": "enqueue_api_dispatch_queue_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchQueueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Enqueue Api Dispatch Queue Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/queue/clear-finished": {
+      "post": {
+        "summary": "Clear Finished",
+        "operationId": "clear_finished_api_dispatch_queue_clear_finished_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Clear Finished Api Dispatch Queue Clear Finished Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/queue/{task_id}/pin": {
+      "post": {
+        "summary": "Pin",
+        "operationId": "pin_api_dispatch_queue__task_id__pin_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Pin Api Dispatch Queue  Task Id  Pin Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/queue/{task_id}/move": {
+      "post": {
+        "summary": "Move",
+        "operationId": "move_api_dispatch_queue__task_id__move_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchMoveRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Move Api Dispatch Queue  Task Id  Move Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/queue/{task_id}/retry": {
+      "post": {
+        "summary": "Retry",
+        "operationId": "retry_api_dispatch_queue__task_id__retry_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Retry Api Dispatch Queue  Task Id  Retry Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/queue/{task_id}/quarantine": {
+      "post": {
+        "summary": "Quarantine",
+        "operationId": "quarantine_api_dispatch_queue__task_id__quarantine_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Quarantine Api Dispatch Queue  Task Id  Quarantine Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/queue/{task_id}/release": {
+      "post": {
+        "summary": "Release",
+        "operationId": "release_api_dispatch_queue__task_id__release_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Release Api Dispatch Queue  Task Id  Release Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/queue/{task_id}/keep": {
+      "post": {
+        "summary": "Keep",
+        "operationId": "keep_api_dispatch_queue__task_id__keep_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Keep Api Dispatch Queue  Task Id  Keep Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/plan": {
+      "get": {
+        "summary": "Get Plan",
+        "operationId": "get_plan_api_dispatch_plan_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Get Plan Api Dispatch Plan Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Put Plan",
+        "operationId": "put_plan_api_dispatch_plan_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchPlanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Put Plan Api Dispatch Plan Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/plan/stop": {
+      "post": {
+        "summary": "Stop Plan",
+        "operationId": "stop_plan_api_dispatch_plan_stop_post",
+        "parameters": [
+          {
+            "name": "release_unstarted",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Release Unstarted"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Stop Plan Api Dispatch Plan Stop Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/guard": {
+      "get": {
+        "summary": "Guard",
+        "operationId": "guard_api_dispatch_guard_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Guard Api Dispatch Guard Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/guard/{hit_id}/apply": {
+      "post": {
+        "summary": "Apply Guard",
+        "operationId": "apply_guard_api_dispatch_guard__hit_id__apply_post",
+        "parameters": [
+          {
+            "name": "hit_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Hit Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Apply Guard Api Dispatch Guard  Hit Id  Apply Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/guard/{hit_id}/dismiss": {
+      "post": {
+        "summary": "Dismiss Guard",
+        "operationId": "dismiss_guard_api_dispatch_guard__hit_id__dismiss_post",
+        "parameters": [
+          {
+            "name": "hit_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Hit Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Dismiss Guard Api Dispatch Guard  Hit Id  Dismiss Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/autopilot": {
       "get": {
         "summary": "Status",
@@ -5289,7 +6440,8 @@
               "skill",
               "source",
               "docker",
-              "solo2"
+              "solo2",
+              "api"
             ],
             "title": "Target"
           }
@@ -5345,6 +6497,414 @@
           "staging_id"
         ],
         "title": "CreateTaskRequest"
+      },
+      "DispatchElasticPatch": {
+        "properties": {
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "ceiling": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 8.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ceiling"
+          }
+        },
+        "type": "object",
+        "title": "DispatchElasticPatch"
+      },
+      "DispatchInterruptRequest": {
+        "properties": {
+          "task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "title": "Task Ids"
+          },
+          "kill_containers": {
+            "type": "boolean",
+            "title": "Kill Containers",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "DispatchInterruptRequest"
+      },
+      "DispatchLimitsRequest": {
+        "properties": {
+          "preset": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "throughput",
+                  "balanced",
+                  "careful",
+                  "custom"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset"
+          },
+          "containers": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 8.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Containers"
+          },
+          "sessions": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 8.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sessions"
+          },
+          "authoring": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 8.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authoring"
+          },
+          "delivering": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 8.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivering"
+          },
+          "recording": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 16.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recording"
+          },
+          "in_hand": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 100.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "In Hand"
+          },
+          "launch_spacing_seconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 3600.0,
+                "minimum": 10.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Launch Spacing Seconds"
+          },
+          "session_spacing_seconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 3600.0,
+                "minimum": 20.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Spacing Seconds"
+          },
+          "keep_awake": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keep Awake"
+          },
+          "elastic": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DispatchElasticPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "DispatchLimitsRequest"
+      },
+      "DispatchMoveRequest": {
+        "properties": {
+          "direction": {
+            "type": "string",
+            "enum": [
+              "up",
+              "down",
+              "top"
+            ],
+            "title": "Direction"
+          }
+        },
+        "type": "object",
+        "required": [
+          "direction"
+        ],
+        "title": "DispatchMoveRequest"
+      },
+      "DispatchPlanRequest": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "target",
+              "continuous"
+            ],
+            "title": "Mode",
+            "default": "target"
+          },
+          "target": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Target",
+            "default": 0
+          },
+          "daily_claim_cap": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Daily Claim Cap",
+            "default": 30
+          },
+          "project_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "title": "Project Ids"
+          },
+          "weights": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Weights"
+          },
+          "priority_projects": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Priority Projects"
+          },
+          "allow_reuse": {
+            "type": "boolean",
+            "title": "Allow Reuse",
+            "default": false
+          },
+          "engineering_usage_limit": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Engineering Usage Limit",
+            "default": 1
+          },
+          "filters": {
+            "type": "object",
+            "title": "Filters"
+          }
+        },
+        "type": "object",
+        "title": "DispatchPlanRequest"
+      },
+      "DispatchPoliciesRequest": {
+        "properties": {
+          "guard": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guard"
+          },
+          "retry": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry"
+          },
+          "llm_guard": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Guard"
+          },
+          "disk": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disk"
+          },
+          "watchdog": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Watchdog"
+          },
+          "window": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window"
+          }
+        },
+        "type": "object",
+        "title": "DispatchPoliciesRequest"
+      },
+      "DispatchQueueRequest": {
+        "properties": {
+          "task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Task Ids"
+          },
+          "front": {
+            "type": "boolean",
+            "title": "Front",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_ids"
+        ],
+        "title": "DispatchQueueRequest"
+      },
+      "DispatchRecoverRequest": {
+        "properties": {
+          "since_minutes": {
+            "type": "integer",
+            "maximum": 10080.0,
+            "minimum": 1.0,
+            "title": "Since Minutes",
+            "default": 120
+          }
+        },
+        "type": "object",
+        "title": "DispatchRecoverRequest"
+      },
+      "DispatchStateRequest": {
+        "properties": {
+          "desired": {
+            "type": "string",
+            "enum": [
+              "running",
+              "paused",
+              "draining"
+            ],
+            "title": "Desired"
+          }
+        },
+        "type": "object",
+        "required": [
+          "desired"
+        ],
+        "title": "DispatchStateRequest"
       },
       "ExecutionConfigPatch": {
         "properties": {
@@ -5505,7 +7065,7 @@
           },
           "target": {
             "type": "integer",
-            "maximum": 500.0,
+            "maximum": 15.0,
             "minimum": 1.0,
             "title": "Target"
           },
@@ -5640,7 +7200,7 @@
           "sub_direction": {
             "type": "string",
             "title": "Sub Direction",
-            "default": "其他"
+            "default": "数仓与数据湖"
           },
           "allow_over_170": {
             "type": "boolean",

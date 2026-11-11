@@ -341,7 +341,7 @@ export function PromptTab({ task }: { task: TaskDetail }) {
         languages,
         repro_level: repro || null,
         domain: task.domain || "数据工程",
-        sub_direction: task.sub_direction || "其他",
+        sub_direction: task.sub_direction || "数仓与数据湖",
         allow_over_170: allowOver,
       });
     },

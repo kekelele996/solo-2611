@@ -1,5 +1,9 @@
 # 启动提示词 · 交给开发模型
 
+> 当前基线已更新为 **solo-auto v0.3.0 调度中心**。新任务先读 `docs/v3/README.md` 和
+> `docs/v3/implementation-status.md`；本文件下方保留 v1 从零建设提示词，仅作为历史设计背景。
+> 不要覆盖现有实现，不要改正在使用的任务目录。
+
 > 用法：在**项目根目录**（`solo-202611/solo-auto/`）新开一个会话，把下面 `====` 之间的内容整段粘贴过去。
 > 不要一次性把 13 份文档塞进上下文 —— 提示词里已经规定了按里程碑分批读。
 
@@ -10,9 +14,11 @@
 
 ## 这个产品是什么
 
-上一期有个技能 `sologsb-0917`（Pair-wise GSB）配一个监控台 `sg-auto`。这一期形态变了：
+上一期的形态已经升级到 v3；下方保留 v1 从零建设说明用于了解最初边界。
 
-- 技能换成了 `solo-2611`（单轮 pointwise Feedback，纯 CLI，v0.2.2），已经存在且**不要改它**。
+早先有个技能 `sologsb-0917`（Pair-wise GSB）配一个监控台 `sg-auto`。本期形态变了：
+
+- 技能换成了 `solo-2611`（单轮 pointwise Feedback，纯 CLI，v0.3.2），已经存在且**不要改它**。
 - 题目来源换成了本机「工程台 Project Hub」（`http://localhost:8088`），工程需要独占领取。
 - 交付物是一份 **19 列的 Excel** + 轨迹 + 720p 录屏 + 250 字 Feedback。
 
@@ -120,7 +126,7 @@ M5 打磨与验收  D13–D15  快捷键、动效、端到端演练
 
 ## 技术选型（已定，不要换）
 
-- 后端：Python 3.11 + FastAPI，**单 uvicorn worker**，`asyncio.create_subprocess_exec`
+- 后端：Python 3.12 + FastAPI，**单 uvicorn worker**，`asyncio.create_subprocess_exec`
 - 前端：React 19 + TypeScript + Vite + TanStack Query v5 + 原生 CSS（**不用 Tailwind**）
 - 存储：SQLite（WAL）作索引，磁盘上的 `state.json` 是唯一事实源
 - 依赖清单在 `docs/03-tech-stack.md` §2.3，**要加库先在 `12-open-questions.md` 登记理由**

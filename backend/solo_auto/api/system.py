@@ -38,11 +38,22 @@ router = APIRouter(prefix="/api")
 
 @router.get("/health")
 async def health(ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    snapshot = ctx.dispatcher.snapshot()
+    loops = ctx.dispatcher.health.snapshot()
+    holds = ctx.dispatcher.holds.active()
     return {
-        "ok": True,
+        "ok": ctx.dispatcher.health.ok if ctx.dispatcher.v3_enabled else True,
         "uptime_s": round((datetime.now().astimezone() - ctx.started_at).total_seconds(), 1),
-        "version": "0.2.0",
+        "version": "0.3.0",
         "build_id": build_id(),
+        "loops": loops,
+        "dispatch": {
+            "engine": snapshot.get("engine"),
+            "effective_state": snapshot.get("effective_state"),
+            "sentence": snapshot.get("sentence"),
+            "holds": [hold.id for hold in holds],
+        },
+        "starts": _read_starts(ctx.paths.run / "starts.json"),
     }
 
 
@@ -52,7 +63,7 @@ async def version(ctx: AppContext = Depends(context)) -> dict[str, Any]:
     raw_claude = skill_config.get("claude")
     claude = cast(dict[str, Any], raw_claude) if isinstance(raw_claude, dict) else {}
     return {
-        "app": "0.2.0",
+        "app": "0.3.0",
         "git_sha": ctx.git_sha(),
         "build_id": build_id(),
         "skill_version": ctx.skill_version,
@@ -110,7 +121,7 @@ async def diagnostics(ctx: AppContext = Depends(context)) -> dict[str, Any]:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     target = ctx.paths.backups / f"diagnostics-{stamp}.zip"
     info = {
-        "version": "0.2.0",
+        "version": "0.3.0",
         "build_id": build_id(),
         "git_sha": ctx.git_sha(),
         "skill_version": ctx.skill_version,
@@ -368,6 +379,8 @@ async def test_config(payload: ConfigTestRequest, ctx: AppContext = Depends(cont
         }
     if payload.target == "solo2":
         return await ctx.solo2.test()
+    if payload.target == "api":
+        return await ctx.preflight.probe_api()
     raise ApiError(400, "TEST_TARGET_INVALID", "未知测试目标")
 
 
@@ -670,6 +683,14 @@ async def create_task(payload: CreateTaskRequest, ctx: AppContext = Depends(cont
         domain=payload.domain,
         sub_direction=payload.sub_direction,
     )
+
+
+def _read_starts(path: Path) -> list[dict[str, Any]]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
 
 def _skill_has_github_token(config: dict[str, Any]) -> bool:

@@ -18,8 +18,9 @@ from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from solo_auto.dispatch.classify import Evidence
 from solo_auto.errors import ApiError
 from solo_auto.events.bus import EventBus
 from solo_auto.gateway.skill import SkillGateway
@@ -44,6 +45,9 @@ from solo_auto.pipeline.steps import evaluate_steps
 from solo_auto.settings import AutopilotSettings, Paths
 from solo_auto.store.repo import Repository
 from solo_auto.store.state import load_state
+
+if TYPE_CHECKING:
+    from solo_auto.dispatch.kernel import Dispatcher
 
 LOGGER = logging.getLogger(__name__)
 
@@ -140,6 +144,7 @@ class Autopilot:
         exports: ExportService,
         settings: AutopilotSettings,
         gateway: SkillGateway,
+        dispatcher: Dispatcher | None = None,
     ) -> None:
         self.paths = paths
         self.skill_root = skill_root
@@ -150,6 +155,7 @@ class Autopilot:
         self.feedback = feedback
         self.exports = exports
         self.gateway = gateway
+        self.dispatcher = dispatcher
         self.settings = settings
         self.desktop = ChatGPTDesktop(home=paths.home, helper=settings.chatgpt_push_helper)
         self.breaker = Breaker(paths.home / "breaker.json", bus, settings)
@@ -206,6 +212,13 @@ class Autopilot:
     def agent_command(self, value: list[str]) -> None:
         self._agent_command_override = value
 
+    @property
+    def chatgpt_parallel(self) -> int:
+        """One desktop session spans authoring through delivery, so both pools share one limit."""
+        if self.dispatcher is not None and self.dispatcher.v3_enabled:
+            return self.dispatcher.effective_session_limit
+        return max(1, self.settings.parallel_authoring + self.settings.parallel_delivering)
+
     # ---- lifecycle -------------------------------------------------
 
     async def start(self) -> None:
@@ -253,6 +266,7 @@ class Autopilot:
             "active": sum(1 for job in jobs if job.active),
             "parallel_authoring": self.settings.parallel_authoring,
             "parallel_delivering": self.settings.parallel_delivering,
+            "parallel_chatgpt": self.chatgpt_parallel,
             "stage_timeout_seconds": self.settings.stage_timeout_seconds,
             "chatgpt_timeout_seconds": self.settings.chatgpt_timeout_seconds,
             "jobs": [self._job_view(job) for job in jobs],
@@ -263,10 +277,26 @@ class Autopilot:
         return self._job_view(job) if job else None
 
     async def enroll(self, task_ids: list[str]) -> dict[str, Any]:
+        async with self._lock:
+            if self.breaker.tripped:
+                raise ApiError(409, "AUTOPILOT_BREAKER_OPEN", "自动交付已熔断，请先恢复")
+            self._require_executor()
+            result = self._activate_tasks(task_ids, recover_terminal=True, actor="user")
+        return {**result, **self.snapshot()}
+
+    async def start_tasks(self, task_ids: list[str]) -> dict[str, Any]:
+        """Start selected tasks and recover any interrupted or failed job."""
+        async with self._lock:
+            self._require_executor()
+            self.paused = False
+            self.breaker.reset()
+            result = self._activate_tasks(task_ids, recover_terminal=True, actor="user")
+            self._changed()
+        return {**result, **self.snapshot()}
+
+    def _require_executor(self) -> None:
         if not self.settings.enabled:
             raise ApiError(409, "AUTOPILOT_DISABLED", "自动交付总开关已关闭")
-        if self.breaker.tripped:
-            raise ApiError(409, "AUTOPILOT_BREAKER_OPEN", "自动交付已熔断，请先恢复")
         if self.settings.agent_mode == "chatgpt":
             if not self.desktop.available():
                 raise ApiError(409, "CHATGPT_APP_MISSING", "找不到 ChatGPT.app 或桌面深链接辅助程序")
@@ -276,24 +306,72 @@ class Autopilot:
                 "AGENT_NOT_FOUND",
                 f"找不到 Agent 命令：{self.agent_command[0]}。请安装 Codex CLI 或设置 SOLO_AUTO_AGENT_BIN",
             )
-        added: list[str] = []
-        for task_id in dict.fromkeys(task_ids):
+
+    def _activate_tasks(
+        self,
+        task_ids: list[str],
+        *,
+        recover_terminal: bool,
+        actor: str,
+    ) -> dict[str, Any]:
+        unique_ids = list(dict.fromkeys(task_ids))
+        tasks: dict[str, dict[str, Any]] = {}
+        for task_id in unique_ids:
             task = self.repo.get_task(task_id)
             if not task:
                 raise ApiError(404, "TASK_NOT_FOUND", f"任务不存在：{task_id}")
+            tasks[task_id] = task
+
+        added: list[str] = []
+        recovered: list[str] = []
+        already_active: list[str] = []
+        skipped: list[dict[str, str]] = []
+        changed = False
+        for task_id, task in tasks.items():
             current = self.jobs.get(task_id)
             if current and current.active:
+                already_active.append(task_id)
+                continue
+            if current and recover_terminal and current.stage in {"failed", "stopped"}:
+                previous_stage = current.stage
+                try:
+                    target = self._reset_for_retry(current)
+                except ApiError as exc:
+                    skipped.append({"task_id": task_id, "reason": exc.message})
+                    continue
+                recovered.append(task_id)
+                self.repo.add_event(
+                    "autopilot.recovered",
+                    f"{task['task_name']} 从「{STAGE_LABELS.get(target, target)}」重新拉起",
+                    actor=actor,
+                    task_id=task_id,
+                    details={"from": previous_stage, "stage": target},
+                )
+                changed = True
+                continue
+            if current:
+                skipped.append({"task_id": task_id, "reason": f"当前阶段不可恢复：{current.stage}"})
+                continue
+            if str(task.get("job_status") or "") in {"archived", "aborted"}:
+                skipped.append({"task_id": task_id, "reason": "任务已结束，不能重新拉起"})
                 continue
             self.jobs[task_id] = Job(task_id=task_id, task_name=str(task["task_name"]))
             added.append(task_id)
             self.repo.add_event(
                 "autopilot.enrolled",
                 f"{task['task_name']} 进入自动交付（无人工复核）",
-                actor="user",
+                actor=actor,
                 task_id=task_id,
             )
-        self._changed()
-        return {"added": added, **self.snapshot()}
+            changed = True
+        if changed:
+            self._changed()
+        return {
+            "added": added,
+            "recovered": recovered,
+            "already_active": already_active,
+            "skipped": skipped,
+        }
 
     async def cancel(
         self,
@@ -312,6 +390,8 @@ class Autopilot:
             await self._stop_desktop_follower(task_id)
             desktop_stopped = job.desktop_running
             job.desktop_running = False
+            if desktop_stopped and self.dispatcher is not None and self.dispatcher.v3_enabled:
+                self.dispatcher.release_session(task_id)
             cleanup_detail = ""
             if should_kill:
                 task = self.repo.get_task(task_id)
@@ -340,11 +420,16 @@ class Autopilot:
         self._changed()
         return self.snapshot()
 
-    def resume(self) -> dict[str, Any]:
-        self.paused = False
-        self.breaker.reset()
-        self._changed()
-        return self.snapshot()
+    async def resume(self, task_ids: list[str] | None = None) -> dict[str, Any]:
+        """Resume the executor and restart interrupted jobs from disk facts."""
+        targets = task_ids
+        if targets is None:
+            targets = [
+                task_id
+                for task_id, job in self.jobs.items()
+                if job.stage not in {"done", "awaiting_audit"}
+            ]
+        return await self.start_tasks(targets)
 
     def mark_done(self, task_id: str, detail: str = "自动交付完成") -> None:
         job = self.jobs.get(task_id)
@@ -356,10 +441,7 @@ class Autopilot:
         if job:
             self._finish(job, "failed", detail)
 
-    async def retry(self, task_id: str, *, from_stage: str = "") -> dict[str, Any]:
-        job = self.jobs.get(task_id)
-        if not job:
-            raise ApiError(404, "AUTOPILOT_JOB_NOT_FOUND", "该任务没有自动交付记录")
+    def _reset_for_retry(self, job: Job, from_stage: str = "") -> str:
         if job.active and job.stage != "failed":
             raise ApiError(409, "AUTOPILOT_ACTIVE", "自动交付仍在运行，先停止再重试")
         stages = self._retry_stages(job)
@@ -380,7 +462,17 @@ class Autopilot:
         job.failure_kind = ""
         job.finished_at = ""
         job.stage_started_at = _now()
+        job.agent_pid = 0
+        job.desktop_running = False
         self._changed()
+        return target
+
+    async def retry(self, task_id: str, *, from_stage: str = "") -> dict[str, Any]:
+        job = self.jobs.get(task_id)
+        if not job:
+            raise ApiError(404, "AUTOPILOT_JOB_NOT_FOUND", "该任务没有自动交付记录")
+        async with self._lock:
+            self._reset_for_retry(job, from_stage)
         return self._job_view(job)
 
     def stages(self, task_id: str) -> list[dict[str, Any]]:
@@ -626,6 +718,19 @@ class Autopilot:
         if all(step.ok for step in facts.steps[:10]):
             await self._export_chatgpt(job, task, root)
             return
+        running = sum(1 for item in self.jobs.values() if item.desktop_running)
+        if running >= self.chatgpt_parallel:
+            self._stage(
+                job,
+                "pending",
+                f"等待 ChatGPT 会话空位（{running}/{self.chatgpt_parallel}）",
+            )
+            return
+        if self.dispatcher is not None and self.dispatcher.v3_enabled:
+            decision = await self.dispatcher.request_session(job.task_id, stage="chatgpt")
+            if not decision.allowed:
+                self._stage(job, "pending", decision.text or "等待会话空位")
+                return
         await self._launch_chatgpt(job, root, facts.missing)
 
     async def _launch_chatgpt(self, job: Job, root: Path, missing: list[str]) -> None:
@@ -755,6 +860,8 @@ class Autopilot:
         job.desktop_running = False
         job.desktop_stage_id = 0
         job.agent_pid = 0
+        if self.dispatcher is not None and self.dispatcher.v3_enabled:
+            self.dispatcher.release_session(job.task_id)
         self.desktop_terminal_seen.discard(job.task_id)
         if outcome == "ok":
             self.breaker.record_success()
@@ -811,6 +918,11 @@ class Autopilot:
             reason = job.detail or "；".join(missing[:2])
             self._finish(job, "failed", f"{STAGE_LABELS[stage]} 已尝试 {used} 次仍未通过：{reason}")
             return
+        if self.dispatcher is not None and self.dispatcher.v3_enabled:
+            decision = self.dispatcher.request_agent(job.task_id, stage=stage)
+            if not decision.allowed:
+                self._stage(job, stage, decision.text or "等待 Agent 空位")
+                return
         if sum(1 for run in self.agents.values() if run.stage == stage) >= self.parallel[stage]:
             self._stage(job, stage, "等待 Agent 空位")
             return
@@ -874,6 +986,8 @@ class Autopilot:
             return
         run = self.agents.pop(job.task_id, None)
         job.agent_pid = 0
+        if self.dispatcher is not None and self.dispatcher.v3_enabled:
+            self.dispatcher.release_agent(job.task_id, stage=stage)
         if run:
             run.done.set()
             if run.streamer:
@@ -895,7 +1009,24 @@ class Autopilot:
             if stage == "delivering" and job.redo_feedback:
                 job.redo_feedback = False
         else:
-            tripped = self.breaker.record_failure(failure_kind, verdict or f"exit {code}")
+            tripped = False
+            if self.dispatcher is not None and self.dispatcher.v3_enabled:
+                await self.dispatcher.on_failure(
+                    job.task_id,
+                    Evidence(
+                        stage=stage,
+                        exit_code=code,
+                        agent_verdict=f"AUTOPILOT: FAILED {verdict}" if not succeeded else verdict,
+                        trace_tail="\n".join(
+                            str(line.get("text") or "") for line in read_log(log, 80)
+                        )
+                        if log.is_file()
+                        else "",
+                    ),
+                    actor=ACTOR,
+                )
+            else:
+                tripped = self.breaker.record_failure(failure_kind, verdict or f"exit {code}")
             job.failure_kind = failure_kind
             if tripped:
                 self.paused = True
@@ -931,6 +1062,8 @@ class Autopilot:
         run = self.agents.pop(task_id, None)
         if not run:
             return
+        if self.dispatcher is not None and self.dispatcher.v3_enabled:
+            self.dispatcher.release_agent(task_id, stage=run.stage)
         run.waiter.cancel()
         run.done.set()
         if run.streamer:
@@ -975,10 +1108,20 @@ class Autopilot:
     def _finish(self, job: Job, stage: str, detail: str) -> None:
         job.stage, job.detail = stage, detail
         job.updated_at = job.finished_at = _now()
+        if (
+            self.dispatcher is not None
+            and self.dispatcher.v3_enabled
+            and stage in {"done", "awaiting_audit", "stopped"}
+        ):
+            self.dispatcher.on_job_finished(
+                job.task_id,
+                outcome=stage,
+                detail=detail,
+            )
         if stage == "failed":
             newly_classified = not job.failure_kind
             job.failure_kind = job.failure_kind or self._failure_kind("", detail, None)
-            if newly_classified:
+            if newly_classified and not (self.dispatcher is not None and self.dispatcher.v3_enabled):
                 self.breaker.record_failure(job.failure_kind, detail)
             if self.ledger:
                 self.ledger.mark_failure(job.task_id, job.failure_kind)

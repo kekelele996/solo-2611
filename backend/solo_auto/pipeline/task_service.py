@@ -49,6 +49,9 @@ class TaskService:
         name = (task_name or str(meta.get("name") or staging_id)).strip()
         if not name:
             raise ApiError(422, "TASK_NAME_REQUIRED", "任务名不能为空")
+        source_domain, source_sub_direction = _classification(meta)
+        domain = (domain or "").strip() or source_domain
+        sub_direction = (sub_direction or "").strip() or source_sub_direction
         source_path = Path(str(meta["sourcePath"])).resolve()
         argv = [
             "init",
@@ -59,6 +62,8 @@ class TaskService:
             "--tasks-dir",
             str(self.settings.tasks_dir),
         ]
+        if domain and sub_direction:
+            argv.extend(["--domain", domain, "--sub-direction", sub_direction])
         result = await self.gateway.call(argv, timeout=1800)
         if result.code != 0 or not result.data or not result.data.get("taskRoot"):
             raise ApiError(
@@ -131,6 +136,20 @@ class TaskService:
 
 def task_id_for_root(task_root: Path) -> str:
     return str(__import__("uuid").uuid5(__import__("uuid").NAMESPACE_URL, str(task_root.resolve())))
+
+
+def _classification(meta: dict[str, Any]) -> tuple[str, str]:
+    tags = meta.get("tags")
+    if not isinstance(tags, list):
+        return "", ""
+    for tag in tags:
+        if not isinstance(tag, dict):
+            continue
+        domain = str(tag.get("parent_name") or "").strip()
+        sub_direction = str(tag.get("name") or "").strip()
+        if domain and sub_direction:
+            return domain, sub_direction
+    return "", ""
 
 
 def _now() -> str:

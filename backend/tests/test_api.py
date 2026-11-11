@@ -87,6 +87,15 @@ async def test_api_fact_routes_without_real_skill(
             assert solo2_test.status_code == 200
             assert solo2_test.json()["ok"] is True
 
+            async def fake_api_probe() -> dict[str, object]:
+                return {"ok": False, "message": "HTTP 401：Key 无效", "detail": {"exit_code": 1}}
+
+            monkeypatch.setattr(context.preflight, "probe_api", fake_api_probe)
+            api_probe = await client.post("/api/system/config/test", json={"target": "api"})
+            assert api_probe.status_code == 200
+            assert api_probe.json()["ok"] is False
+            assert "401" in api_probe.json()["message"]
+
             timeline = await client.get(f"/api/tasks/{task['id']}/timeline")
             assert timeline.status_code == 200
             assert timeline.json()["counts"]["total"] == 1

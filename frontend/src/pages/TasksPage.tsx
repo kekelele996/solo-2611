@@ -257,8 +257,13 @@ export function TasksPage() {
   const batchAuto = useMutation({
     mutationFn: () => api.autopilotStart([...selected]),
     onSuccess: (result) => {
-      const skipped = selected.size - result.added.length;
-      toast(`${result.added.length} 题进入自动交付${skipped ? `，${skipped} 题已在进行中` : ""}`, "ok");
+      const started = (result.added?.length ?? 0) + (result.recovered?.length ?? 0);
+      const active = result.already_active?.length ?? 0;
+      const skipped = result.skipped?.length ?? 0;
+      toast(
+        `已启动 ${started} 题${active ? `，${active} 题本来就在运行` : ""}${skipped ? `，${skipped} 题无法恢复` : ""}`,
+        skipped ? "warn" : "ok",
+      );
       setAutoOpen(false);
       setSelected(new Set());
       void queryClient.invalidateQueries();

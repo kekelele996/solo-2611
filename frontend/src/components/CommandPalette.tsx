@@ -3,7 +3,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   ClipboardCheck,
   Command,
-  Factory,
+  Gauge,
   FolderSearch,
   History,
   LayoutDashboard,
@@ -27,7 +27,8 @@ import { useToast } from "./toast-context";
 
 const pageCommands = [
   { label: "作业看板", to: "/", icon: LayoutDashboard },
-  { label: "生产线", to: "/production", icon: Factory },
+  { label: "调度中心", to: "/dispatch", icon: Gauge },
+  { label: "调度日志", to: "/logs", icon: History },
   { label: "人工抽检", to: "/audit", icon: ClipboardCheck },
   { label: "任务列表", to: "/tasks", icon: ListChecks },
   { label: "题源领取", to: "/source", icon: FolderSearch },
@@ -141,7 +142,7 @@ export function CommandPalette() {
       {
         key: "pause",
         group: "命令",
-        label: "暂停自动交付",
+        label: "暂停调度",
         icon: Pause,
         disabled: pause.isPending,
         run: () => pause.mutate(),
@@ -156,9 +157,9 @@ export function CommandPalette() {
       {
         key: "production",
         group: "命令",
-        label: "今天交付 N 题",
-        icon: Factory,
-        run: go("/production"),
+        label: "打开调度中心",
+        icon: Gauge,
+        run: go("/dispatch"),
       },
       {
         key: "trash",

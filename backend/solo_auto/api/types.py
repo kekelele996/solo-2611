@@ -38,7 +38,7 @@ class PromptInstallRequest(BaseModel):
     languages: str
     repro_level: str | None = None
     domain: str = "数据工程"
-    sub_direction: str = "其他"
+    sub_direction: str = "数仓与数据湖"
     allow_over_170: bool = False
 
 
@@ -114,7 +114,7 @@ class RevealRequest(BaseModel):
 
 
 class ConfigTestRequest(BaseModel):
-    target: Literal["skill", "source", "docker", "solo2"]
+    target: Literal["skill", "source", "docker", "solo2", "api"]
 
 
 class SourceConfigPatch(BaseModel):
@@ -239,9 +239,71 @@ class AutopilotRetryRequest(BaseModel):
     from_stage: str = ""
 
 
+class DispatchStateRequest(BaseModel):
+    desired: Literal["running", "paused", "draining"]
+
+
+class DispatchInterruptRequest(BaseModel):
+    task_ids: list[str] = Field(default_factory=list, max_length=200)
+    kill_containers: bool = True
+
+
+class DispatchElasticPatch(BaseModel):
+    enabled: bool | None = None
+    ceiling: int | None = Field(default=None, ge=1, le=8)
+
+
+class DispatchLimitsRequest(BaseModel):
+    preset: Literal["throughput", "balanced", "careful", "custom"] | None = None
+    containers: int | None = Field(default=None, ge=1, le=8)
+    sessions: int | None = Field(default=None, ge=0, le=8)
+    authoring: int | None = Field(default=None, ge=1, le=8)
+    delivering: int | None = Field(default=None, ge=1, le=8)
+    recording: int | None = Field(default=None, ge=1, le=16)
+    in_hand: int | None = Field(default=None, ge=0, le=100)
+    launch_spacing_seconds: int | None = Field(default=None, ge=10, le=3600)
+    session_spacing_seconds: int | None = Field(default=None, ge=20, le=3600)
+    keep_awake: bool | None = None
+    elastic: DispatchElasticPatch | None = None
+
+
+class DispatchPoliciesRequest(BaseModel):
+    guard: dict[str, Any] | None = None
+    retry: dict[str, Any] | None = None
+    llm_guard: dict[str, Any] | None = None
+    disk: dict[str, Any] | None = None
+    watchdog: dict[str, Any] | None = None
+    window: dict[str, Any] | None = None
+
+
+class DispatchQueueRequest(BaseModel):
+    task_ids: list[str] = Field(min_length=1, max_length=200)
+    front: bool = False
+
+
+class DispatchMoveRequest(BaseModel):
+    direction: Literal["up", "down", "top"]
+
+
+class DispatchRecoverRequest(BaseModel):
+    since_minutes: int = Field(default=120, ge=1, le=10080)
+
+
+class DispatchPlanRequest(BaseModel):
+    mode: Literal["target", "continuous"] = "target"
+    target: int = Field(default=0, ge=0, le=10000)
+    daily_claim_cap: int = Field(default=30, ge=1, le=10000)
+    project_ids: list[str] = Field(default_factory=list, max_length=50)
+    weights: dict[str, float] = Field(default_factory=dict)
+    priority_projects: list[str] = Field(default_factory=list)
+    allow_reuse: bool = False
+    engineering_usage_limit: int = Field(default=1, ge=1, le=1000)
+    filters: dict[str, Any] = Field(default_factory=dict)
+
+
 class IntakeCreateRequest(BaseModel):
     project_id: str
-    target: int = Field(ge=1, le=500)
+    target: int = Field(ge=1, le=15)
     filters: dict[str, Any] = Field(default_factory=dict)
     exclude_delivered: bool = True
     max_uses: int = Field(default=0, ge=0, le=100)

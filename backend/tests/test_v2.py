@@ -416,7 +416,7 @@ async def test_version_exposes_build_id(
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/version")
         assert response.status_code == 200
-        assert response.json()["build_id"].startswith("0.2.0+")
+        assert response.json()["build_id"].startswith("0.3.0+")
     finally:
         await ctx.shutdown()
 
@@ -473,6 +473,297 @@ async def test_intake_target_one_never_claims_a_second_task(
         await ctx.intake.tick()
         assert source.calls == 0
         assert ctx.intake.plan["task_ids"] == ["active-task"]
+    finally:
+        await ctx.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_intake_adopts_existing_staged_claim_before_claiming_again(
+    fixture_factory: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _ = await _app(tmp_path, monkeypatch, fixture_factory)
+    ctx = app.state.context
+    source_dir = ctx.paths.staging / "legacy" / "source"
+    source_dir.mkdir(parents=True)
+    meta = {
+        "engineeringId": "legacy",
+        "projectId": "project-1",
+        "projectName": "项目一",
+        "name": "遗留暂存工程",
+        "claimId": "claim-legacy",
+        "sourcePath": str(source_dir),
+    }
+    monkeypatch.setattr(ctx.staging, "list", lambda: [meta])
+    created: list[str] = []
+    enrolled: list[str] = []
+
+    async def fake_create(**kwargs: Any) -> dict[str, str]:
+        created.append(str(kwargs["staging_id"]))
+        return {"task_id": "task-legacy"}
+
+    async def fake_enroll(task_ids: list[str]) -> None:
+        enrolled.extend(task_ids)
+
+    monkeypatch.setattr(ctx.tasks, "create", fake_create)
+    monkeypatch.setattr(ctx.autopilot, "enroll", fake_enroll)
+    ctx.intake.plan = {
+        "id": "adopt-staged",
+        "project_id": "project-1",
+        "project_name": "项目一",
+        "target": 15,
+        "status": "running",
+        "task_ids": [],
+        "attempted_engineering_ids": [],
+        "claimed_engineering_ids": [],
+        "failed_claims": [],
+        "claim_limit": 30,
+        "filters": {},
+    }
+    try:
+        await ctx.intake.tick()
+        assert created == ["legacy"]
+        assert enrolled == ["task-legacy"]
+        assert ctx.intake.plan["task_ids"] == ["task-legacy"]
+    finally:
+        await ctx.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_intake_resume_repairs_missing_job_and_clears_pause_reason(
+    fixture_factory: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, roots = await _app(tmp_path, monkeypatch, fixture_factory, names=("prompt-only",))
+    ctx = app.state.context
+    task = ctx.repo.get_task_by_root(roots["prompt-only"])
+    ctx.settings.autopilot.agent_mode = "cli"
+    ctx.autopilot.apply_settings(ctx.settings.autopilot)
+    ctx.autopilot.agent_command = [sys.executable]
+
+    async def source_ok() -> dict[str, Any]:
+        return {"ok": True, "message": "工程台连接正常"}
+
+    monkeypatch.setattr(ctx.source, "test", source_ok)
+    ctx.intake.plan = {
+        "id": "resume-orphans",
+        "project_id": "project-1",
+        "project_name": "项目一",
+        "target": 5,
+        "status": "paused",
+        "pause_reason": "预检未通过，计划保持暂停：旧错误",
+        "task_ids": [task["id"]],
+        "attempted_engineering_ids": [],
+        "claimed_engineering_ids": [],
+        "failed_claims": [],
+        "claim_limit": 10,
+        "filters": {},
+    }
+    try:
+        assert ctx.intake.snapshot()["counts"]["orphaned"] == 1
+        assert ctx.intake.snapshot()["counts"]["recoverable"] == 1
+        result = await ctx.intake.resume()
+        assert result["status"] == "running"
+        assert "pause_reason" not in result
+        assert result["recovery"]["added"] == [task["id"]]
+        assert ctx.autopilot.jobs[task["id"]].stage == "pending"
+    finally:
+        await ctx.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_intake_tick_repairs_missing_job_before_counting_capacity(
+    fixture_factory: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, roots = await _app(tmp_path, monkeypatch, fixture_factory, names=("prompt-only",))
+    ctx = app.state.context
+    task = ctx.repo.get_task_by_root(roots["prompt-only"])
+    ctx.settings.autopilot.agent_mode = "cli"
+    ctx.autopilot.apply_settings(ctx.settings.autopilot)
+    ctx.autopilot.agent_command = [sys.executable]
+    ctx.intake.intake_settings.max_in_hand = 1
+    ctx.intake.plan = {
+        "id": "repair-orphans",
+        "project_id": "project-1",
+        "project_name": "项目一",
+        "target": 5,
+        "status": "running",
+        "task_ids": [task["id"]],
+        "attempted_engineering_ids": [],
+        "claimed_engineering_ids": [],
+        "failed_claims": [],
+        "claim_limit": 10,
+        "filters": {},
+    }
+    try:
+        await ctx.intake.tick()
+        assert ctx.autopilot.jobs[task["id"]].stage == "pending"
+        assert ctx.intake.snapshot()["counts"]["active"] == 1
+    finally:
+        await ctx.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_intake_adoption_failure_does_not_poison_plan_task_ids(
+    fixture_factory: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _ = await _app(tmp_path, monkeypatch, fixture_factory)
+    ctx = app.state.context
+    source_dir = ctx.paths.staging / "legacy" / "source"
+    source_dir.mkdir(parents=True)
+    meta = {
+        "engineeringId": "legacy-failed",
+        "projectId": "project-1",
+        "projectName": "项目一",
+        "name": "接入失败工程",
+        "claimId": "claim-legacy-failed",
+        "sourcePath": str(source_dir),
+    }
+
+    async def fake_create(**_: Any) -> dict[str, str]:
+        return {"task_id": "task-created-before-enroll-failed"}
+
+    async def fake_enroll(_: list[str]) -> None:
+        raise ApiError(409, "AUTOPILOT_BREAKER_OPEN", "自动交付已熔断，请先恢复")
+
+    async def fake_release(_: dict[str, Any], __: str) -> None:
+        return None
+
+    monkeypatch.setattr(ctx.tasks, "create", fake_create)
+    monkeypatch.setattr(ctx.autopilot, "enroll", fake_enroll)
+    monkeypatch.setattr(ctx.intake, "_release_staged_claim", fake_release)
+    ctx.intake.plan = {
+        "id": "adopt-failed",
+        "project_id": "project-1",
+        "project_name": "项目一",
+        "target": 15,
+        "status": "running",
+        "task_ids": [],
+        "attempted_engineering_ids": [],
+        "claimed_engineering_ids": [],
+        "failed_claims": [],
+        "claim_limit": 30,
+        "filters": {},
+    }
+    try:
+        await ctx.intake._adopt_staged(ctx.intake.plan, meta)
+        assert ctx.intake.plan["task_ids"] == []
+        assert ctx.intake.plan["claimed_engineering_ids"] == []
+        assert ctx.intake.plan["failed_claims"][0]["code"] == "AUTOPILOT_BREAKER_OPEN"
+    finally:
+        await ctx.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_intake_preflight_failure_keeps_plan_paused_with_reason(
+    fixture_factory: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _ = await _app(tmp_path, monkeypatch, fixture_factory)
+    ctx = app.state.context
+    ctx.intake.plan = {
+        "id": "blocked-plan",
+        "project_id": "project-1",
+        "project_name": "项目一",
+        "target": 5,
+        "status": "paused",
+        "task_ids": [],
+        "attempted_engineering_ids": [],
+        "claimed_engineering_ids": [],
+        "failed_claims": [],
+        "claim_limit": 10,
+        "filters": {},
+    }
+
+    async def failed_preflight() -> dict[str, Any]:
+        return {
+            "ok": False,
+            "items": [
+                {
+                    "key": "gateway_probe",
+                    "level": "P0",
+                    "ok": False,
+                    "message": "HTTP 401：网关 Key 无效",
+                    "fix": "重新配置 Key",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(ctx.preflight, "run", failed_preflight)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post("/api/intake/resume")
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "PREFLIGHT_FAILED"
+        assert ctx.intake.plan["status"] == "paused"
+        assert "HTTP 401" in ctx.intake.plan["pause_reason"]
+    finally:
+        await ctx.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_intake_releases_finished_task_and_allows_reuse(
+    fixture_factory: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, roots = await _app(tmp_path, monkeypatch, fixture_factory)
+    ctx = app.state.context
+    task = ctx.repo.get_task_by_root(roots["exported"])
+    ctx.repo.execute("UPDATE tasks SET project_id='project-1' WHERE id=?", (task["id"],))
+    ctx.autopilot.jobs[task["id"]] = Job(task_id=task["id"], task_name=task["task_name"], stage="done")
+    released: list[str] = []
+    meta = {
+        "engineeringId": "eng-1",
+        "projectId": "project-1",
+        "name": "工程一",
+        "claimId": "claim-1",
+        "taskRoot": str(roots["exported"]),
+    }
+    staging_items = [meta]
+    monkeypatch.setattr(ctx.staging, "list", lambda: list(staging_items))
+
+    class ReusableSource:
+        async def release(self, project_id: str, engineering_id: str, claim_id: str) -> dict[str, bool]:
+            released.append(f"{project_id}:{engineering_id}:{claim_id}")
+            staging_items.clear()
+            return {"ok": True}
+
+        async def list_engineering(self, *_: Any, **__: Any) -> dict[str, Any]:
+            return {
+                "items": [{"engineering_id": "eng-1", "tags": []}],
+                "total": 1,
+                "page_size": 100,
+            }
+
+    ctx.intake.source = ReusableSource()  # type: ignore[assignment]
+    ctx.intake.plan = {
+        "id": "reuse-source",
+        "project_id": "project-1",
+        "project_name": "项目一",
+        "target": 1,
+        "status": "running",
+        "task_ids": [task["id"]],
+        "attempted_engineering_ids": ["eng-1"],
+        "claimed_engineering_ids": ["eng-1"],
+        "failed_claims": [],
+        "claim_limit": 4,
+        "exclude_delivered": False,
+        "filters": {},
+    }
+    try:
+        await ctx.intake.tick()
+        assert released == ["project-1:eng-1:claim-1"]
+        candidate = await ctx.intake._next_candidate(ctx.intake.plan)
+        assert candidate is not None
+        assert candidate["engineering_id"] == "eng-1"
     finally:
         await ctx.shutdown()
 

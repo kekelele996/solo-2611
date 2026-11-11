@@ -77,7 +77,6 @@ describe("settings page", () => {
   // 每个可编辑字段改动后都必须能保存，并且不会被后台刷新冲掉
   it.each([
     ["脚本目录", "/skills/other", (body: Record<string, unknown>) => body.skill_root],
-    ["容器并发", "2", (body: Record<string, { [key: string]: unknown }>) => body.execution.max_containers],
     ["超时秒数", "3600", (body: Record<string, { [key: string]: unknown }>) => body.execution.run_timeout_seconds],
     ["尝试次数", "5", (body: Record<string, { [key: string]: unknown }>) => body.execution.attempts],
     ["任务目录", "/other", (body: Record<string, unknown>) => body.tasks_dir],
@@ -147,5 +146,24 @@ describe("settings page", () => {
     expect(
       (patch.mock.calls[0][0] as { submission?: { auto_submit?: boolean } }).submission?.auto_submit,
     ).toBe(true);
+  });
+
+  it("probes the Claude Code API independently", async () => {
+    const probe = vi.spyOn(api, "testConfig").mockResolvedValue({
+      ok: true,
+      message: "配置测试成功 HTTP 200",
+      detail: {},
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <ToastProvider>
+          <SystemPage />
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "探测 API" }));
+    await waitFor(() => expect(probe).toHaveBeenCalledWith("api"));
+    await screen.findByText("配置测试成功 HTTP 200");
   });
 });
