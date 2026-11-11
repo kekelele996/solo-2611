@@ -59,5 +59,11 @@ async def test_api_fact_routes_without_real_skill(
             queue = await client.get("/api/queue")
             assert queue.status_code == 200
             assert queue.json()["limit"] == 4
+
+            terminal = await client.post(f"/api/tasks/{task['id']}/record/terminal")
+            assert terminal.status_code == 200
+            assert terminal.json() == {"ok": True, "window_id": 4242, "title": "solo-2611 录屏 — workspace — zsh -i"}
+            missing = await client.post("/api/tasks/no-such-task/record/terminal")
+            assert missing.status_code == 404
     finally:
         await context.shutdown()

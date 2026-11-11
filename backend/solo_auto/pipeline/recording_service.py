@@ -309,6 +309,25 @@ class RecordingService:
         await self.reconciler.run()
         return {"ok": True, "removed": removed}
 
+    async def open_terminal(self, task_id: str) -> dict[str, Any]:
+        """让技能新开一个不带本机账号、主机名的 Terminal 窗口，专供录屏。"""
+        task = self._task(task_id)
+        result = await self.gateway.call(
+            ["record", "terminal", "--task-root", task["task_root"]],
+            timeout=60,
+            task_id=task_id,
+        )
+        if result.code != 0:
+            raise ApiError(
+                500,
+                "RECORD_TERMINAL_FAILED",
+                result.err.strip() or "录屏终端打开失败",
+                detail={"stdout": result.out, "stderr": result.err},
+            )
+        data = result.data or {}
+        self.repo.add_event("record.terminal", "已打开干净的录屏终端", actor="user", task_id=task_id)
+        return {"ok": True, "window_id": int(data.get("windowId") or 0), "title": str(data.get("title") or "")}
+
     async def chrome_start(self, task_id: str, url: str) -> dict[str, Any]:
         task = self._task(task_id)
         result = await self.gateway.call(

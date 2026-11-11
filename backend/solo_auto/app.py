@@ -14,7 +14,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from solo_auto.api import events, evidence, feedback_export, recording, system, tasks
+from solo_auto.api import autopilot, events, evidence, feedback_export, purge, recording, system, tasks
 from solo_auto.context import AppContext
 from solo_auto.errors import ApiError
 
@@ -74,10 +74,12 @@ def create_app(home: Path | None = None, *, auto_start: bool = True) -> FastAPI:
     app.add_middleware(SecurityHeadersMiddleware)
 
     app.include_router(system.router)
+    app.include_router(purge.router)
     app.include_router(tasks.router)
     app.include_router(evidence.router)
     app.include_router(recording.router)
     app.include_router(feedback_export.router)
+    app.include_router(autopilot.router)
     app.include_router(events.router)
 
     @app.exception_handler(ApiError)

@@ -15,7 +15,7 @@ import {
   Panel,
 } from "../components/ui";
 import { useToast } from "../components/toast-context";
-import { formatNames } from "../utils/display";
+import { errorText, formatNames } from "../utils/display";
 import { formatDateTime } from "../utils/time";
 
 export function SourcePage() {
@@ -66,7 +66,7 @@ export function SourcePage() {
       void queryClient.invalidateQueries();
     },
     onError: (error) => {
-      toast(error instanceof Error ? error.message : String(error), "error");
+      toast(errorText(error), "error");
       void queryClient.invalidateQueries({ queryKey: ["engineering"] });
     },
   });
@@ -77,7 +77,7 @@ export function SourcePage() {
       void queryClient.invalidateQueries();
     },
     onError: (error) => {
-      toast(error instanceof Error ? error.message : String(error), "error");
+      toast(errorText(error), "error");
       void queryClient.invalidateQueries();
     },
   });
@@ -88,7 +88,7 @@ export function SourcePage() {
       setStagingTarget(null);
       void navigate(`/tasks/${result.task_id}?tab=prompt`);
     },
-    onError: (error) => toast(error instanceof Error ? error.message : String(error), "error"),
+    onError: (error) => toast(errorText(error), "error"),
   });
   const login = useMutation({
     mutationFn: () => api.sourceLogin(username, password),
@@ -98,7 +98,7 @@ export function SourcePage() {
       setPassword("");
       void queryClient.invalidateQueries();
     },
-    onError: (error) => toast(error instanceof Error ? error.message : String(error), "error"),
+    onError: (error) => toast(errorText(error), "error"),
   });
 
   const selected = projects.data?.items.find((project) => project.id === projectId);
@@ -169,7 +169,7 @@ export function SourcePage() {
           {engineering.isError ? <ErrorPanel error={engineering.error} onRetry={() => void engineering.refetch()} /> : null}
           <Panel className="table-panel density-dense">
             {engineering.data?.items.length ? (
-              <table className="data-table">
+              <table className="data-table source-table">
                 <thead>
                   <tr>
                     <th>工程</th>

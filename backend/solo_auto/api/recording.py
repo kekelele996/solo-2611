@@ -89,6 +89,11 @@ async def delete(task_id: str, payload: RecordDeleteRequest, ctx: AppContext = D
     return await ctx.recording.delete(task_id, confirm=payload.confirm)
 
 
+@router.post("/tasks/{task_id}/record/terminal")
+async def open_terminal(task_id: str, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    return await ctx.recording.open_terminal(task_id)
+
+
 @router.post("/tasks/{task_id}/record/chrome-start")
 async def chrome_start(
     task_id: str,

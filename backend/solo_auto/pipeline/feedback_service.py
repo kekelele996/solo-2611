@@ -149,7 +149,7 @@ class FeedbackService:
             "exit_code": result.code,
         }
 
-    def ack(self, task_id: str, *, acked: bool) -> dict[str, Any]:
+    def ack(self, task_id: str, *, acked: bool, actor: str = "user") -> dict[str, Any]:
         task = self._task(task_id)
         root = Path(task["task_root"])
         if not acked:
@@ -168,6 +168,7 @@ class FeedbackService:
         payload = {
             "schemaVersion": 1,
             "acked": True,
+            "ackedBy": actor,
             "ackedAt": _now(),
             "feedbackSha256": current_sha,
             "chars": _non_space(feedback.read_text(encoding="utf-8")),
@@ -175,7 +176,8 @@ class FeedbackService:
         }
         path = root / "monitor" / "review-ack.json"
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        self.repo.add_event("feedback.reviewed", "已确认逐条复核", actor="user", task_id=task_id)
+        message = "已确认逐条复核" if actor == "user" else "自动交付流程确认（未经人工复核）"
+        self.repo.add_event("feedback.reviewed", message, actor=actor, task_id=task_id)
         return payload
 
     def _task(self, task_id: str) -> dict[str, Any]:

@@ -82,6 +82,51 @@ export type SystemStatus = {
   skill_version: string;
 };
 
+export type PurgeItem = {
+  task_id: string;
+  task_name: string;
+  job_status: string;
+  paths: string[];
+  size: number;
+  blockers: string[];
+  warnings: string[];
+  removed?: boolean;
+  moved_to?: string;
+  release_error?: string;
+  error?: string;
+};
+
+export type PurgeResult = {
+  dry_run: boolean;
+  permanent: boolean;
+  trash: string;
+  items: PurgeItem[];
+  total_bytes: number;
+};
+
+export type AutopilotJob = {
+  task_id: string;
+  task_name: string;
+  stage: string;
+  stage_label: string;
+  detail: string;
+  attempts: Record<string, number>;
+  log: string;
+  active: boolean;
+  agent_running: boolean;
+  started_at: string;
+  updated_at: string;
+  finished_at: string;
+};
+
+export type AutopilotSnapshot = {
+  agent_command: string;
+  agent_available: boolean;
+  agents_running: number;
+  active: number;
+  jobs: AutopilotJob[];
+};
+
 export type QueueSnapshot = {
   limit: number;
   used: number;

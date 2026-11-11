@@ -34,7 +34,7 @@ export function useHotkeys(handlers: HotkeyHandlers = {}): void {
         return;
       }
       if (event.key === "?") {
-        if (!editing) {
+        if (!editing && !command) {
           event.preventDefault();
           setHelpOpen(true);
         }
@@ -51,7 +51,7 @@ export function useHotkeys(handlers: HotkeyHandlers = {}): void {
         }
         return;
       }
-      if (event.key === "g") {
+      if (event.key === "g" && !command && !event.altKey) {
         prefix.current = true;
         if (prefixTimer.current) window.clearTimeout(prefixTimer.current);
         prefixTimer.current = window.setTimeout(() => {
@@ -75,11 +75,11 @@ export function useHotkeys(handlers: HotkeyHandlers = {}): void {
         }
         return;
       }
-      if (event.key === "[") {
+      if (event.key === "[" && !command) {
         event.preventDefault();
         handlers.onPrevious?.();
       }
-      if (event.key === "]") {
+      if (event.key === "]" && !command) {
         event.preventDefault();
         handlers.onNext?.();
       }

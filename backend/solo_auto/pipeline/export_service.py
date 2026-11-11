@@ -53,8 +53,11 @@ class ExportService:
         for task in tasks:
             root = Path(task["task_root"])
             evaluation = evaluate_steps(root, duplicate_sessions=self.repo.session_counts())
-            if not evaluation.complete:
-                skipped.append({"task_id": task["id"], "task": task["task_name"], "reason": evaluation.missing})
+            # 第 11 项就是本次要生成的 Excel，导出前只要求前十项通过
+            blockers = [step for step in evaluation.steps[:10] if not step.ok]
+            if blockers:
+                reasons = [item for item in evaluation.missing if not item.startswith("11.")]
+                skipped.append({"task_id": task["id"], "task": task["task_name"], "reason": reasons})
                 continue
             export_result = await self.gateway.call(
                 ["export", "--task-root", str(root)],

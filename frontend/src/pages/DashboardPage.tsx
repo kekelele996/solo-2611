@@ -1,29 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, CalendarDays, Play, Upload } from "lucide-react";
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { api } from "../api/client";
+import { AutopilotPanel } from "../components/AutopilotPanel";
 import type { TaskRow } from "../api/types";
 import { useToast } from "../components/toast-context";
 import { Button, EmptyState, ErrorPanel, LoadingLines, Panel, StatusDot } from "../components/ui";
+import { errorText, formatDuration, statusLabel } from "../utils/display";
 import { formatDateTime, todayShanghai } from "../utils/time";
-
-const statusLabels: Record<string, string> = {
-  blocked: "卡住",
-  running: "运行中",
-  queued: "排队中",
-  ready: "可运行",
-  prompt_ok: "待推快照",
-  authored: "待出题",
-  ran: "待录屏",
-  recorded: "待写 Feedback",
-  reviewed: "待导出",
-  exported: "已导出",
-  archived: "已归档",
-  aborted: "已放弃",
-  orphan: "状态丢失",
-};
 
 export function DashboardPage() {
   const navigate = useNavigate();
@@ -67,7 +53,7 @@ export function DashboardPage() {
       .map((task) => (new Date(task.exported_at ?? "").getTime() - new Date(task.created_at).getTime()) / 60_000)
       .filter((minutes) => Number.isFinite(minutes) && minutes >= 0);
     const average = durations.length
-      ? `${Math.round(durations.reduce((sum, minutes) => sum + minutes, 0) / durations.length)}m`
+      ? formatDuration((durations.reduce((sum, minutes) => sum + minutes, 0) / durations.length) * 60)
       : "—";
     return {
       exported: exportedToday,
@@ -82,27 +68,29 @@ export function DashboardPage() {
     mutationFn: async () => {
       const ready = (tasks.data?.items ?? []).filter((task) => task.job_status === "ready");
       const results = await Promise.allSettled(ready.map((task) => api.enqueue(task.id)));
-      return {
-        queued: results.filter((result) => result.status === "fulfilled").length,
-        failed: results.filter((result) => result.status === "rejected").length,
-      };
+      const failed = results.filter((result) => result.status === "rejected");
+      return { queued: results.length - failed.length, failed: failed.length, firstError: failed[0]?.reason as unknown };
     },
     onSuccess: (result) => {
-      toast(`已排队 ${result.queued} 题，跳过 ${result.failed} 题`, result.failed ? "warn" : "ok");
+      if (result.failed) toast(`已排队 ${result.queued} 题，${result.failed} 题未能排队：${errorText(result.firstError)}`, "warn");
+      else toast(`已排队 ${result.queued} 题`, "ok");
       void queryClient.invalidateQueries();
     },
-    onError: (error) => toast(error instanceof Error ? error.message : String(error), "error"),
+    onError: (error) => toast(errorText(error), "error"),
   });
 
   const exportToday = useMutation({
     mutationFn: () => api.export({ date: today }),
     onSuccess: (result) => {
-      toast(`导出了 ${result.rows} 行，跳过 ${result.skipped.length} 题`, result.skipped.length ? "warn" : "ok");
+      if (result.rows) toast(`导出了 ${result.rows} 行，跳过 ${result.skipped.length} 题`, result.skipped.length ? "warn" : "ok");
+      else toast(`今天没有可导出的任务，跳过 ${result.skipped.length} 题`, "warn");
       void queryClient.invalidateQueries();
       void navigate("/export");
     },
-    onError: (error) => toast(error instanceof Error ? error.message : String(error), "error"),
+    onError: (error) => toast(errorText(error), "error"),
   });
+
+  const readyCount = (tasks.data?.items ?? []).filter((task) => task.job_status === "ready").length;
 
   return (
     <div className="page dashboard-page">
@@ -112,8 +100,13 @@ export function DashboardPage() {
           <h1>2611 作业台</h1>
         </div>
         <div className="page-actions">
-          <Button onClick={() => batchReady.mutate()} loading={batchReady.isPending}>
-            <Play size={14} /> 批量排队
+          <Button
+            onClick={() => batchReady.mutate()}
+            loading={batchReady.isPending}
+            disabled={!readyCount}
+            title={readyCount ? `把 ${readyCount} 个可运行任务送入队列` : "当前没有可运行的任务"}
+          >
+            <Play size={14} /> 批量排队{readyCount ? ` · ${readyCount}` : ""}
           </Button>
           <Button variant="primary" onClick={() => exportToday.mutate()} loading={exportToday.isPending}>
             <Upload size={14} /> 导出今日
@@ -128,6 +121,8 @@ export function DashboardPage() {
         <Metric label="卡住" value={metrics.blocked} tone={metrics.blocked ? "danger" : undefined} />
         <Metric label="平均耗时" value={metrics.average} />
       </div>
+
+      <AutopilotPanel />
 
       {tasks.isError ? <ErrorPanel error={tasks.error} onRetry={() => { void tasks.refetch(); }} /> : null}
       {tasks.isPending ? <LoadingLines rows={6} /> : null}
@@ -159,9 +154,23 @@ export function DashboardPage() {
 }
 
 function Metric({ label, value, tone }: { label: string; value: string | number; tone?: "danger" }) {
+  // 数字不滚动；变大时只挂一个静态 ▲，2 秒后撤掉
+  const previous = useRef(value);
+  const [rose, setRose] = useState(false);
+  useEffect(() => {
+    const before = previous.current;
+    previous.current = value;
+    if (typeof value !== "number" || typeof before !== "number" || value <= before) return;
+    setRose(true);
+    const timer = window.setTimeout(() => setRose(false), 2000);
+    return () => window.clearTimeout(timer);
+  }, [value]);
   return (
     <div className={`metric ${tone ? `metric-${tone}` : ""}`}>
-      <strong>{value}</strong>
+      <strong>
+        {value}
+        {rose ? <sup aria-label="刚刚增加">▲</sup> : null}
+      </strong>
       <span>{label}</span>
     </div>
   );
@@ -184,6 +193,8 @@ function TaskGroup({
         {tasks.map((task) => {
           const slot = queue?.slots.find((item) => item.task_id === task.id);
           const next = nextAction(task);
+          const done = (task.steps ?? []).filter((step) => step.state === "done").length;
+          const tone = done === 11 ? "ok" : task.job_status === "blocked" || task.job_status === "orphan" ? "danger" : undefined;
           return (
             <div
               key={task.id}
@@ -196,18 +207,18 @@ function TaskGroup({
               }}
             >
               <div className="task-row-main">
-                <StatusDot state={task.job_status} label={statusLabels[task.job_status] ?? task.job_status} />
+                <StatusDot state={task.job_status} label={statusLabel(task.job_status)} />
                 <Link to={`/tasks/${task.id}`} onClick={(event) => { event.stopPropagation(); }}>
                   {task.task_name}
                 </Link>
                 <small>{task.difficulty ?? "—"} · {task.task_type ?? "待定题"}</small>
               </div>
               <div className="task-row-progress">
-                <div className="mini-progress">
+                <div className="mini-progress" data-tone={tone}>
                   <span style={{ width: `${progress(task)}%` }} />
                 </div>
-                <span>
-                  {slot ? `attempt ${slot.attempt || 1}/3 · ${slot.phase}` : task.run?.phase ?? `${progress(task)}%`}
+                <span className="mono">
+                  {done}/11{slot ? ` · 第 ${slot.attempt || 1} 次 · ${slot.phase}` : ""}
                 </span>
               </div>
               <div className="task-row-action">
@@ -240,6 +251,8 @@ function nextAction(task: TaskRow): string {
     recorded: "完成 Feedback",
     reviewed: "导出 Excel",
     exported: "打开交付",
+    archived: "查看存档",
+    orphan: "查看状态丢失原因",
   };
   return mapping[task.job_status] ?? "继续处理";
 }

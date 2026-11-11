@@ -12,6 +12,7 @@ import {
   Panel,
 } from "../components/ui";
 import { useToast } from "../components/toast-context";
+import { errorText } from "../utils/display";
 import { formatDateTime, todayShanghai } from "../utils/time";
 
 export function ExportPage() {
@@ -30,16 +31,27 @@ export function ExportPage() {
     mutationFn: () => api.export({ date }),
     onSuccess: (result) => {
       setLastResult(result);
-      toast(`导出了 ${result.rows} 行`, "ok");
-      if (result.file) setPreviewName(result.file.split("/").pop() ?? "");
+      if (result.file) {
+        toast(
+          result.skipped.length ? `导出了 ${result.rows} 行，另有 ${result.skipped.length} 题被跳过` : `导出了 ${result.rows} 行`,
+          result.skipped.length ? "warn" : "ok",
+        );
+        setPreviewName(result.file.split("/").pop() ?? "");
+      } else {
+        // 0 行不是成功：没有文件生成，原因在下方逐条列出
+        toast(
+          result.skipped.length ? `没有生成表格：${result.skipped.length} 题未通过导出检查` : `${date} 没有可导出的任务`,
+          "warn",
+        );
+      }
       void queryClient.invalidateQueries();
     },
-    onError: (error) => toast(error instanceof Error ? error.message : String(error), "error"),
+    onError: (error) => toast(errorText(error), "error"),
   });
   const stats = useQuery({ queryKey: ["stats", date], queryFn: () => api.stats(date, date) });
   const reveal = useMutation({
     mutationFn: (name: string) => api.revealExport(name),
-    onError: (error) => toast(error instanceof Error ? error.message : String(error), "error"),
+    onError: (error) => toast(errorText(error), "error"),
   });
 
   return (
@@ -50,8 +62,10 @@ export function ExportPage() {
           <h1>导出与统计</h1>
         </div>
         <div className="page-actions">
-          <Button onClick={() => void exports.refetch()}><RefreshCw size={14} /> 刷新</Button>
-          <Button variant="primary" onClick={() => create.mutate()} loading={create.isPending}>
+          <Button onClick={() => void exports.refetch()} loading={exports.isFetching && !exports.isPending}>
+            <RefreshCw size={14} /> 刷新
+          </Button>
+          <Button variant="primary" data-primary disabled={!date} onClick={() => create.mutate()} loading={create.isPending}>
             <Upload size={14} /> 生成当日表
           </Button>
         </div>
@@ -92,40 +106,43 @@ export function ExportPage() {
           {exports.data?.items.length ? (
             <div className="export-list">
               {exports.data.items.map((item) => (
-                <button
-                  key={item.name}
-                  className={previewName === item.name ? "is-active" : ""}
-                  onClick={() => setPreviewName(item.name)}
-                >
-                  <FileSpreadsheet size={16} />
-                  <span>
-                    <strong>{item.name}</strong>
-                    <small>{formatDateTime(item.created_at)} · {(item.size / 1024).toFixed(0)} KB</small>
-                  </span>
+                <div key={item.name} className={`export-item ${previewName === item.name ? "is-active" : ""}`}>
+                  <button
+                    type="button"
+                    aria-current={previewName === item.name || undefined}
+                    title={item.name}
+                    onClick={() => setPreviewName(item.name)}
+                  >
+                    <FileSpreadsheet size={16} />
+                    <span>
+                      <strong>{item.name}</strong>
+                      <small>{formatDateTime(item.created_at)} · {Math.max(1, Math.round(item.size / 1024))} KB</small>
+                    </span>
+                  </button>
                   <a
                     className="icon-button"
                     href={`/api/exports/${encodeURIComponent(item.name)}/download`}
-                    aria-label="下载"
-                    onClick={(event) => event.stopPropagation()}
+                    aria-label={`下载 ${item.name}`}
+                    title="下载"
                   >
                     <Download size={14} />
                   </a>
-                </button>
+                </div>
               ))}
             </div>
-          ) : (
+          ) : exports.isPending || exports.isError ? null : (
             <EmptyState title="还没有导出文件。" />
           )}
         </Panel>
       </div>
 
       {lastResult?.skipped.length ? (
-        <Panel title={`本次跳过 · ${lastResult.skipped.length}`}>
-          <div className="skip-list">
+        <Panel title={`本次跳过 · ${lastResult.skipped.length}（技能返回的原因原文）`}>
+          <div className="skip-list" role="alert">
             {lastResult.skipped.map((item) => (
               <div key={item.task_id || item.task}>
-                <strong>{item.task}</strong>
-                <span>{item.reason.join("；")}</span>
+                <strong>{item.task || item.task_id}</strong>
+                <span>{item.reason.join("；") || "技能未给出原因"}</span>
               </div>
             ))}
           </div>
@@ -144,14 +161,18 @@ export function ExportPage() {
             <Button
               onClick={() => {
                 const path = exports.data?.items.find((item) => item.name === previewName)?.path;
-                if (path) void navigator.clipboard.writeText(path).then(() => toast("导出路径已复制", "info"));
+                if (!path) return;
+                navigator.clipboard.writeText(path).then(
+                  () => toast("导出路径已复制", "info"),
+                  (error: unknown) => toast(`复制失败：${errorText(error)}`, "error"),
+                );
               }}
             >
               <Copy size={14} /> 复制路径
             </Button>
           </div>
           {preview.isPending ? <LoadingLines rows={6} /> : null}
-          {preview.isError ? <ErrorPanel error={preview.error} /> : null}
+          {preview.isError ? <ErrorPanel error={preview.error} onRetry={() => void preview.refetch()} /> : null}
           {preview.data ? (
             <div className="table-scroll">
               <table className="data-table preview-table">
@@ -166,7 +187,7 @@ export function ExportPage() {
                   {preview.data.rows.map((row, rowIndex) => (
                     <tr key={rowIndex}>
                       {row.map((cell, cellIndex) => (
-                        <td key={cellIndex}>{String(cell ?? "—")}</td>
+                        <td key={cellIndex} title={String(cell ?? "")}>{String(cell ?? "—")}</td>
                       ))}
                     </tr>
                   ))}

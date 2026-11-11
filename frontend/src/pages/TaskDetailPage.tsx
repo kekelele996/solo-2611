@@ -3,16 +3,16 @@ import {
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
-  Clipboard,
   FolderOpen,
-  Info,
+  PanelRight,
   ShieldAlert,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { api } from "../api/client";
+import { PurgeModal } from "../components/PurgeModal";
 import type { Step, TaskDetail } from "../api/types";
 import { useHotkeys } from "../hooks/useHotkeys";
 import {
@@ -34,8 +34,10 @@ import {
   SplitPane,
   StatusDot,
   StepRail,
+  TabBar,
 } from "../components/ui";
 import { useToast } from "../components/toast-context";
+import { errorText, statusLabel, statusTone } from "../utils/display";
 
 const tabs = [
   ["overview", "概览"],
@@ -62,12 +64,15 @@ export function TaskDetailPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [abandonOpen, setAbandonOpen] = useState(false);
+  const [purgeOpen, setPurgeOpen] = useState(false);
+  const [purged, setPurged] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [abandonReason, setAbandonReason] = useState("");
   const task = useQuery({
     queryKey: ["task", id],
     queryFn: () => api.task(id),
-    enabled: Boolean(id),
+    enabled: Boolean(id) && !purged,
     refetchInterval: 3000,
   });
   const taskList = useQuery({
@@ -80,7 +85,7 @@ export function TaskDetailPage() {
       toast("任务已进入运行队列", "ok");
       void queryClient.invalidateQueries();
     },
-    onError: (error) => toast(error instanceof Error ? error.message : String(error), "error"),
+    onError: (error) => toast(errorText(error), "error"),
   });
   const abandon = useMutation({
     mutationFn: async () => {
@@ -94,7 +99,7 @@ export function TaskDetailPage() {
       setAbandonReason("");
       void queryClient.invalidateQueries();
     },
-    onError: (error) => toast(error instanceof Error ? error.message : String(error), "error"),
+    onError: (error) => toast(errorText(error), "error"),
   });
 
   const ordered = useMemo(() => taskList.data?.items ?? [], [taskList.data?.items]);
@@ -114,15 +119,17 @@ export function TaskDetailPage() {
     onCopyEvidence: () => task.data && copyEvidence(task.data, tab, toast),
     onTaskRoot: () => {
       void api.reveal(id, "task_root").catch((error: unknown) =>
-        toast(error instanceof Error ? error.message : String(error), "error"),
+        toast(errorText(error), "error"),
       );
     },
   });
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented) return;
       const target = event.target as HTMLElement | null;
-      if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.closest(".cm-editor")) return;
+      if (target?.closest("input, textarea, select, [contenteditable], .cm-editor, [role='dialog'], [role='alertdialog']")) return;
+      if (document.querySelector("[role='dialog'], [role='alertdialog']")) return;
       const number = Number(event.key);
       if (number >= 1 && number <= 7) {
         event.preventDefault();
@@ -142,6 +149,8 @@ export function TaskDetailPage() {
     return () => window.removeEventListener("keydown", onKey);
   }, [inspectorOpen]);
 
+  // 任务被清理后立刻离开，别让这一页继续轮询一个已经不存在的任务
+  if (purged) return <Navigate to="/tasks" replace />;
   if (task.isPending) return <div className="page"><LoadingLines rows={10} /></div>;
   if (task.isError) return <div className="page"><ErrorPanel error={task.error} onRetry={() => { void task.refetch(); }} /></div>;
   const detail = task.data;
@@ -157,8 +166,19 @@ export function TaskDetailPage() {
           <p>{detail.domain} · {detail.sub_direction} · {detail.task_type ?? "待定题"} · {detail.difficulty ?? "难度待定"}</p>
         </div>
         <div className="task-pager">
-          <Button className="evidence-toggle" size="small" onClick={() => setInspectorOpen(true)}>
-            证据
+          <Button
+            className="evidence-toggle"
+            size="small"
+            variant="ghost"
+            aria-pressed={!inspectorCollapsed}
+            title="显示/隐藏证据栏"
+            onClick={() => {
+              // 窄屏下右栏不在布局里，改用抽屉
+              if (window.matchMedia("(max-width: 1279px)").matches) setInspectorOpen(true);
+              else setInspectorCollapsed((value) => !value);
+            }}
+          >
+            <PanelRight size={14} /> 证据
           </Button>
           <Button size="small" variant="ghost" disabled={!previous} onClick={() => { if (previous) void navigate(`/tasks/${previous.id}?tab=${tab}`); }}>
             <ChevronLeft size={14} /> 上一题
@@ -177,21 +197,9 @@ export function TaskDetailPage() {
           </div>
         </div>
       ) : null}
-      <nav className="task-tabs" aria-label="任务详情标签页">
-        {tabs.map(([value, label], tabIndex) => (
-          <button
-            key={value}
-            aria-selected={tab === value}
-            className={tab === value ? "is-active" : ""}
-            onClick={() => setTab(value)}
-          >
-            <span>{tabIndex + 1}</span>
-            {label}
-          </button>
-        ))}
-      </nav>
+      <TabBar tabs={tabs} value={tab} onChange={setTab} label="任务详情标签页" />
       <div className="task-tab-content">
-        {tab === "overview" ? <OverviewTab task={detail} onRun={() => run.mutate()} /> : null}
+        {tab === "overview" ? <OverviewTab task={detail} onRun={() => run.mutate()} running={run.isPending} /> : null}
         {tab === "prompt" ? <PromptTab task={detail} /> : null}
         {tab === "timeline" ? <TimelineTab task={detail} /> : null}
         {tab === "artifact" ? <ArtifactsTab task={detail} /> : null}
@@ -208,31 +216,37 @@ export function TaskDetailPage() {
         <span>交付完整性</span>
         <strong>{done}/11</strong>
       </div>
-      <StepRail steps={detail.steps} />
+      <StepRail steps={detail.steps} onSelect={(step) => setTab(tabForStep(step))} />
       <div className="next-block">
         <span>下一步</span>
-        <strong>{current ? current.name : "归档并归还"}</strong>
-        <p>{current?.detail || "所有检查项已通过。"}</p>
-        <Button variant="primary" onClick={() => setTab(tabForStep(current))}>
-          {nextLabel(current)}
+        <strong>{current ? `Step ${current.number} · ${current.name}` : "全部通过"}</strong>
+        <p>{current ? detail.missing[0] ?? current.detail : "11 项检查已通过，可以导出并归档归还。"}</p>
+        {/* 只是跳转到对应 Tab；每屏唯一的主按钮留给 Tab 里真正执行动作的那个 */}
+        <Button onClick={() => setTab(tabForStep(current))}>
+          {nextLabel(current)} <ChevronRight size={14} />
         </Button>
       </div>
     </div>
   );
 
-  const right = <Inspector task={detail} onAbandon={() => setAbandonOpen(true)} onReveal={() => {
+  const right = <Inspector task={detail} onAbandon={() => setAbandonOpen(true)} onPurge={() => setPurgeOpen(true)} onReveal={() => {
     void api.reveal(detail.id, "task_root").catch((error: unknown) =>
-      toast(error instanceof Error ? error.message : String(error), "error"),
+      toast(errorText(error), "error"),
     );
   }} />;
 
   return (
     <div className="task-detail-page">
-      <SplitPane left={left} center={center} right={right} />
-      <div className="mobile-task-toolbar">
-        <Button onClick={() => setTab("overview")}><Info size={14} /> 概览</Button>
-        <Button onClick={() => void api.reveal(id, "task_root")}><FolderOpen size={14} /> 目录</Button>
-      </div>
+      <SplitPane left={left} center={center} right={right} rightCollapsed={inspectorCollapsed} />
+      <PurgeModal
+        taskIds={[detail.id]}
+        open={purgeOpen}
+        onClose={() => setPurgeOpen(false)}
+        onDone={(removed) => {
+          setPurgeOpen(false);
+          if (removed.length) setPurged(true);
+        }}
+      />
       <Modal
         open={abandonOpen}
         title="放弃本题"
@@ -277,7 +291,17 @@ export function TaskDetailPage() {
   );
 }
 
-function Inspector({ task, onReveal, onAbandon }: { task: TaskDetail; onReveal: () => void; onAbandon: () => void }) {
+function Inspector({
+  task,
+  onReveal,
+  onAbandon,
+  onPurge,
+}: {
+  task: TaskDetail;
+  onReveal: () => void;
+  onAbandon: () => void;
+  onPurge: () => void;
+}) {
   const { toast } = useToast();
   const state = task.state as {
     session?: { sessionId?: string; promptId?: string; toolUses?: number };
@@ -290,15 +314,13 @@ function Inspector({ task, onReveal, onAbandon }: { task: TaskDetail; onReveal: 
     <div className="inspector-panel">
       <div className="inspector-head">
         <span>证据</span>
-        <Badge tone={task.complete ? "ok" : task.job_status === "blocked" ? "danger" : "warn"}>
-          {task.job_status}
-        </Badge>
+        <Badge tone={task.complete ? "ok" : statusTone(task.job_status)}>{statusLabel(task.job_status)}</Badge>
       </div>
       <div className="key-value-list">
-        <CopyValue label="SessionID" value={state.session?.sessionId ?? ""} />
-        <CopyValue label="PromptID" value={state.session?.promptId ?? ""} />
-        <KeyValue label="初始快照" value={shortSha(task.initial_sha ?? "")} mono />
-        <KeyValue label="产物快照" value={shortSha(task.artifact_sha ?? "")} mono />
+        <KeyValue label="SessionID" value={shortSha(state.session?.sessionId ?? "")} mono copy={state.session?.sessionId} />
+        <KeyValue label="PromptID" value={shortSha(state.session?.promptId ?? "")} mono copy={state.session?.promptId} />
+        <KeyValue label="初始快照" value={shortSha(task.initial_sha ?? "")} mono copy={task.initial_sha ?? undefined} />
+        <KeyValue label="产物快照" value={shortSha(task.artifact_sha ?? "")} mono copy={task.artifact_sha ?? undefined} />
         {remoteWeb && task.initial_sha ? (
           <KeyValue
             label="初始链接"
@@ -324,49 +346,21 @@ function Inspector({ task, onReveal, onAbandon }: { task: TaskDetail; onReveal: 
         <Button
           onClick={() => {
             void api.reveal(task.id, "vscode").catch((error: unknown) =>
-              toast(error instanceof Error ? error.message : String(error), "error"),
+              toast(errorText(error), "error"),
             );
           }}
         >
           在 VS Code 打开
         </Button>
-        <Button
-          variant="ghost"
-          onClick={() => {
-            void navigator.clipboard.writeText(task.task_root).then(() => toast("绝对路径已复制", "info"));
-          }}
-        >
-          <Clipboard size={14} /> 复制路径
-        </Button>
         {task.job_status !== "exported" && task.job_status !== "archived" ? (
           <Button variant="danger" onClick={onAbandon}>放弃并归还</Button>
         ) : null}
+        <Button variant="danger" onClick={onPurge}>清理任务</Button>
       </div>
       <div className="inspector-note">
         <StatusDot state={task.compatible ? "done" : "blocked"} label={task.compatible ? "磁盘事实可读" : "兼容模式"} />
         <small>{task.skill_status ?? "—"} · skill {task.skill_version ?? "—"}</small>
       </div>
-    </div>
-  );
-}
-
-function CopyValue({ label, value }: { label: string; value: string }) {
-  const { toast } = useToast();
-  return (
-    <div className="key-value">
-      <span>{label}</span>
-      <strong className="mono ellipsis" title={value}>{value ? `${value.slice(0, 12)}…` : "—"}</strong>
-      {value ? (
-        <button
-          className="icon-button"
-          aria-label={`复制 ${label}`}
-          onClick={() => {
-            void navigator.clipboard.writeText(value).then(() => toast(`${label} 已复制`, "info"));
-          }}
-        >
-          <Clipboard size={12} />
-        </button>
-      ) : null}
     </div>
   );
 }
@@ -432,7 +426,14 @@ function copyEvidence(task: TaskDetail, tab: Tab, toast: (message: string, tone?
       : tab === "artifact"
         ? state.artifact?.shortStat ?? task.artifact_sha ?? ""
         : state.session?.sessionId ?? task.task_name;
-  void navigator.clipboard.writeText(value).then(() => toast("当前 Tab 的关键证据已复制", "info"));
+  if (!value) {
+    toast("当前 Tab 还没有可复制的证据", "warn");
+    return;
+  }
+  navigator.clipboard.writeText(value).then(
+    () => toast("当前 Tab 的关键证据已复制", "info"),
+    (error: unknown) => toast(`复制失败：${errorText(error)}`, "error"),
+  );
 }
 
 function shortSha(value: string): string {

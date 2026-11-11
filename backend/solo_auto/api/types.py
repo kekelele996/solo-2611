@@ -103,6 +103,12 @@ class PruneRequest(BaseModel):
     confirm: bool = False
 
 
+class PurgeRequest(BaseModel):
+    task_ids: list[str] = Field(min_length=1, max_length=200)
+    dry_run: bool = True
+    permanent: bool = False
+
+
 class RevealRequest(BaseModel):
     kind: str
 
@@ -151,3 +157,7 @@ class ConfigPatchRequest(BaseModel):
     storage: StorageConfigPatch | None = None
     recording: RecordingConfigPatch | None = None
     secrets: SecretConfigPatch | None = None
+
+
+class AutopilotRequest(BaseModel):
+    task_ids: list[str] = Field(default_factory=list, max_length=200)

@@ -11,7 +11,6 @@ import {
   Settings,
   Sun,
 } from "lucide-react";
-import { useEffect } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 
 import { api } from "../api/client";
@@ -45,35 +44,38 @@ export function AppShell() {
   });
   const version = useQuery({ queryKey: ["version"], queryFn: api.version, staleTime: 60_000 });
 
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-  }, [theme]);
-
   return (
     <div className="app-shell">
       <header className="topbar">
-        <button className="global-search" onClick={() => setCommandOpen(true)}>
+        <button type="button" className="global-search" onClick={() => setCommandOpen(true)}>
           <Command size={15} />
-          <span>⌘K 搜索</span>
+          <span>搜索任务或命令</span>
+          <kbd>⌘K</kbd>
         </button>
         <div className="topbar-counts">
           <NavLink to="/tasks?status=running">
-            <StatusDot state="running" label={`运行 ${status.data?.running ?? 0}`} />
+            <StatusDot
+              state={status.data?.running ? "running" : "idle"}
+              label={`运行 ${status.data?.running ?? 0}`}
+              pulse={Boolean(status.data?.running)}
+            />
           </NavLink>
           <NavLink to="/tasks?status=queued">
             <StatusDot state="queued" label={`排队 ${status.data?.queued ?? 0}`} />
           </NavLink>
           <NavLink to="/tasks?status=blocked">
-            <StatusDot state="blocked" label={`卡住 ${status.data?.blocked ?? 0}`} />
+            <StatusDot state={status.data?.blocked ? "blocked" : "idle"} label={`卡住 ${status.data?.blocked ?? 0}`} />
           </NavLink>
         </div>
         <div className="topbar-meta">
           <span className={status.data?.disk_low ? "warn-text" : ""}>
             磁盘 {status.data?.disk_free_gb ?? "—"}G
           </span>
-          <span className="mono">{version.data?.skill_version ?? "—"}</span>
+          <span className="mono" title="solo-2611 技能版本">skill {version.data?.skill_version ?? "—"}</span>
           <button
+            type="button"
             className="icon-button"
+            title={theme === "dark" ? "切换浅色主题" : "切换深色主题"}
             aria-label={theme === "dark" ? "切换浅色主题" : "切换深色主题"}
             onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
           >
@@ -119,11 +121,14 @@ export function AppShell() {
         <div className="shortcut-grid">
           <span>⌘K</span><strong>命令面板</strong>
           <span>g d / t / s / e / ,</span><strong>切换页面</strong>
-          <span>j / k</span><strong>列表上下移动</strong>
+          <span>j / k · Enter</span><strong>任务列表上下移动 · 打开</strong>
+          <span>x / 空格 · ⌘A</span><strong>勾选当前行 · 全选</strong>
+          <span>/ · f · r</span><strong>搜索 · 只看卡住 · 刷新</strong>
           <span>1–7</span><strong>任务详情 Tab</strong>
           <span>[ / ]</span><strong>上一题 / 下一题</strong>
           <span>⌘Enter</span><strong>执行当前主操作</strong>
           <span>⌘S</span><strong>保存当前编辑</strong>
+          <span>⌘O · ⌘⇧C</span><strong>打开任务目录 · 复制关键证据</strong>
           <span>?</span><strong>打开本帮助</strong>
         </div>
       </Modal>

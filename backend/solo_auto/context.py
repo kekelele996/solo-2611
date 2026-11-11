@@ -14,6 +14,7 @@ from solo_auto.events.bus import EventBus
 from solo_auto.gateway.skill import SkillGateway
 from solo_auto.instance_lock import InstanceLock
 from solo_auto.logging_setup import configure_logging
+from solo_auto.pipeline.autopilot import Autopilot
 from solo_auto.pipeline.export_service import ExportService
 from solo_auto.pipeline.feedback_service import FeedbackService
 from solo_auto.pipeline.prompt_service import PromptService
@@ -97,6 +98,16 @@ class AppContext:
             reconciler=self.reconciler,
             bus=self.bus,
         )
+        self.autopilot = Autopilot(
+            paths=self.paths,
+            skill_root=self.settings.skill_root,
+            repo=self.repo,
+            reconciler=self.reconciler,
+            bus=self.bus,
+            scheduler=self.scheduler,
+            feedback=self.feedback,
+            exports=self.exports,
+        )
         self.started_at = datetime.now().astimezone()
         self.skill_version = ""
         self.source_online = False
@@ -121,6 +132,7 @@ class AppContext:
                 asyncio.create_task(self._cleanup_loop()),
             ]
             await self.scheduler.start()
+            await self.autopilot.start()
         self.repo.add_event(
             "system.started",
             f"solo-auto 启动，技能版本 {self.skill_version}",
@@ -131,6 +143,7 @@ class AppContext:
     async def shutdown(self) -> None:
         if not self._started:
             return
+        await self.autopilot.stop()
         await self.scheduler.stop()
         for task in self._background:
             task.cancel()

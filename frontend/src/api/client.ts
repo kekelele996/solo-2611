@@ -1,4 +1,5 @@
 import type {
+  AutopilotSnapshot,
   CheckResponse,
   ConfigPatchRequest,
   ConfigResponse,
@@ -12,6 +13,7 @@ import type {
   PromptInstallResponse,
   PromptPreview,
   ProjectRow,
+  PurgeResult,
   QueueSnapshot,
   RecordPlanResponse,
   RecordingStatus,
@@ -148,6 +150,11 @@ export const api = {
     request<{ ok: boolean; cleanup_required: boolean }>(`/api/tasks/${encodeURIComponent(id)}/abort`, {
       method: "POST",
       body: JSON.stringify({ reason }),
+    }),
+  purgeTasks: (taskIds: string[], options: { dryRun: boolean; permanent?: boolean }) =>
+    request<PurgeResult>("/api/tasks/purge", {
+      method: "POST",
+      body: JSON.stringify({ task_ids: taskIds, dry_run: options.dryRun, permanent: options.permanent ?? false }),
     }),
   archiveTask: (id: string) =>
     request<{ ok: boolean; release_error: string }>(`/api/tasks/${encodeURIComponent(id)}/archive`, {
@@ -288,6 +295,26 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ confirm: true }),
     }),
+  autopilot: () => request<AutopilotSnapshot>("/api/autopilot"),
+  autopilotStart: (taskIds: string[]) =>
+    request<AutopilotSnapshot & { added: string[] }>("/api/autopilot/start", {
+      method: "POST",
+      body: JSON.stringify({ task_ids: taskIds }),
+    }),
+  autopilotStop: (taskIds: string[]) =>
+    request<AutopilotSnapshot & { stopped: string[] }>("/api/autopilot/stop", {
+      method: "POST",
+      body: JSON.stringify({ task_ids: taskIds }),
+    }),
+  autopilotLog: (id: string) =>
+    request<{ task_id: string; stage: string; file: string; lines: Array<{ kind: string; text: string }> }>(
+      `/api/autopilot/${encodeURIComponent(id)}/log`,
+    ),
+  recordTerminal: (id: string) =>
+    request<{ ok: boolean; window_id: number; title: string }>(
+      `/api/tasks/${encodeURIComponent(id)}/record/terminal`,
+      { method: "POST" },
+    ),
   chromeStart: (id: string, url: string) =>
     request<Record<string, unknown>>(`/api/tasks/${encodeURIComponent(id)}/record/chrome-start`, {
       method: "POST",

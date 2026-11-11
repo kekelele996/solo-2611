@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { DatabaseBackup, HardDrive, RefreshCw, ShieldCheck, TestTube2 } from "lucide-react";
+import { DatabaseBackup, HardDrive, RefreshCw, Search, ShieldCheck, TestTube2 } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
@@ -13,7 +13,11 @@ import {
   StatusDot,
 } from "../components/ui";
 import { useToast } from "../components/toast-context";
+import { errorText } from "../utils/display";
 import { formatDateTime } from "../utils/time";
+
+type TestTarget = "skill" | "source" | "docker";
+type TestOutcome = { ok: boolean; message: string };
 
 export function SystemPage() {
   const queryClient = useQueryClient();
@@ -25,10 +29,17 @@ export function SystemPage() {
   const [password, setPassword] = useState("");
   const [logQuery, setLogQuery] = useState("");
   const [logLevel, setLogLevel] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const [tests, setTests] = useState<Partial<Record<TestTarget, TestOutcome>>>({});
 
   useEffect(() => {
-    if (config.data) setForm(config.data);
-  }, [config.data]);
+    // 表单有未保存的修改时，不让后台刷新把它冲掉
+    if (config.data && !dirty) setForm(config.data);
+  }, [config.data, dirty]);
+  const update = (next: ConfigResponse) => {
+    setForm(next);
+    setDirty(true);
+  };
 
   const save = useMutation({
     mutationFn: () => {
@@ -52,26 +63,29 @@ export function SystemPage() {
     onSuccess: () => {
       toast("配置已保存", "ok");
       setPassword("");
+      setDirty(false);
       void queryClient.invalidateQueries();
     },
-    onError: (error) => toast(error instanceof Error ? error.message : String(error), "error"),
+    onError: (error) => toast(errorText(error), "error"),
   });
   const test = useMutation({
-    mutationFn: (target: "skill" | "source" | "docker") => api.testConfig(target),
-    onSuccess: (result) => toast(result.message, result.ok ? "ok" : "error"),
-    onError: (error) => toast(error instanceof Error ? error.message : String(error), "error"),
+    mutationFn: (target: TestTarget) => api.testConfig(target),
+    // 结果留在按钮旁边：原文不截断，也不会像 toast 一样消失
+    onSuccess: (result, target) => setTests((prev) => ({ ...prev, [target]: { ok: result.ok, message: result.message } })),
+    onError: (error, target) => setTests((prev) => ({ ...prev, [target]: { ok: false, message: errorText(error) } })),
   });
   const reconcile = useMutation({
     mutationFn: api.reconcile,
     onSuccess: (result) => {
-      toast(`对账完成，修正 ${result.corrected} 项`, "ok");
+      toast(result.corrected ? `对账完成，修正 ${result.corrected} 项` : "对账完成，索引与磁盘一致", "ok");
       void queryClient.invalidateQueries();
     },
+    onError: (error) => toast(errorText(error), "error"),
   });
   const backup = useMutation({
     mutationFn: api.backup,
     onSuccess: (result) => toast(`备份已生成：${result.path}`, "ok"),
-    onError: (error) => toast(error instanceof Error ? error.message : String(error), "error"),
+    onError: (error) => toast(errorText(error), "error"),
   });
   const prune = useMutation({
     mutationFn: (dryRun: boolean) => api.prune(dryRun),
@@ -79,7 +93,7 @@ export function SystemPage() {
       `${result.dry_run ? "预演" : "已清理"} ${result.items.length} 项，共 ${(result.total_bytes / 1024 / 1024).toFixed(1)} MB`,
       "info",
     ),
-    onError: (error) => toast(error instanceof Error ? error.message : String(error), "error"),
+    onError: (error) => toast(errorText(error), "error"),
   });
 
   if (config.isPending) return <div className="page"><LoadingLines rows={8} /></div>;
@@ -89,6 +103,28 @@ export function SystemPage() {
     .reverse()
     .filter((event) => !logLevel || event.level === logLevel)
     .filter((event) => !logQuery || `${event.action} ${event.message} ${event.actor}`.toLowerCase().includes(logQuery.toLowerCase()));
+
+  const testRow = (target: TestTarget, label: string) => {
+    const outcome = tests[target];
+    return (
+      <div className="test-row">
+        <Button
+          size="small"
+          disabled={dirty}
+          title={dirty ? "测试用的是已保存的配置，请先保存" : undefined}
+          loading={test.isPending && test.variables === target}
+          onClick={() => test.mutate(target)}
+        >
+          <TestTube2 size={13} /> {label}
+        </Button>
+        {outcome ? (
+          <span className={`test-result ${outcome.ok ? "is-ok" : "is-bad"}`} role="status">
+            {outcome.message}
+          </span>
+        ) : null}
+      </div>
+    );
+  };
 
   return (
     <div className="page system-page">
@@ -107,8 +143,15 @@ export function SystemPage() {
           <Button onClick={() => reconcile.mutate()} loading={reconcile.isPending}>
             <RefreshCw size={14} /> 手动对账
           </Button>
-          <Button variant="primary" onClick={() => save.mutate()} loading={save.isPending}>
-            保存配置
+          <Button
+            variant="primary"
+            data-primary
+            data-save
+            disabled={!dirty && !password}
+            onClick={() => save.mutate()}
+            loading={save.isPending}
+          >
+            {dirty || password ? "保存配置" : "配置已保存"}
           </Button>
         </div>
       </header>
@@ -116,26 +159,26 @@ export function SystemPage() {
       <div className="system-grid">
         <Panel title="技能">
           <Field label="脚本目录">
-            <input value={form.skill_root} onChange={(event) => setForm({ ...form, skill_root: event.target.value })} />
+            <input value={form.skill_root} onChange={(event) => update({ ...form, skill_root: event.target.value })} />
           </Field>
           <div className="config-facts">
             <StatusDot state="done" label={`版本 ${form.skill_version}`} />
             <span>Schema solo-2611/1</span>
           </div>
-          <Button size="small" onClick={() => test.mutate("skill")}><TestTube2 size={13} /> 测试技能</Button>
+          {testRow("skill", "测试技能")}
         </Panel>
 
         <Panel title="题源">
           <Field label="Base URL">
             <input
               value={form.source.base_url}
-              onChange={(event) => setForm({ ...form, source: { ...form.source, base_url: event.target.value } })}
+              onChange={(event) => update({ ...form, source: { ...form.source, base_url: event.target.value } })}
             />
           </Field>
           <Field label="用户名">
             <input
               value={form.source.username}
-              onChange={(event) => setForm({ ...form, source: { ...form.source, username: event.target.value } })}
+              onChange={(event) => update({ ...form, source: { ...form.source, username: event.target.value } })}
             />
           </Field>
           <Field label="密码" hint={`当前：${form.source.password}`}>
@@ -146,7 +189,7 @@ export function SystemPage() {
               placeholder="留空则不修改 Keychain"
             />
           </Field>
-          <Button size="small" onClick={() => test.mutate("source")}><TestTube2 size={13} /> 测试连接</Button>
+          {testRow("source", "测试连接")}
         </Panel>
 
         <Panel title="执行">
@@ -157,7 +200,7 @@ export function SystemPage() {
               max={8}
               value={form.execution.max_containers}
               onChange={(event) =>
-                setForm({
+                update({
                   ...form,
                   execution: { ...form.execution, max_containers: Number(event.target.value) },
                 })
@@ -169,7 +212,7 @@ export function SystemPage() {
               type="number"
               value={form.execution.run_timeout_seconds}
               onChange={(event) =>
-                setForm({
+                update({
                   ...form,
                   execution: { ...form.execution, run_timeout_seconds: Number(event.target.value) },
                 })
@@ -183,7 +226,7 @@ export function SystemPage() {
               max={10}
               value={form.execution.attempts}
               onChange={(event) =>
-                setForm({
+                update({
                   ...form,
                   execution: { ...form.execution, attempts: Number(event.target.value) },
                 })
@@ -191,9 +234,9 @@ export function SystemPage() {
             />
           </Field>
           <Field label="任务目录">
-            <input value={form.tasks_dir} onChange={(event) => setForm({ ...form, tasks_dir: event.target.value })} />
+            <input value={form.tasks_dir} onChange={(event) => update({ ...form, tasks_dir: event.target.value })} />
           </Field>
-          <Button size="small" onClick={() => test.mutate("docker")}><TestTube2 size={13} /> 测试 Docker</Button>
+          {testRow("docker", "测试 Docker")}
         </Panel>
 
         <Panel title="存储与录屏">
@@ -202,7 +245,7 @@ export function SystemPage() {
               type="number"
               value={form.storage.disk_floor_gb}
               onChange={(event) =>
-                setForm({
+                update({
                   ...form,
                   storage: { ...form.storage, disk_floor_gb: Number(event.target.value) },
                 })
@@ -216,7 +259,7 @@ export function SystemPage() {
             <input
               value={form.recording.chrome_url}
               onChange={(event) =>
-                setForm({ ...form, recording: { ...form.recording, chrome_url: event.target.value } })
+                update({ ...form, recording: { ...form.recording, chrome_url: event.target.value } })
               }
             />
           </Field>
@@ -231,30 +274,33 @@ export function SystemPage() {
       <Panel title="最近事件与日志" className="logs-panel">
         <div className="table-toolbar logs-toolbar">
           <label className="search-box">
-            <HardDrive size={14} />
+            <Search size={14} />
             <input value={logQuery} onChange={(event) => setLogQuery(event.target.value)} placeholder="筛选事件" />
           </label>
-          <select value={logLevel} onChange={(event) => setLogLevel(event.target.value)}>
+          <select value={logLevel} onChange={(event) => setLogLevel(event.target.value)} aria-label="按级别筛选">
             <option value="">全部级别</option>
             <option value="info">info</option>
             <option value="warn">warn</option>
             <option value="error">error</option>
           </select>
+          <span className="toolbar-count">{visibleLogs.length} 条 · 每 5 秒刷新</span>
         </div>
         {logs.isPending ? <LoadingLines rows={5} /> : null}
-        {logs.isError ? <ErrorPanel error={logs.error} /> : null}
+        {logs.isError ? <ErrorPanel error={logs.error} onRetry={() => void logs.refetch()} /> : null}
         {visibleLogs.length ? (
           <div className="event-table">
             {visibleLogs.map((event) => (
               <div key={event.id} className={`event-row event-${event.level}`}>
                 <span className="mono">{formatDateTime(event.at, true)}</span>
                 <strong>{event.action}</strong>
-                <span>{event.message}</span>
+                <span title={event.message}>{event.message}</span>
                 <small>{event.actor}</small>
               </div>
             ))}
           </div>
-        ) : <div className="empty-inline"><DatabaseBackup size={16} /> 暂无事件</div>}
+        ) : logs.isPending ? null : (
+          <div className="empty-inline">{logQuery || logLevel ? "没有匹配的事件" : "暂无事件"}</div>
+        )}
       </Panel>
     </div>
   );

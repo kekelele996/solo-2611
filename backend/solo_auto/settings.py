@@ -110,6 +110,7 @@ class Paths(BaseModel):
     logs: Path
     skill_logs: Path
     backups: Path
+    trash: Path
     pid: Path
     instance_lock: Path
 
@@ -142,6 +143,7 @@ def app_paths(home: Path | None = None) -> Paths:
         logs=root / "logs",
         skill_logs=root / "logs" / "skill",
         backups=root / "backups",
+        trash=root / "trash",
         pid=root / "run" / "solo-auto.pid",
         instance_lock=root / "run" / "solo-auto.instance.lock",
     )
