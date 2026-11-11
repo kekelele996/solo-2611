@@ -8,6 +8,7 @@ import { AutopilotPanel } from "../components/AutopilotPanel";
 import { PurgeModal } from "../components/PurgeModal";
 import type { TaskRow } from "../api/types";
 import {
+  Badge,
   Button,
   ConfirmModal,
   EmptyState,
@@ -23,6 +24,25 @@ import { formatDateTime } from "../utils/time";
 
 /** 一次批量操作里每一行的结局：成功的行闪一下，失败的行留红条和原文。 */
 type BatchOutcome = { done: string[]; failed: Map<string, string> };
+type SavedView = { name: string; status: string; q: string; view: string };
+
+function readSavedViews(): SavedView[] {
+  try {
+    const data = JSON.parse(window.localStorage.getItem("solo-auto-task-views") ?? "[]") as unknown;
+    return Array.isArray(data) ? data.filter(isSavedView) : [];
+  } catch {
+    return [];
+  }
+}
+
+function isSavedView(item: unknown): item is SavedView {
+  if (!item || typeof item !== "object") return false;
+  const value = item as Record<string, unknown>;
+  return typeof value.name === "string"
+    && typeof value.status === "string"
+    && typeof value.q === "string"
+    && typeof value.view === "string";
+}
 
 export function TasksPage() {
   const [params, setParams] = useSearchParams();
@@ -38,16 +58,34 @@ export function TasksPage() {
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [autoOpen, setAutoOpen] = useState(false);
   const [purgeOpen, setPurgeOpen] = useState(false);
+  const [savedViews, setSavedViews] = useState<SavedView[]>(readSavedViews);
   const searchRef = useRef<HTMLInputElement>(null);
   const tableRef = useRef<HTMLTableElement>(null);
   const status = params.get("status") ?? "";
   const q = params.get("q") ?? "";
+  const view = params.get("view") ?? "";
   const tasks = useQuery({
     queryKey: ["tasks", status, q],
     queryFn: () => api.tasks({ status, q, page_size: 200 }),
     refetchInterval: 3000,
   });
-  const rows = useMemo(() => tasks.data?.items ?? [], [tasks.data?.items]);
+  const audits = useQuery({ queryKey: ["audits", "pending"], queryFn: () => api.audits("pending"), refetchInterval: 5000 });
+  const pilot = useQuery({ queryKey: ["autopilot"], queryFn: api.autopilot, refetchInterval: 5000 });
+  const auditIds = useMemo(() => new Set((audits.data?.items ?? []).map((item) => item.task_id)), [audits.data?.items]);
+  const failedIds = useMemo(
+    () => new Set((pilot.data?.jobs ?? []).filter((job) => job.stage === "failed").map((job) => job.task_id)),
+    [pilot.data?.jobs],
+  );
+  const rows = useMemo(() => {
+    const items = tasks.data?.items ?? [];
+    if (view === "audit") return items.filter((task) => auditIds.has(task.id));
+    if (view === "missing") return items.filter((task) => task.presence === "missing");
+    if (view === "legacy") return items.filter((task) => isLegacy(task));
+    if (view === "failed") return items.filter((task) => failedIds.has(task.id) || task.job_status === "blocked");
+    return items;
+  }, [auditIds, failedIds, tasks.data?.items, view]);
+  const legacyRows = useMemo(() => rows.filter((task) => isLegacy(task)), [rows]);
+  const mainRows = useMemo(() => (view ? rows : rows.filter((task) => !isLegacy(task))), [rows, view]);
   const refetch = tasks.refetch;
 
   useEffect(() => {
@@ -237,6 +275,28 @@ export function TasksPage() {
     else next.delete(key);
     setParams(next, { replace: key === "q" });
   };
+  const updateView = (nextView: string) => {
+    const next = new URLSearchParams(params);
+    if (nextView) next.set("view", nextView);
+    else next.delete("view");
+    setParams(next);
+  };
+  const saveView = () => {
+    const name = window.prompt("视图名称");
+    if (!name?.trim()) return;
+    setSavedViews((current) => {
+      const next = [...current.filter((item) => item.name !== name.trim()), { name: name.trim(), status, q, view }];
+      window.localStorage.setItem("solo-auto-task-views", JSON.stringify(next));
+      return next;
+    });
+  };
+  const applyView = (item: SavedView) => {
+    const next = new URLSearchParams();
+    if (item.status) next.set("status", item.status);
+    if (item.q) next.set("q", item.q);
+    if (item.view) next.set("view", item.view);
+    setParams(next);
+  };
   const readySelected = rows.filter((task) => selected.has(task.id) && task.job_status === "ready").length;
 
   return (
@@ -284,6 +344,17 @@ export function TasksPage() {
           </select>
         </label>
         <span className="toolbar-count">{tasks.data?.total ?? 0} 个任务</span>
+      </div>
+      <div className="saved-views" aria-label="保存的筛选视图">
+        <button type="button" data-active={!view || undefined} onClick={() => updateView("")}>全部</button>
+        <button type="button" data-active={view === "audit" || undefined} onClick={() => updateView("audit")}>待抽检</button>
+        <button type="button" data-active={view === "failed" || undefined} onClick={() => updateView("failed")}>失败</button>
+        <button type="button" data-active={view === "legacy" || undefined} onClick={() => updateView("legacy")}>旧版遗留</button>
+        <button type="button" data-active={view === "missing" || undefined} onClick={() => updateView("missing")}>目录缺失</button>
+        {savedViews.map((item) => (
+          <button type="button" key={item.name} onClick={() => applyView(item)}>{item.name}</button>
+        ))}
+        <button type="button" className="saved-view-add" onClick={saveView}>＋ 保存当前视图</button>
       </div>
 
       {selected.size ? (
@@ -357,7 +428,7 @@ export function TasksPage() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((task, index) => (
+              {mainRows.map((task, index) => (
                 <TaskTableRow
                   key={task.id}
                   task={task}
@@ -365,6 +436,7 @@ export function TasksPage() {
                   selected={selected.has(task.id)}
                   flash={flash.has(task.id)}
                   failure={failed.get(task.id)}
+                  auditPending={auditIds.has(task.id)}
                   onSelect={() => toggle(task.id)}
                   onOpen={() => {
                     setCursor(index);
@@ -375,6 +447,26 @@ export function TasksPage() {
             </tbody>
           </table>
         </Panel>
+      ) : null}
+      {!view && legacyRows.length ? (
+        <details className="legacy-group">
+          <summary>旧版遗留 · {legacyRows.length} <span>技能版本低于 0.2.3，默认折叠</span></summary>
+          <div className="legacy-actions">
+            <Button size="small" variant="danger" onClick={() => {
+              setSelected(new Set(legacyRows.map((task) => task.id)));
+              setPurgeOpen(true);
+            }}>选择全部并清理</Button>
+          </div>
+          <div className="legacy-list">
+            {legacyRows.map((task) => (
+              <div key={task.id}>
+                <button type="button" onClick={() => void navigate(`/tasks/${task.id}`)}>{task.task_name}</button>
+                <span className="mono">skill {task.skill_version || "未知"}</span>
+                <Badge tone="warn">旧版</Badge>
+              </div>
+            ))}
+          </div>
+        </details>
       ) : null}
 
       <ConfirmModal
@@ -422,6 +514,7 @@ function TaskTableRow({
   selected,
   flash,
   failure,
+  auditPending,
   onSelect,
   onOpen,
 }: {
@@ -430,6 +523,7 @@ function TaskTableRow({
   selected: boolean;
   flash: boolean;
   failure?: string;
+  auditPending: boolean;
   onSelect: () => void;
   onOpen: () => void;
 }) {
@@ -443,6 +537,12 @@ function TaskTableRow({
       </td>
       <td>
         <strong className="ellipsis" title={task.task_name}>{task.task_name}</strong>
+        <span className="task-inline-badges">
+          {task.ack_by === "autopilot" ? <Badge tone="info">自动</Badge> : null}
+          {auditPending ? <Badge tone="warn">待抽检</Badge> : null}
+          {isLegacy(task) ? <Badge tone="warn">旧版</Badge> : null}
+          {task.presence === "missing" ? <Badge tone="danger">目录缺失</Badge> : null}
+        </span>
         <small className="mono">{task.domain} · {task.task_type ?? "待定题"}</small>
       </td>
       <td><StatusDot state={task.job_status} label={statusLabel(task.job_status)} /></td>
@@ -473,4 +573,11 @@ function nextAction(task: TaskRow): string {
     orphan: "state.json 缺失，查看详情",
   };
   return mapping[task.job_status] ?? "按左栏下一步处理";
+}
+
+function isLegacy(task: TaskRow): boolean {
+  if (!task.skill_version) return false;
+  const parts = task.skill_version.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const value = (parts[0] ?? 0) * 10_000 + (parts[1] ?? 0) * 100 + (parts[2] ?? 0);
+  return value < 203;
 }

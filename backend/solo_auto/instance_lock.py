@@ -6,6 +6,7 @@ import fcntl
 import os
 from pathlib import Path
 from types import TracebackType
+from typing import TextIO
 
 
 class AlreadyRunningError(RuntimeError):
@@ -16,7 +17,7 @@ class InstanceLock:
     def __init__(self, lock_path: Path, pid_path: Path) -> None:
         self.lock_path = lock_path
         self.pid_path = pid_path
-        self._handle: object | None = None
+        self._handle: TextIO | None = None
 
     def acquire(self) -> None:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -34,8 +35,8 @@ class InstanceLock:
             return
         handle = self._handle
         self.pid_path.unlink(missing_ok=True)
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)  # type: ignore[union-attr]
-        handle.close()  # type: ignore[union-attr]
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
         self._handle = None
 
     def __enter__(self) -> InstanceLock:

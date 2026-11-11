@@ -7,7 +7,7 @@ import sqlite3
 import threading
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -40,11 +40,13 @@ CREATE TABLE IF NOT EXISTS tasks (
   prompt_id TEXT,
   prompt_sha256 TEXT,
   feedback_score INTEGER,
+  ack_by TEXT,
   review_acked_at TEXT,
   exported_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  notes TEXT
+  notes TEXT,
+  presence TEXT NOT NULL DEFAULT 'present'
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(job_status);
 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC);
@@ -104,6 +106,60 @@ CREATE TABLE IF NOT EXISTS claims (
   task_id TEXT REFERENCES tasks(id),
   zip_sha256 TEXT
 );
+CREATE TABLE IF NOT EXISTS autopilot_stages (
+  id INTEGER PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  outcome TEXT,
+  failure_kind TEXT,
+  failure_detail TEXT,
+  usage_json TEXT,
+  log_path TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ap_stages_task ON autopilot_stages(task_id, started_at);
+CREATE TABLE IF NOT EXISTS audits (
+  task_id TEXT PRIMARY KEY,
+  sampled INTEGER NOT NULL,
+  verdict TEXT,
+  reason TEXT,
+  disposition TEXT,
+  decided_at TEXT
+);
+CREATE TABLE IF NOT EXISTS batches (
+  id TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL,
+  xlsx_path TEXT,
+  check_json TEXT NOT NULL,
+  unaudited_count INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS batch_items (
+  batch_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  PRIMARY KEY (batch_id, task_id)
+);
+CREATE TABLE IF NOT EXISTS usage_ledger (
+  id INTEGER PRIMARY KEY,
+  source TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  project_name TEXT NOT NULL,
+  engineering_id TEXT NOT NULL,
+  engineering_name TEXT NOT NULL,
+  task_id TEXT,
+  task_name TEXT,
+  claimed_at TEXT NOT NULL,
+  task_created_at TEXT,
+  delivered_at TEXT,
+  submitted_at TEXT,
+  outcome TEXT NOT NULL,
+  failure_kind TEXT,
+  purged_at TEXT,
+  backfilled INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_usage_project ON usage_ledger(source, project_id);
+CREATE INDEX IF NOT EXISTS idx_usage_eng ON usage_ledger(source, engineering_id);
 """
 
 
@@ -123,14 +179,27 @@ class Repository:
             self._connection.execute("PRAGMA foreign_keys=ON")
             self._connection.execute("PRAGMA busy_timeout=5000")
             self._connection.executescript(DDL)
+            self._migrate()
             self._connection.execute(
                 "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(1, ?)",
+                (now(),),
+            )
+            self._connection.execute(
+                "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(2, ?)",
                 (now(),),
             )
 
     def close(self) -> None:
         with self._lock:
             self._connection.close()
+
+    def _migrate(self) -> None:
+        columns = {str(row[1]) for row in self._connection.execute("PRAGMA table_info(tasks)").fetchall()}
+        if "ack_by" not in columns:
+            self._connection.execute("ALTER TABLE tasks ADD COLUMN ack_by TEXT")
+        if "presence" not in columns:
+            self._connection.execute("ALTER TABLE tasks ADD COLUMN presence TEXT NOT NULL DEFAULT 'present'")
+        self._connection.execute("PRAGMA user_version=2")
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -227,7 +296,7 @@ class Repository:
                       initial_sha=:initial_sha, artifact_sha=:artifact_sha, session_id=:session_id,
                       prompt_id=:prompt_id, prompt_sha256=:prompt_sha256, feedback_score=:feedback_score,
                       review_acked_at=:review_acked_at, exported_at=:exported_at, updated_at=:updated_at,
-                      notes=:notes
+                      notes=:notes, ack_by=:ack_by, presence=:presence
                     WHERE id=:id
                     """,
                     _task_params(merged),
@@ -246,13 +315,13 @@ class Repository:
                   domain, sub_direction, task_type, difficulty, languages, repro_level,
                   job_status, skill_status, skill_version, initial_sha, artifact_sha,
                   session_id, prompt_id, prompt_sha256, feedback_score, review_acked_at,
-                  exported_at, created_at, updated_at, notes
+                  exported_at, created_at, updated_at, notes, ack_by, presence
                 ) VALUES(
                   :id, :task_root, :task_name, :source_kind, :engineering_id, :project_id, :claim_id,
                   :domain, :sub_direction, :task_type, :difficulty, :languages, :repro_level,
                   :job_status, :skill_status, :skill_version, :initial_sha, :artifact_sha,
                   :session_id, :prompt_id, :prompt_sha256, :feedback_score, :review_acked_at,
-                  :exported_at, :created_at, :updated_at, :notes
+                  :exported_at, :created_at, :updated_at, :notes, :ack_by, :presence
                 )
                 """,
                 _task_params(record),
@@ -346,6 +415,122 @@ class Repository:
                 claim,
             )
 
+    def start_autopilot_stage(
+        self,
+        *,
+        task_id: str,
+        stage: str,
+        attempt: int,
+        log_path: str,
+    ) -> int:
+        return self.execute(
+            """
+            INSERT INTO autopilot_stages(task_id, stage, attempt, started_at, log_path)
+            VALUES(?, ?, ?, ?, ?)
+            """,
+            (task_id, stage, attempt, now(), log_path),
+        )
+
+    def finish_autopilot_stage(
+        self,
+        stage_id: int,
+        *,
+        outcome: str,
+        failure_kind: str = "",
+        failure_detail: str = "",
+        usage_data: dict[str, Any] | None = None,
+    ) -> None:
+        self.execute(
+            """
+            UPDATE autopilot_stages SET ended_at=?, outcome=?, failure_kind=?, failure_detail=?, usage_json=?
+            WHERE id=?
+            """,
+            (
+                now(),
+                outcome,
+                failure_kind,
+                failure_detail[:4096],
+                json.dumps(usage_data, ensure_ascii=False) if usage_data else None,
+                stage_id,
+            ),
+        )
+
+    def autopilot_stages(self, task_id: str) -> list[dict[str, Any]]:
+        rows = self.query(
+            "SELECT * FROM autopilot_stages WHERE task_id=? ORDER BY started_at DESC, id DESC",
+            (task_id,),
+        )
+        for row in rows:
+            with suppress(json.JSONDecodeError):
+                row["usage_json"] = json.loads(row["usage_json"]) if row.get("usage_json") else None
+        return rows
+
+    def upsert_audit(self, task_id: str, audit: dict[str, Any]) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO audits(task_id, sampled, verdict, reason, disposition, decided_at)
+                VALUES(:task_id, :sampled, :verdict, :reason, :disposition, :decided_at)
+                ON CONFLICT(task_id) DO UPDATE SET
+                  sampled=excluded.sampled, verdict=excluded.verdict, reason=excluded.reason,
+                  disposition=excluded.disposition, decided_at=excluded.decided_at
+                """,
+                {"task_id": task_id, **audit},
+            )
+
+    def audit(self, task_id: str) -> dict[str, Any] | None:
+        return self.query_one("SELECT * FROM audits WHERE task_id=?", (task_id,))
+
+    def audits(self, verdict: str | None = None) -> list[dict[str, Any]]:
+        if verdict:
+            return self.query("SELECT * FROM audits WHERE verdict=? ORDER BY decided_at DESC", (verdict,))
+        return self.query("SELECT * FROM audits ORDER BY decided_at DESC")
+
+    def insert_batch(
+        self,
+        *,
+        batch_id: str,
+        created_at: str,
+        xlsx_path: str,
+        check: dict[str, Any],
+        task_ids: list[str],
+        unaudited_count: int,
+    ) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO batches(id, created_at, xlsx_path, check_json, unaudited_count)
+                VALUES(?, ?, ?, ?, ?)
+                """,
+                (batch_id, created_at, xlsx_path, json.dumps(check, ensure_ascii=False), unaudited_count),
+            )
+            conn.executemany(
+                "INSERT OR IGNORE INTO batch_items(batch_id, task_id) VALUES(?, ?)",
+                [(batch_id, task_id) for task_id in task_ids],
+            )
+
+    def batches(self) -> list[dict[str, Any]]:
+        rows = self.query("SELECT * FROM batches ORDER BY created_at DESC")
+        for row in rows:
+            try:
+                row["check"] = json.loads(row.pop("check_json") or "{}")
+            except json.JSONDecodeError:
+                row["check"] = {}
+            row["task_ids"] = [
+                item["task_id"]
+                for item in self.query("SELECT task_id FROM batch_items WHERE batch_id=?", (row["id"],))
+            ]
+        return rows
+
+    def batch(self, batch_id: str) -> dict[str, Any] | None:
+        return next((row for row in self.batches() if row["id"] == batch_id), None)
+
+    def task_in_any_batch(self, task_id: str) -> bool:
+        return self.query_one("SELECT 1 AS found FROM batch_items WHERE task_id=? LIMIT 1", (task_id,)) is not None
+
+    def mark_presence(self, task_id: str, presence: str) -> None:
+        self.execute("UPDATE tasks SET presence=?, updated_at=? WHERE id=?", (presence, now(), task_id))
+
     def prune_events(self, days: int) -> int:
         cutoff = (datetime.now(UTC) - timedelta(days=days)).replace(microsecond=0).isoformat()
         with self.transaction() as conn:
@@ -420,10 +605,15 @@ def _task_params(record: dict[str, Any]) -> dict[str, Any]:
         "prompt_id",
         "prompt_sha256",
         "feedback_score",
+        "ack_by",
         "review_acked_at",
         "exported_at",
         "created_at",
         "updated_at",
         "notes",
+        "presence",
     )
-    return {key: record.get(key) for key in keys}
+    values = {key: record.get(key) for key in keys}
+    values["ack_by"] = record.get("ack_by") or ""
+    values["presence"] = record.get("presence") or "present"
+    return values

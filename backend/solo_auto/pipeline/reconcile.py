@@ -107,6 +107,21 @@ class Reconciler:
                     task_id=task_id,
                     details={"old": old_status, "new": job_status, "skill_status": state.status},
                 )
+        known_roots = {str(root) for root in all_roots}
+        for task in self.repo.query("SELECT id, task_root, presence FROM tasks"):
+            root = Path(str(task["task_root"]))
+            if str(root) not in known_roots and not root.is_dir():
+                if task.get("presence") != "missing":
+                    self.repo.mark_presence(str(task["id"]), "missing")
+                    self.repo.add_event(
+                        "task.missing",
+                        "任务目录已不存在，记录保留等待人工移除",
+                        level="warn",
+                        actor="reconcile",
+                        task_id=str(task["id"]),
+                    )
+            elif task.get("presence") != "present":
+                self.repo.mark_presence(str(task["id"]), "present")
         return corrected
 
     async def loop(self, *, interval: float = 60) -> None:
@@ -150,9 +165,11 @@ def _record_for_state(
         "prompt_id": state.session.promptId if state.session else "",
         "prompt_sha256": state.promptSha256,
         "feedback_score": state.feedbackCheck.score if state.feedbackCheck else None,
+        "ack_by": str(ack.get("ackedBy") or ""),
         "review_acked_at": str(ack.get("ackedAt") or ""),
         "exported_at": state.export.exportedAt if state.export else None,
         "created_at": state.createdAt or "",
+        "presence": "present",
     }
 
 
@@ -187,9 +204,11 @@ def _record_for_incompatible(
         "prompt_id": "",
         "prompt_sha256": str(raw.get("promptSha256") or ""),
         "feedback_score": None,
+        "ack_by": "",
         "review_acked_at": "",
         "exported_at": None,
         "created_at": str(raw.get("createdAt") or ""),
+        "presence": "present" if root.is_dir() else "missing",
     }
 
 

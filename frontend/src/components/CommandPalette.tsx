@@ -1,6 +1,21 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { LucideIcon } from "lucide-react";
-import { Command, FolderSearch, LayoutDashboard, ListChecks, Play, RefreshCw, Settings, Upload } from "lucide-react";
+import {
+  ClipboardCheck,
+  Command,
+  Factory,
+  FolderSearch,
+  History,
+  LayoutDashboard,
+  ListChecks,
+  Pause,
+  Play,
+  Power,
+  RefreshCw,
+  Settings,
+  Trash2,
+  Upload,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -12,9 +27,13 @@ import { useToast } from "./toast-context";
 
 const pageCommands = [
   { label: "作业看板", to: "/", icon: LayoutDashboard },
+  { label: "生产线", to: "/production", icon: Factory },
+  { label: "人工抽检", to: "/audit", icon: ClipboardCheck },
   { label: "任务列表", to: "/tasks", icon: ListChecks },
   { label: "题源领取", to: "/source", icon: FolderSearch },
   { label: "导出与统计", to: "/export", icon: Upload },
+  { label: "使用统计", to: "/usage", icon: History },
+  { label: "回收站", to: "/system#trash", icon: Trash2 },
   { label: "系统设置", to: "/system", icon: Settings },
 ];
 
@@ -83,6 +102,23 @@ export function CommandPalette() {
     },
     onError: (error) => toast(errorText(error), "error"),
   });
+  const pause = useMutation({
+    mutationFn: api.autopilotPause,
+    onSuccess: () => {
+      toast("自动交付已暂停", "info");
+      void queryClient.invalidateQueries();
+      close();
+    },
+    onError: (error) => toast(errorText(error), "error"),
+  });
+  const restart = useMutation({
+    mutationFn: () => api.restart(false),
+    onSuccess: (result) => {
+      toast(result.hint, "info");
+      close();
+    },
+    onError: (error) => toast(errorText(error), "error"),
+  });
 
   const entries = useMemo<Entry[]>(() => {
     // ">" 开头只搜命令；否则任务、页面、命令一起搜
@@ -94,6 +130,43 @@ export function CommandPalette() {
       close();
     };
     const commands: Entry[] = [
+      {
+        key: "restart",
+        group: "命令",
+        label: "重启后端",
+        icon: Power,
+        disabled: restart.isPending,
+        run: () => restart.mutate(),
+      },
+      {
+        key: "pause",
+        group: "命令",
+        label: "暂停自动交付",
+        icon: Pause,
+        disabled: pause.isPending,
+        run: () => pause.mutate(),
+      },
+      {
+        key: "audit",
+        group: "命令",
+        label: "去抽检",
+        icon: ClipboardCheck,
+        run: go("/audit"),
+      },
+      {
+        key: "production",
+        group: "命令",
+        label: "今天交付 N 题",
+        icon: Factory,
+        run: go("/production"),
+      },
+      {
+        key: "trash",
+        group: "命令",
+        label: "打开回收站",
+        icon: Trash2,
+        run: go("/system#trash"),
+      },
       {
         key: "queue",
         group: "命令",
@@ -141,7 +214,16 @@ export function CommandPalette() {
     // 有搜索词时任务排前面，空输入时命令排前面
     return term && !commandOnly ? [...taskEntries, ...pages, ...visibleCommands] : [...visibleCommands, ...taskEntries, ...pages];
     // eslint-disable-next-line react-hooks/exhaustive-deps -- close/navigate 每次渲染都是新的，但行为不变
-  }, [query, tasks.data?.items, readyCount, bulkQueue.isPending, exportToday.isPending, reconcile.isPending]);
+  }, [
+    query,
+    tasks.data?.items,
+    readyCount,
+    bulkQueue.isPending,
+    exportToday.isPending,
+    reconcile.isPending,
+    pause.isPending,
+    restart.isPending,
+  ]);
 
   useEffect(() => setActive(0), [query]);
   useEffect(() => {

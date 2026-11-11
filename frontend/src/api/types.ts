@@ -41,11 +41,13 @@ export type TaskRow = {
   prompt_id?: string | null;
   prompt_sha256?: string | null;
   feedback_score?: number | null;
+  ack_by?: string | null;
   review_acked_at?: string | null;
   exported_at?: string | null;
   created_at: string;
   updated_at: string;
   notes?: string | null;
+  presence?: "present" | "missing";
   queue_position?: number | null;
   steps?: StoredStep[];
   run?: RunStatus;
@@ -117,14 +119,176 @@ export type AutopilotJob = {
   started_at: string;
   updated_at: string;
   finished_at: string;
+  failure_kind: string;
+  elapsed_seconds: number;
+  stage_started_at: string;
+  stages: AutopilotStage[];
+  retry_stages: string[];
+  retry_options: Array<{ stage: string; label: string; available: boolean; reason: string }>;
+  audit?: AuditRow | null;
 };
 
 export type AutopilotSnapshot = {
+  enabled: boolean;
+  paused: boolean;
+  paused_by_breaker: boolean;
+  breaker: {
+    tripped: boolean;
+    kind: string;
+    since: string;
+    consecutive_kind: string;
+    consecutive_count: number;
+    audit_verdicts: string[];
+  };
   agent_command: string;
   agent_available: boolean;
   agents_running: number;
   active: number;
+  parallel_authoring: number;
+  parallel_delivering: number;
+  stage_timeout_seconds: number;
   jobs: AutopilotJob[];
+};
+
+export type AutopilotStage = {
+  id: number;
+  task_id: string;
+  stage: string;
+  attempt: number;
+  started_at: string;
+  ended_at?: string | null;
+  outcome?: string | null;
+  failure_kind?: string | null;
+  failure_detail?: string | null;
+  usage_json?: Record<string, unknown> | null;
+  log_path: string;
+};
+
+export type PreflightItem = {
+  key: string;
+  level: string;
+  ok: boolean;
+  message: string;
+  fix: string;
+};
+
+export type PromptTemplate = {
+  stage: string;
+  name: string;
+  path: string;
+  modified_at: string;
+  content: string;
+  sha256: string;
+  errors: string[];
+};
+
+export type AuditRow = {
+  task_id: string;
+  sampled: number | boolean;
+  verdict?: "pass" | "reject" | null;
+  reason?: string | null;
+  disposition?: string | null;
+  decided_at?: string | null;
+  task_name?: string;
+  task_type?: string;
+  ack_by?: string;
+};
+
+export type AuditDetail = {
+  audit: AuditRow;
+  task: TaskRow;
+  steps: Step[];
+  state: Record<string, unknown>;
+  prompt: PromptData;
+  feedback: FeedbackResponse;
+  timeline: TimelineResponse;
+  diff: DiffResponse;
+  recording: RecordingVerify;
+  recent_feedback: Array<{ task_id: string; task_name: string; head: string }>;
+  readonly: true;
+};
+
+export type BatchIssue = {
+  code: string;
+  task_id: string;
+  task: string;
+  message: string;
+};
+
+export type BatchCheck = {
+  ok: boolean;
+  task_ids: string[];
+  blockers: BatchIssue[];
+  warnings: BatchIssue[];
+  unaudited_count: number;
+  checked_at: string;
+};
+
+export type BatchRow = {
+  id: string;
+  created_at: string;
+  xlsx_path: string;
+  rows?: number;
+  task_ids: string[];
+  check: BatchCheck;
+  unaudited_count: number;
+  exists?: boolean;
+  size?: number;
+};
+
+export type IntakeSnapshot = {
+  plan: {
+    id: string;
+    project_id: string;
+    filters: Record<string, unknown>;
+    target: number;
+    status: string;
+    created_at: string;
+    updated_at: string;
+    task_ids: string[];
+    failed_claims: Array<{ engineering_id: string; code?: string; message?: string }>;
+    pause_reason?: string;
+  } | null;
+  counts: { target: number; completed: number; active: number; failed: number; claimed: number };
+  max_in_hand: number;
+  eta: string;
+  attempts_left?: number;
+};
+
+export type TrashItem = {
+  name: string;
+  task_id: string;
+  task_name: string;
+  cleaned_at: string;
+  expires_at?: string;
+  size: number;
+  remaining_days?: number | null;
+  legacy?: boolean;
+};
+
+export type UsageRow = {
+  project_id: string;
+  project_name: string;
+  engineering_id: string;
+  engineering_name: string;
+  used: number;
+  claimed_unused: number;
+  delivered: number;
+  submitted: number;
+  delivery_rate: number;
+  last_used_at: string;
+  last_outcome?: string;
+  outcome?: string;
+  last_failure_kind?: string;
+  failure_kind?: string;
+  task_id?: string;
+  task_name?: string;
+  claimed_at?: string;
+  task_created_at?: string;
+  delivered_at?: string;
+  submitted_at?: string;
+  purged_at?: string;
+  task_exists?: boolean;
 };
 
 export type QueueSnapshot = {
@@ -164,6 +328,7 @@ export type ProjectRow = {
   start_at?: string;
   end_at?: string;
   engineering_count?: number;
+  usage?: { used: number; delivered: number; submitted: number; claimed_unused: number; delivery_rate: number };
   [key: string]: unknown;
 };
 
@@ -181,6 +346,15 @@ export type EngineeringRow = {
   claimed_name?: string;
   claim_id?: string;
   assets?: Array<{ id?: string; url?: string; kind?: string }>;
+  usage?: {
+    used: number;
+    delivered: number;
+    submitted: number;
+    claimed_unused: number;
+    delivery_rate: number;
+    last_outcome: string;
+    last_failure_kind: string;
+  };
   [key: string]: unknown;
 };
 
@@ -323,6 +497,24 @@ export type ConfigResponse = {
   execution: { max_containers: number; run_timeout_seconds: number; attempts: number; stale_after_seconds: number };
   storage: { disk_floor_gb: number; event_retention_days: number; skill_log_retention_days: number };
   recording: { max_seconds: number; chrome_url: string };
+  autopilot: {
+    enabled: boolean;
+    agent_bin: string;
+    agent_args: string[];
+    restricted: boolean;
+    stage_timeout_seconds: number;
+    stage_attempts: number;
+    run_attempts: number;
+    parallel_authoring: number;
+    parallel_delivering: number;
+    stop_kills_containers: boolean;
+    breaker: { same_kind_failures: number; audit_reject_rate: number; audit_reject_window: number };
+  };
+  audit: { mode: "all" | "sample" | "off"; sample_rate: number; stratify_by: string };
+  intake: { max_in_hand: number; exclude_tags: string[] };
+  trash: { retention_days: number };
+  slim: { enabled: boolean; after_days: number; patterns: string[] };
+  notify: { macos: boolean; webhook_url: string };
   skill_config: Record<string, unknown>;
   github_token: string;
 };

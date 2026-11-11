@@ -14,14 +14,22 @@ from solo_auto.events.bus import EventBus
 from solo_auto.gateway.skill import SkillGateway
 from solo_auto.instance_lock import InstanceLock
 from solo_auto.logging_setup import configure_logging
+from solo_auto.pipeline.audit import AuditService
 from solo_auto.pipeline.autopilot import Autopilot
+from solo_auto.pipeline.batch import BatchService
 from solo_auto.pipeline.export_service import ExportService
 from solo_auto.pipeline.feedback_service import FeedbackService
+from solo_auto.pipeline.intake import IntakeService
+from solo_auto.pipeline.janitor import Janitor
+from solo_auto.pipeline.notify import Notifier
+from solo_auto.pipeline.preflight import Preflight
 from solo_auto.pipeline.prompt_service import PromptService
 from solo_auto.pipeline.reconcile import Reconciler
 from solo_auto.pipeline.recording_service import RecordingService
 from solo_auto.pipeline.scheduler import RunScheduler
 from solo_auto.pipeline.task_service import TaskService
+from solo_auto.pipeline.trash import TrashService
+from solo_auto.pipeline.usage import UsageLedger
 from solo_auto.secrets import SecretStore
 from solo_auto.settings import Paths, Settings, app_paths, load_settings, save_settings
 from solo_auto.sources.project_hub import ProjectHubClient
@@ -42,10 +50,14 @@ class AppContext:
             save_settings(self.paths, self.settings)
         configure_logging(self.paths.logs)
         self.secrets = SecretStore(self.paths.home)
+        if not self.settings.notify.webhook_url:
+            self.settings.notify.webhook_url = self.secrets.get("notify.webhook") or ""
         self.spec = load_spec(self.settings.skill_root)
         self.gateway = SkillGateway(self.settings.skill_root, self.paths.skill_logs)
         self.repo = Repository(self.paths.database)
         self.bus = EventBus()
+        self.ledger = UsageLedger(self.repo, self.settings.source.base_url)
+        self.notifier = Notifier(self.settings.notify)
         self.instance_lock = InstanceLock(self.paths.instance_lock, self.paths.pid)
         self.reconciler = Reconciler(self.repo, self.paths, self.settings.tasks_dir)
         self.staging = StagingManager(self.paths)
@@ -67,6 +79,7 @@ class AppContext:
             self.reconciler,
             self.bus,
         )
+        self.tasks.attach_ledger(self.ledger)
         self.prompts = PromptService(
             self.paths,
             self.gateway,
@@ -90,6 +103,13 @@ class AppContext:
             self.reconciler,
             self.bus,
         )
+        self.batch = BatchService(
+            paths=self.paths,
+            repo=self.repo,
+            exports=self.exports,
+            ledger=self.ledger,
+            bus=self.bus,
+        )
         self.recording = RecordingService(
             paths=self.paths,
             settings=self.settings.recording,
@@ -107,6 +127,59 @@ class AppContext:
             scheduler=self.scheduler,
             feedback=self.feedback,
             exports=self.exports,
+            settings=self.settings.autopilot,
+            gateway=self.gateway,
+        )
+        self.autopilot.attach_notifier(self.notifier)
+        self.autopilot.breaker.attach_notifier(self.notifier)
+        self.audits = AuditService(
+            paths=self.paths,
+            repo=self.repo,
+            bus=self.bus,
+            settings=self.settings.audit,
+            breaker=self.autopilot.breaker,
+            prompts=self.prompts,
+            feedback=self.feedback,
+            recording=self.recording,
+        )
+        self.audits.attach_autopilot(self.autopilot)
+        self.autopilot.attach_audit(self.audits)
+        self.autopilot.attach_ledger(self.ledger)
+        self.trash = TrashService(
+            paths=self.paths,
+            repo=self.repo,
+            bus=self.bus,
+            settings=self.settings.trash,
+        )
+        self.janitor = Janitor(
+            paths=self.paths,
+            repo=self.repo,
+            reconciler=self.reconciler,
+            trash=self.trash,
+            settings=self.settings.slim,
+            bus=self.bus,
+        )
+        self.prompt_templates = self.autopilot.prompt_templates
+        self.preflight = Preflight(
+            paths=self.paths,
+            settings=self.settings,
+            gateway=self.gateway,
+            autopilot=self.autopilot,
+            templates=self.prompt_templates,
+            source=self.source,
+            secrets=self.secrets,
+        )
+        self.intake = IntakeService(
+            paths=self.paths,
+            settings=self.settings,
+            repo=self.repo,
+            source=self.source,
+            staging=self.staging,
+            tasks=self.tasks,
+            autopilot=self.autopilot,
+            ledger=self.ledger,
+            bus=self.bus,
+            notifier=self.notifier,
         )
         self.started_at = datetime.now().astimezone()
         self.skill_version = ""
@@ -121,6 +194,7 @@ class AppContext:
         self.instance_lock.acquire()
         self.skill_version = await self.gateway.version()
         await self.reconciler.run()
+        self.ledger.backfill()
         if self.auto_start:
             loop = asyncio.get_running_loop()
             self.watcher.start(loop)
@@ -133,6 +207,8 @@ class AppContext:
             ]
             await self.scheduler.start()
             await self.autopilot.start()
+            await self.janitor.start()
+            await self.intake.start()
         self.repo.add_event(
             "system.started",
             f"solo-auto 启动，技能版本 {self.skill_version}",
@@ -144,6 +220,9 @@ class AppContext:
         if not self._started:
             return
         await self.autopilot.stop()
+        await self.intake.shutdown()
+        await self.janitor.stop()
+        await self.notifier.close()
         await self.scheduler.stop()
         for task in self._background:
             task.cancel()
@@ -158,11 +237,14 @@ class AppContext:
 
     async def _source_loop(self) -> None:
         while True:
+            was_online = self.source_online
             try:
                 await self.source.list_projects()
                 self.source_online = True
             except Exception:
                 self.source_online = False
+            if was_online and not self.source_online:
+                self.notifier.notify(title="solo-auto 题源离线", status="题源会话已过期或服务不可达")
             self.bus.publish(
                 "system",
                 {

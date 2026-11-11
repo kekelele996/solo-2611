@@ -6,7 +6,7 @@ import json
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, Query
 
@@ -124,6 +124,7 @@ async def abort_task(
             detail={"stdout": cleanup.out, "stderr": cleanup.err},
         )
     ctx.repo.set_job_status(task_id, "aborted", notes=reason)
+    ctx.ledger.mark_outcome(task_id, "void")
     ctx.repo.add_event(
         "task.aborted",
         reason,
@@ -210,8 +211,28 @@ async def delete_task(
         if staging_path.is_dir() and staging_path.is_relative_to(ctx.paths.staging.resolve()):
             shutil.rmtree(staging_path)
         ctx.repo.set_job_status(task_id, "archived", notes="已删除任务目录")
+        ctx.ledger.mark_purged([task_id])
         ctx.repo.add_event("task.deleted", "已放弃任务的本地目录被删除", level="warn", actor="user", task_id=task_id)
     return payload
+
+
+@router.post("/tasks/{task_id}/forget")
+async def forget_task(task_id: str, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    task = _task(ctx, task_id)
+    if task.get("presence") != "missing":
+        raise ApiError(409, "TASK_DIRECTORY_PRESENT", "只有目录已不存在的任务才能移除记录")
+    ctx.autopilot.forget(task_id)
+    ctx.repo.execute("UPDATE claims SET task_id=NULL WHERE task_id=?", (task_id,))
+    ctx.repo.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+    ctx.repo.add_event(
+        "task.forgotten",
+        f"{task['task_name']} 的目录已不存在，记录已移除",
+        level="warn",
+        actor="user",
+        task_id=task_id,
+    )
+    ctx.bus.publish("task.updated", {"forgotten": task_id})
+    return {"ok": True, "task_id": task_id}
 
 
 @router.get("/tasks/{task_id}/prompt")
@@ -376,7 +397,7 @@ async def run_log(
     task_id: str,
     lines: int = Query(default=200, ge=1, le=1000),
     ctx: AppContext = Depends(context),
-):
+) -> Any:
     _task(ctx, task_id)
     task = _task(ctx, task_id)
     status = ctx.scheduler.run_status(task_id, Path(str(task["task_root"])))
@@ -480,6 +501,7 @@ def _task_meta(ctx: AppContext, root: Path) -> dict[str, Any]:
         if isinstance(meta, dict) and str(meta.get("taskRoot") or "") == str(root):
             return meta
     try:
-        return json.loads((ctx.paths.run / "task-meta" / f"{root.name}.json").read_text(encoding="utf-8"))
+        data = json.loads((ctx.paths.run / "task-meta" / f"{root.name}.json").read_text(encoding="utf-8"))
+        return cast(dict[str, Any], data) if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}

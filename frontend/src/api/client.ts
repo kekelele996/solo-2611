@@ -1,5 +1,9 @@
 import type {
+  AuditDetail,
+  AuditRow,
   AutopilotSnapshot,
+  BatchCheck,
+  BatchRow,
   CheckResponse,
   ConfigPatchRequest,
   ConfigResponse,
@@ -9,6 +13,9 @@ import type {
   ExportHistoryRow,
   ExportResult,
   FeedbackResponse,
+  IntakeSnapshot,
+  PreflightItem,
+  PromptTemplate,
   PromptData,
   PromptInstallResponse,
   PromptPreview,
@@ -25,8 +32,11 @@ import type {
   TaskListResponse,
   TimelineBody,
   TimelineResponse,
+  TrashItem,
+  UsageRow,
   WindowRow,
 } from "./types";
+import { APP_BUILD_ID } from "../utils/build";
 
 type ApiEnvelope = { error?: { code?: string; message?: string; detail?: unknown } };
 
@@ -44,6 +54,12 @@ export class ApiError extends Error {
   }
 }
 
+let backendBuildId = "";
+
+export function getBackendBuildId(): string {
+  return backendBuildId;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body && !(init.body instanceof FormData)) {
@@ -57,10 +73,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       payload = {};
     }
+    const mismatch = backendBuildId && backendBuildId !== APP_BUILD_ID;
     throw new ApiError(
       response.status,
       payload.error?.code ?? `HTTP_${response.status}`,
-      payload.error?.message ?? `${response.status} ${response.statusText}`,
+      mismatch && (response.status === 404 || response.status === 405)
+        ? "页面与后端版本不一致，需要重启后端。"
+        : payload.error?.message ?? `${response.status} ${response.statusText}`,
       payload.error?.detail ?? null,
     );
   }
@@ -85,11 +104,19 @@ function qs(params: Record<string, string | number | boolean | string[] | null |
 }
 
 export const api = {
-  health: () => request<{ ok: boolean; uptime_s: number; version: string }>("/api/health"),
-  version: () =>
-    request<{ app: string; git_sha: string; skill_version: string; skill_schema: string; image: string }>(
-      "/api/version",
-    ),
+  health: () => request<{ ok: boolean; uptime_s: number; version: string; build_id: string }>("/api/health"),
+  version: async () => {
+    const data = await request<{
+      app: string;
+      git_sha: string;
+      build_id: string;
+      skill_version: string;
+      skill_schema: string;
+      image: string;
+    }>("/api/version");
+    backendBuildId = data.build_id || "legacy";
+    return data;
+  },
   systemStatus: () => request<SystemStatus>("/api/system/status"),
   reconcile: () => request<{ corrected: number }>("/api/system/reconcile", { method: "POST" }),
   config: () => request<ConfigResponse>("/api/system/config"),
@@ -107,10 +134,19 @@ export const api = {
     request<{ path: string; size: number }>("/api/system/backup", {
       method: "POST",
     }),
-  prune: (dryRun = true) =>
+  diagnostics: () =>
+    request<{ path: string; size: number }>("/api/system/diagnostics", {
+      method: "POST",
+    }),
+  restart: (force = false) =>
+    request<{ ok: boolean; restarting: boolean; build_id: string; hint: string }>("/api/system/restart", {
+      method: "POST",
+      body: JSON.stringify({ force }),
+    }),
+  prune: (dryRun = true, confirm = false) =>
     request<{ dry_run: boolean; items: Array<{ path: string; size: number }>; total_bytes: number }>("/api/system/prune", {
       method: "POST",
-      body: JSON.stringify({ dry_run: dryRun, scopes: ["staging", "logs"], confirm: !dryRun }),
+      body: JSON.stringify({ dry_run: dryRun, scopes: ["staging", "logs"], confirm }),
     }),
   logs: (tail = 200) => request<{ items: EventRow[] }>(`/api/system/logs${qs({ tail })}`),
   sourceLogin: (username: string, password: string) =>
@@ -306,9 +342,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ task_ids: taskIds }),
     }),
-  autopilotLog: (id: string) =>
+  autopilotPreflight: () => request<{ ok: boolean; items: PreflightItem[] }>("/api/autopilot/preflight", { method: "POST" }),
+  autopilotPause: () => request<AutopilotSnapshot>("/api/autopilot/pause", { method: "POST" }),
+  autopilotResume: () => request<AutopilotSnapshot>("/api/autopilot/resume", { method: "POST" }),
+  autopilotRetry: (id: string, fromStage = "") =>
+    request<Record<string, unknown>>(`/api/autopilot/${encodeURIComponent(id)}/retry`, {
+      method: "POST",
+      body: JSON.stringify({ from_stage: fromStage }),
+    }),
+  autopilotStages: (id: string) =>
+    request<{ items: Array<Record<string, unknown>> }>(`/api/autopilot/${encodeURIComponent(id)}/stages`),
+  autopilotPrompts: () => request<{ items: PromptTemplate[]; readonly: boolean }>("/api/autopilot/prompts"),
+  autopilotLog: (id: string, stage = "") =>
     request<{ task_id: string; stage: string; file: string; lines: Array<{ kind: string; text: string }> }>(
-      `/api/autopilot/${encodeURIComponent(id)}/log`,
+      `/api/autopilot/${encodeURIComponent(id)}/log${qs({ stage })}`,
     ),
   recordTerminal: (id: string) =>
     request<{ ok: boolean; window_id: number; title: string }>(
@@ -356,4 +403,93 @@ export const api = {
     }>(
       `/api/stats${qs({ from, to })}`,
     ),
+  audits: (verdict = "pending") => request<{ items: AuditRow[]; total: number }>(`/api/audits${qs({ verdict })}`),
+  audit: (id: string) => request<AuditDetail>(`/api/audits/${encodeURIComponent(id)}`),
+  decideAudit: (
+    id: string,
+    body: { verdict: "pass" | "reject"; reason?: string; disposition?: "redo_feedback" | "manual" | "void" },
+  ) =>
+    request<AuditRow>(`/api/audits/${encodeURIComponent(id)}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  quality: (from = "", to = "") =>
+    request<{
+      audit: { sampled: number; decided: number; passed: number; rejected: number; pass_rate: number };
+      scores: Array<{ score: string; count: number }>;
+      feedback_lengths: { min: number; max: number; average: number; samples: number };
+      failures: Array<{ kind: string; count: number }>;
+      acknowledgement: Record<string, number>;
+      warning: string;
+      readonly: true;
+    }>(`/api/quality/summary${qs({ from, to })}`),
+  batchCheck: (taskIds: string[], includeExported = false) =>
+    request<BatchCheck>("/api/batches/check", {
+      method: "POST",
+      body: JSON.stringify({ task_ids: taskIds, include_exported: includeExported }),
+    }),
+  createBatch: (taskIds: string[], includeExported = false, acknowledgeWarnings = false) =>
+    request<BatchRow>("/api/batches", {
+      method: "POST",
+      body: JSON.stringify({
+        task_ids: taskIds,
+        include_exported: includeExported,
+        acknowledge_warnings: acknowledgeWarnings,
+      }),
+    }),
+  batches: () => request<{ items: BatchRow[]; total: number }>("/api/batches"),
+  batch: (id: string) => request<BatchRow & { manifest: string }>(`/api/batches/${encodeURIComponent(id)}`),
+  bundleBatch: (id: string) =>
+    request<{ batch_id: string; bundle: string; files: string[]; note: string }>(
+      `/api/batches/${encodeURIComponent(id)}/bundle`,
+      { method: "POST" },
+    ),
+  privacyRecheck: (taskIds: string[]) =>
+    request<{
+      items: Array<{ task_id: string; status: string; ok: boolean; message: string }>;
+      passed: number;
+      unchecked: number;
+      failed: number;
+    }>("/api/recordings/privacy-recheck", {
+      method: "POST",
+      body: JSON.stringify({ task_ids: taskIds }),
+    }),
+  intake: () => request<IntakeSnapshot>("/api/intake"),
+  createIntake: (body: {
+    project_id: string;
+    target: number;
+    filters?: Record<string, unknown>;
+    exclude_delivered?: boolean;
+    max_uses?: number;
+  }) =>
+    request<IntakeSnapshot>("/api/intake", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  pauseIntake: () => request<IntakeSnapshot>("/api/intake/pause", { method: "POST" }),
+  resumeIntake: () => request<IntakeSnapshot>("/api/intake/resume", { method: "POST" }),
+  stopIntake: (releaseUnstarted = false) =>
+    request<IntakeSnapshot>("/api/intake/stop", {
+      method: "POST",
+      body: JSON.stringify({ release_unstarted: releaseUnstarted }),
+    }),
+  trash: () =>
+    request<{ items: TrashItem[]; total: number; total_bytes: number; retention_days: number }>("/api/trash"),
+  restoreTrash: (name: string) =>
+    request<{ ok: boolean; restored: string[]; task_id: string }>(`/api/trash/${encodeURIComponent(name)}/restore`, {
+      method: "POST",
+    }),
+  deleteTrash: (name: string) =>
+    request<{ ok: boolean }>(`/api/trash/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  emptyTrash: () => request<{ ok: boolean; removed: string[] }>("/api/trash", { method: "DELETE" }),
+  forgetTask: (id: string) =>
+    request<{ ok: boolean }>(`/api/tasks/${encodeURIComponent(id)}/forget`, { method: "POST" }),
+  usageProjects: (from = "", to = "") =>
+    request<{ items: UsageRow[]; total: number; first_recorded_at: string }>(`/api/usage/projects${qs({ from, to })}`),
+  usageEngineering: (projectId: string, from = "", to = "") =>
+    request<{ items: UsageRow[]; total: number }>(
+      `/api/usage/projects/${encodeURIComponent(projectId)}/engineering${qs({ from, to })}`,
+    ),
+  usageRecords: (engineeringId: string) =>
+    request<{ items: UsageRow[]; total: number }>(`/api/usage/engineering/${encodeURIComponent(engineeringId)}`),
 };

@@ -48,11 +48,31 @@ export function PurgeModal({
       const removed = result.items.filter((item) => item.removed);
       const failed = result.items.filter((item) => !item.removed);
       const releaseFailed = removed.filter((item) => item.release_error).length;
+      const moved = removed.filter((item) => item.moved_to && !permanent);
+      const undo = moved.length
+        ? {
+            label: "撤销",
+            onClick: async () => {
+              const results = await Promise.allSettled(
+                moved.map((item) => api.restoreTrash(item.moved_to!.split("/").pop() ?? "")),
+              );
+              const failed = results.filter((result) => result.status === "rejected");
+              toast(
+                failed.length
+                  ? `撤销完成 ${results.length - failed.length} 题，${failed.length} 题失败：${errorText(failed[0]?.reason)}`
+                  : `已撤销清理，恢复 ${results.length} 题`,
+                failed.length ? "warn" : "ok",
+              );
+              void queryClient.invalidateQueries();
+            },
+          }
+        : undefined;
       toast(
         `已清理 ${removed.length} 题${permanent ? "（永久删除）" : "，已移入回收站"}` +
           (failed.length ? `；${failed.length} 题失败：${failed[0].error ?? failed[0].blockers[0] ?? ""}` : "") +
           (releaseFailed ? `；${releaseFailed} 题工程台归还未成功` : ""),
         failed.length || releaseFailed ? "warn" : "ok",
+        undo,
       );
       setPermanent(false);
       const gone = removed.map((item) => item.task_id);
@@ -113,7 +133,9 @@ export function PurgeModal({
             <span>
               永久删除，不进回收站
               <small>
-                {permanent ? "删除后无法恢复。" : `默认移到 ${preview.data.trash}，需要时可以手动挪回任务目录。`}
+                {permanent
+                  ? "删除后无法恢复。"
+                  : `默认移到 ${preview.data.trash}；10 秒内可撤销，之后仍可在回收站恢复。`}
               </small>
             </span>
           </label>

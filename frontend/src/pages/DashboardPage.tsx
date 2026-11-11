@@ -5,6 +5,7 @@ import { Link, useNavigate } from "react-router-dom";
 
 import { api } from "../api/client";
 import { AutopilotPanel } from "../components/AutopilotPanel";
+import { InboxPanel } from "../components/InboxPanel";
 import type { TaskRow } from "../api/types";
 import { useToast } from "../components/toast-context";
 import { Button, EmptyState, ErrorPanel, LoadingLines, Panel, StatusDot } from "../components/ui";
@@ -27,6 +28,7 @@ export function DashboardPage() {
     refetchInterval: 3000,
   });
   const queue = useQuery({ queryKey: ["queue"], queryFn: api.queue, refetchInterval: 3000 });
+  const batches = useQuery({ queryKey: ["batches"], queryFn: api.batches, refetchInterval: 5000 });
 
   const grouped = useMemo(() => {
     const rows = tasks.data?.items ?? [];
@@ -42,9 +44,9 @@ export function DashboardPage() {
 
   const metrics = useMemo(() => {
     const rows = tasks.data?.items ?? [];
-    const exportedToday = rows.filter(
-      (task) => task.exported_at && formatDateTime(task.exported_at).slice(0, 10) === today,
-    ).length;
+    const exportedToday = (batches.data?.items ?? [])
+      .filter((batch) => formatDateTime(batch.created_at).slice(0, 10) === today)
+      .reduce((sum, batch) => sum + (batch.rows || batch.task_ids.length), 0);
     const waiting = rows.filter((task) =>
       ["authored", "prompt_ok", "ready", "ran", "recorded", "reviewed"].includes(task.job_status),
     ).length;
@@ -62,7 +64,7 @@ export function DashboardPage() {
       blocked: status.data?.blocked ?? 0,
       average,
     };
-  }, [status.data, tasks.data?.items, today]);
+  }, [batches.data?.items, status.data, tasks.data?.items, today]);
 
   const batchReady = useMutation({
     mutationFn: async () => {
@@ -114,8 +116,10 @@ export function DashboardPage() {
         </div>
       </header>
 
+      <InboxPanel />
+
       <div className="metric-strip">
-        <Metric label="今日导出行" value={metrics.exported} />
+        <Metric label="今日批次题数" value={metrics.exported} />
         <Metric label="运行中" value={metrics.running} />
         <Metric label="待处理" value={metrics.waiting} />
         <Metric label="卡住" value={metrics.blocked} tone={metrics.blocked ? "danger" : undefined} />

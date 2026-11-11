@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 def timeline(trace_path: Path) -> dict[str, Any]:
@@ -32,7 +32,7 @@ def timeline(trace_path: Path) -> dict[str, Any]:
             result = results.get(tool_use_id, {})
             result_text = _result_text(result)
             name = str(block.get("name") or "")
-            tool_input = block.get("input") if isinstance(block.get("input"), dict) else {}
+            tool_input = cast(dict[str, Any], block.get("input") if isinstance(block.get("input"), dict) else {})
             steps.append(
                 {
                     "no": number,
@@ -64,7 +64,7 @@ def verify(trace_path: Path, prompt_path: Path | None = None) -> dict[str, Any]:
     prompt_id = str(users[0].get("promptId") or "") if len(users) == 1 else ""
     assistants = [event for event in events if event.get("type") == "assistant" and not event.get("isSidechain")]
     final = assistants[-1] if assistants else {}
-    message = final.get("message") if isinstance(final.get("message"), dict) else {}
+    message = cast(dict[str, Any], final.get("message") if isinstance(final.get("message"), dict) else {})
     stop_reason = message.get("stop_reason")
     prompt_matches: bool | None = None
     if prompt_path and prompt_path.is_file() and len(users) == 1:
@@ -100,7 +100,7 @@ def step_body(trace_path: Path, number: int) -> dict[str, Any]:
     body = data["_bodies"].get(number)
     if body is None:
         raise KeyError(number)
-    return body
+    return cast(dict[str, Any], body)
 
 
 def _load(path: Path) -> list[dict[str, Any]]:

@@ -176,6 +176,7 @@ class FeedbackService:
         }
         path = root / "monitor" / "review-ack.json"
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        self.repo.execute("UPDATE tasks SET ack_by=?, updated_at=? WHERE id=?", (actor, _now(), task_id))
         message = "已确认逐条复核" if actor == "user" else "自动交付流程确认（未经人工复核）"
         self.repo.add_event("feedback.reviewed", message, actor=actor, task_id=task_id)
         return payload

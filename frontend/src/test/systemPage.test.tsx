@@ -24,6 +24,24 @@ const CONFIG: ConfigResponse = {
   execution: { max_containers: 4, run_timeout_seconds: 7200, attempts: 3, stale_after_seconds: 5400 },
   storage: { disk_floor_gb: 30, event_retention_days: 30, skill_log_retention_days: 14 },
   recording: { max_seconds: 90, chrome_url: "http://127.0.0.1:3000" },
+  autopilot: {
+    enabled: true,
+    agent_bin: "",
+    agent_args: [],
+    restricted: false,
+    stage_timeout_seconds: 3600,
+    stage_attempts: 2,
+    run_attempts: 2,
+    parallel_authoring: 2,
+    parallel_delivering: 1,
+    stop_kills_containers: true,
+    breaker: { same_kind_failures: 3, audit_reject_rate: 0.2, audit_reject_window: 10 },
+  },
+  audit: { mode: "sample", sample_rate: 0.3, stratify_by: "task_type" },
+  intake: { max_in_hand: 0, exclude_tags: [] },
+  trash: { retention_days: 7 },
+  slim: { enabled: false, after_days: 3, patterns: ["node_modules", ".venv"] },
+  notify: { macos: true, webhook_url: "" },
   skill_config: {},
   github_token: "<set>",
 };
@@ -40,6 +58,7 @@ describe("settings page", () => {
     vi.spyOn(api, "config").mockResolvedValue(CONFIG);
     vi.spyOn(api, "logs").mockResolvedValue({ items: [] });
     vi.spyOn(api, "systemStatus").mockResolvedValue({} as Awaited<ReturnType<typeof api.systemStatus>>);
+    vi.spyOn(api, "trash").mockResolvedValue({ items: [], total: 0, total_bytes: 0, retention_days: 7 });
   });
 
   afterEach(cleanup);

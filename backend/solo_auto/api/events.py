@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterable, AsyncIterator
-from typing import Any
 
 from fastapi import APIRouter, Depends, Header
 from fastapi.responses import Response
 from starlette.requests import ClientDisconnect
+from starlette.types import Receive, Scope, Send
 
 from solo_auto.api.dependencies import context
 from solo_auto.context import AppContext
@@ -26,7 +26,7 @@ class SSEStreamingResponse(Response):
         self.body_iterator = content
         self.raw_headers = [(key, value) for key, value in self.raw_headers if key.lower() != b"content-length"]
 
-    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         del receive
         try:
             await send(

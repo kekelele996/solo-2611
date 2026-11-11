@@ -47,6 +47,7 @@ const tabs = [
   ["recording", "录屏"],
   ["feedback", "Feedback"],
   ["export", "导出"],
+  ["history", "历程"],
 ] as const;
 
 type Tab = (typeof tabs)[number][0];
@@ -101,6 +102,14 @@ export function TaskDetailPage() {
     },
     onError: (error) => toast(errorText(error), "error"),
   });
+  const forget = useMutation({
+    mutationFn: () => api.forgetTask(id),
+    onSuccess: () => {
+      toast("目录缺失任务记录已移除；使用台账仍保留", "warn");
+      setPurged(true);
+    },
+    onError: (error) => toast(errorText(error), "error"),
+  });
 
   const ordered = useMemo(() => taskList.data?.items ?? [], [taskList.data?.items]);
   const index = ordered.findIndex((item) => item.id === id);
@@ -131,7 +140,7 @@ export function TaskDetailPage() {
       if (target?.closest("input, textarea, select, [contenteditable], .cm-editor, [role='dialog'], [role='alertdialog']")) return;
       if (document.querySelector("[role='dialog'], [role='alertdialog']")) return;
       const number = Number(event.key);
-      if (number >= 1 && number <= 7) {
+      if (number >= 1 && number <= tabs.length) {
         event.preventDefault();
         setTab(tabs[number - 1][0]);
       }
@@ -206,6 +215,7 @@ export function TaskDetailPage() {
         {tab === "recording" ? <RecordingTab task={detail} /> : null}
         {tab === "feedback" ? <FeedbackTab task={detail} /> : null}
         {tab === "export" ? <ExportTab task={detail} /> : null}
+        {tab === "history" ? <HistoryTab taskId={detail.id} /> : null}
       </div>
     </div>
   );
@@ -229,7 +239,7 @@ export function TaskDetailPage() {
     </div>
   );
 
-  const right = <Inspector task={detail} onAbandon={() => setAbandonOpen(true)} onPurge={() => setPurgeOpen(true)} onReveal={() => {
+  const right = <Inspector task={detail} onAbandon={() => setAbandonOpen(true)} onPurge={() => setPurgeOpen(true)} onForget={() => forget.mutate()} forgetting={forget.isPending} onReveal={() => {
     void api.reveal(detail.id, "task_root").catch((error: unknown) =>
       toast(errorText(error), "error"),
     );
@@ -296,11 +306,15 @@ function Inspector({
   onReveal,
   onAbandon,
   onPurge,
+  onForget,
+  forgetting,
 }: {
   task: TaskDetail;
   onReveal: () => void;
   onAbandon: () => void;
   onPurge: () => void;
+  onForget: () => void;
+  forgetting: boolean;
 }) {
   const { toast } = useToast();
   const state = task.state as {
@@ -339,7 +353,7 @@ function Inspector({
           value={recording?.durationSeconds ? `${recording.durationSeconds}s ${recording.width}×${recording.height}` : "未录制"}
         />
         <KeyValue label="反馈" value={task.feedback_score ? `${task.feedback_score} 分` : "—"} />
-        <KeyValue label="复核" value={task.review_acked_at ? "已确认" : "未确认"} />
+        <KeyValue label="确认" value={task.ack_by === "autopilot" ? "自动确认（未经人工复核）" : task.review_acked_at ? "人工确认" : "未确认"} />
       </div>
       <div className="inspector-actions">
         <Button onClick={onReveal}><FolderOpen size={14} /> 打开目录</Button>
@@ -356,11 +370,35 @@ function Inspector({
           <Button variant="danger" onClick={onAbandon}>放弃并归还</Button>
         ) : null}
         <Button variant="danger" onClick={onPurge}>清理任务</Button>
+        {task.presence === "missing" ? (
+          <Button variant="danger" loading={forgetting} onClick={onForget}>移除缺失记录</Button>
+        ) : null}
       </div>
       <div className="inspector-note">
         <StatusDot state={task.compatible ? "done" : "blocked"} label={task.compatible ? "磁盘事实可读" : "兼容模式"} />
         <small>{task.skill_status ?? "—"} · skill {task.skill_version ?? "—"}</small>
       </div>
+    </div>
+  );
+}
+
+function HistoryTab({ taskId }: { taskId: string }) {
+  const events = useQuery({ queryKey: ["task-events", taskId], queryFn: () => api.taskEvents(taskId), refetchInterval: 3000 });
+  if (events.isPending) return <LoadingLines rows={8} />;
+  if (events.isError) return <ErrorPanel error={events.error} onRetry={() => void events.refetch()} />;
+  return (
+    <div className="history-timeline">
+      {events.data?.items.length ? [...events.data.items].reverse().map((event) => (
+        <div key={event.id} className={`history-item history-${event.level}`}>
+          <time>{new Date(event.at).toLocaleString("zh-CN", { hour12: false })}</time>
+          <span className="history-dot" />
+          <div>
+            <strong>{event.action}</strong>
+            <p>{event.message}</p>
+            <small>actor: {event.actor}{event.task_id ? ` · task: ${event.task_id.slice(0, 8)}` : ""}</small>
+          </div>
+        </div>
+      )) : <p className="empty-inline">暂无历程事件。</p>}
     </div>
   );
 }

@@ -80,7 +80,7 @@ async def get_file_diff(
     task_id: str,
     path: str = Query(min_length=1),
     ctx: AppContext = Depends(context),
-):
+) -> str:
     task = _task(ctx, task_id)
     envelope = load_state(Path(task["task_root"]))
     if not envelope.state:

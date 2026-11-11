@@ -2,25 +2,25 @@ import { AlertTriangle, Check, CircleX, Info, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useMemo, useState } from "react";
 
-import { ToastContext, type ToastTone } from "./toast-context";
+import { ToastContext, type ToastAction, type ToastTone } from "./toast-context";
 
-type ToastItem = { id: number; message: string; tone: ToastTone };
+type ToastItem = { id: number; message: string; tone: ToastTone; action?: ToastAction };
 
 const VISIBLE = 3;
 const icons = { ok: Check, info: Info, warn: AlertTriangle, error: CircleX } as const;
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([]);
-  const toast = useCallback((message: string, tone: ToastTone = "info") => {
+  const toast = useCallback((message: string, tone: ToastTone = "info", action?: ToastAction) => {
     const id = Date.now() + Math.random();
     setItems((current) => [
       ...current.filter((item) => item.message !== message || item.tone !== tone),
-      { id, message, tone },
+      { id, message, tone, action },
     ]);
     // 错误原文要来得及读完，停留时间加倍
     window.setTimeout(
       () => setItems((current) => current.filter((item) => item.id !== id)),
-      tone === "error" ? 8000 : 4000,
+      action ? 10_000 : tone === "error" ? 8000 : 4000,
     );
   }, []);
   const value = useMemo(() => ({ toast }), [toast]);
@@ -42,6 +42,19 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             <div key={item.id} className={`toast toast-${item.tone}`} role={item.tone === "error" ? "alert" : "status"}>
               <Icon size={14} aria-hidden="true" />
               <span>{item.message}</span>
+              {item.action ? (
+                <button
+                  type="button"
+                  className="toast-action"
+                  onClick={() => {
+                    void Promise.resolve(item.action?.onClick()).finally(() => {
+                      setItems((current) => current.filter((entry) => entry.id !== item.id));
+                    });
+                  }}
+                >
+                  {item.action.label}
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="icon-button"

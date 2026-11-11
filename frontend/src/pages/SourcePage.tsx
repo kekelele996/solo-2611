@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, FolderInput, LogIn, Search } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { api, ApiError } from "../api/client";
@@ -35,6 +35,8 @@ export function SourcePage() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [unusedOnly, setUnusedOnly] = useState(false);
+  const [sortBy, setSortBy] = useState<"used" | "delivered" | "submitted" | "">("");
 
   useEffect(() => {
     if (projectId) localStorage.setItem("solo-auto-project", projectId);
@@ -56,6 +58,11 @@ export function SourcePage() {
     enabled: Boolean(projectId),
   });
   const claims = useQuery({ queryKey: ["claims"], queryFn: api.claims, refetchInterval: 5000 });
+  const claimHistory = useQuery({
+    queryKey: ["usage-records", claimTarget ? engineeringId(claimTarget) : ""],
+    queryFn: () => api.usageRecords(engineeringId(claimTarget ?? { name: "" })),
+    enabled: Boolean(claimTarget),
+  });
 
   const claim = useMutation({
     mutationFn: (item: EngineeringRow) =>
@@ -103,6 +110,12 @@ export function SourcePage() {
 
   const selected = projects.data?.items.find((project) => project.id === projectId);
   const authError = projects.error instanceof ApiError && projects.error.status === 401;
+  const engineeringRows = useMemo(() => {
+    let rows = [...(engineering.data?.items ?? [])];
+    if (unusedOnly) rows = rows.filter((item) => !(item.usage?.used ?? 0));
+    if (sortBy) rows.sort((left, right) => (right.usage?.[sortBy] ?? 0) - (left.usage?.[sortBy] ?? 0));
+    return rows;
+  }, [engineering.data?.items, sortBy, unusedOnly]);
 
   return (
     <div className="page source-page">
@@ -122,7 +135,7 @@ export function SourcePage() {
             <option value="">请选择项目</option>
             {projects.data?.items.map((project: ProjectRow) => (
               <option key={project.id} value={project.id}>
-                {project.name}
+                {project.name}{project.usage?.used ? ` · 用 ${project.usage.used} / 交 ${project.usage.delivered} / 提 ${project.usage.submitted}` : ""}
               </option>
             ))}
           </select>
@@ -164,11 +177,12 @@ export function SourcePage() {
             <input value={minFiles} onChange={(event) => setMinFiles(event.target.value)} placeholder="最少文件" inputMode="numeric" />
             <input value={maxFiles} onChange={(event) => setMaxFiles(event.target.value)} placeholder="最多文件" inputMode="numeric" />
             <span className="toolbar-count">{engineering.data?.total ?? 0} 个可领取</span>
+            <label className="check-inline"><input type="checkbox" checked={unusedOnly} onChange={(event) => setUnusedOnly(event.target.checked)} /> 未使用过（仅筛当前页）</label>
           </div>
           {engineering.isPending ? <LoadingLines rows={6} /> : null}
           {engineering.isError ? <ErrorPanel error={engineering.error} onRetry={() => void engineering.refetch()} /> : null}
           <Panel className="table-panel density-dense">
-            {engineering.data?.items.length ? (
+            {engineeringRows.length ? (
               <table className="data-table source-table">
                 <thead>
                   <tr>
@@ -177,11 +191,20 @@ export function SourcePage() {
                     <th className="numeric">源码文件</th>
                     <th>标签</th>
                     <th>版本</th>
+                    <th className="numeric">
+                      <button type="button" className="table-sort" onClick={() => setSortBy(sortBy === "used" ? "" : "used")}>用</button>
+                    </th>
+                    <th className="numeric">
+                      <button type="button" className="table-sort" onClick={() => setSortBy(sortBy === "delivered" ? "" : "delivered")}>交</button>
+                    </th>
+                    <th className="numeric">
+                      <button type="button" className="table-sort" onClick={() => setSortBy(sortBy === "submitted" ? "" : "submitted")}>提</button>
+                    </th>
                     <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {engineering.data.items.map((item) => (
+                  {engineeringRows.map((item) => (
                     <tr key={engineeringId(item)}>
                       <td>
                         <div className="engineering-cell">
@@ -198,6 +221,9 @@ export function SourcePage() {
                       <td className="numeric mono">{item.source_file_count ?? "—"}</td>
                       <td>{tagText(item)}</td>
                       <td className="mono">v{item.version_number ?? "—"}</td>
+                      <td className="numeric mono">{item.usage?.used || "–"}</td>
+                      <td className="numeric mono">{item.usage?.delivered || "–"}</td>
+                      <td className="numeric mono">{item.usage?.submitted || "–"}</td>
                       <td>
                         <div className="row-actions">
                           <Button
@@ -277,6 +303,12 @@ export function SourcePage() {
       >
         <div className="confirm-copy">
           <strong>{claimTarget?.name}</strong>
+          {claimHistory.data?.items.length ? (
+            <p className="claim-history">
+              已使用 {claimTarget?.usage?.used ?? claimHistory.data.items.length} 次，交付 {claimTarget?.usage?.delivered ?? 0} 次
+              {claimTarget?.usage?.last_failure_kind ? `，上次失败原因：${claimTarget.usage.last_failure_kind}` : "，没有失败记录"}
+            </p>
+          ) : null}
           <p>领取后你在本项目内独占该工程，其他人不可见；领取有超时，管理员可回收。</p>
           <p>请确认后尽快完成建题与运行，不要囤积名额。</p>
         </div>

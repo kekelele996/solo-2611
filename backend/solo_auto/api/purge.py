@@ -128,12 +128,17 @@ async def _execute(ctx: AppContext, plan: dict[str, Any], *, permanent: bool) ->
     if permanent:
         await asyncio.to_thread(_remove, sources)
     else:
-        target = ctx.paths.trash / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{root.name}"
-        await asyncio.to_thread(_move, sources, target)
-        moved_to = str(target)
+        meta = await asyncio.to_thread(
+            ctx.trash.move,
+            task={**task, "task_id": task_id},
+            sources=sources,
+            release_error=release_error,
+        )
+        moved_to = str(ctx.paths.trash / str(meta["name"]))
     ctx.autopilot.forget(task_id)
     ctx.repo.execute("UPDATE claims SET task_id = NULL WHERE task_id = ?", (task_id,))
     ctx.repo.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    ctx.ledger.mark_purged([task_id])
     ctx.repo.add_event(
         "task.purged",
         f"{plan['task_name']} 已清理（{'永久删除' if permanent else '移入回收站'}）"
@@ -143,13 +148,6 @@ async def _execute(ctx: AppContext, plan: dict[str, Any], *, permanent: bool) ->
         details={"task_id": task_id, "paths": plan["paths"], "moved_to": moved_to, "release_error": release_error},
     )
     return {"removed": True, "moved_to": moved_to, "release_error": release_error}
-
-
-def _move(sources: list[Path], target: Path) -> None:
-    target.mkdir(parents=True, exist_ok=False)
-    for index, source in enumerate(sources):
-        if source.exists():
-            shutil.move(str(source), str(target / f"{index}-{source.name}"))
 
 
 def _remove(sources: list[Path]) -> None:

@@ -19,6 +19,9 @@ const TaskDetailPage = lazy(() =>
 const SourcePage = lazy(() => import("./pages/SourcePage").then((module) => ({ default: module.SourcePage })));
 const ExportPage = lazy(() => import("./pages/ExportPage").then((module) => ({ default: module.ExportPage })));
 const SystemPage = lazy(() => import("./pages/SystemPage").then((module) => ({ default: module.SystemPage })));
+const ProductionPage = lazy(() => import("./pages/ProductionPage").then((module) => ({ default: module.ProductionPage })));
+const AuditPage = lazy(() => import("./pages/AuditPage").then((module) => ({ default: module.AuditPage })));
+const UsagePage = lazy(() => import("./pages/UsagePage").then((module) => ({ default: module.UsagePage })));
 
 function deferred(element: ReactNode) {
   return <Suspense fallback={<div className="page"><LoadingLines rows={8} /></div>}>{element}</Suspense>;
@@ -41,10 +44,13 @@ const router = createBrowserRouter([
     errorElement: <NotFoundPage />,
     children: [
       { index: true, element: deferred(<DashboardPage />) },
+      { path: "production", element: deferred(<ProductionPage />) },
+      { path: "audit", element: deferred(<AuditPage />) },
       { path: "tasks", element: deferred(<TasksPage />) },
       { path: "tasks/:id", element: deferred(<TaskDetailPage />) },
       { path: "source", element: deferred(<SourcePage />) },
       { path: "export", element: deferred(<ExportPage />) },
+      { path: "usage", element: deferred(<UsagePage />) },
       { path: "system", element: deferred(<SystemPage />) },
       { path: "*", element: <NotFoundPage /> },
     ],

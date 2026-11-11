@@ -1,7 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import {
+  ClipboardCheck,
   AlertTriangle,
   Command,
+  Factory,
   Atom,
   FileSpreadsheet,
   FolderSearch,
@@ -19,10 +21,15 @@ import { useHotkeys } from "../hooks/useHotkeys";
 import { useUIStore } from "../stores/ui";
 import { CommandPalette } from "./CommandPalette";
 import { Button, EmptyState, Modal, StatusDot } from "./ui";
+import { useToast } from "./toast-context";
+import { errorText } from "../utils/display";
+import { APP_BUILD_ID } from "../utils/build";
 
 const navItems = [
   { to: "/", label: "看板", icon: LayoutDashboard },
+  { to: "/production", label: "生产线", icon: Factory },
   { to: "/tasks", label: "任务", icon: ListChecks },
+  { to: "/audit", label: "抽检", icon: ClipboardCheck },
   { to: "/source", label: "题源", icon: FolderSearch },
   { to: "/export", label: "导出", icon: FileSpreadsheet },
   { to: "/system", label: "设置", icon: Settings },
@@ -37,12 +44,31 @@ export function AppShell() {
   const helpOpen = useUIStore((state) => state.helpOpen);
   const setCommandOpen = useUIStore((state) => state.setCommandOpen);
   const setHelpOpen = useUIStore((state) => state.setHelpOpen);
+  const { toast } = useToast();
   const status = useQuery({
     queryKey: ["system-status"],
     queryFn: api.systemStatus,
     refetchInterval: 3000,
   });
   const version = useQuery({ queryKey: ["version"], queryFn: api.version, staleTime: 60_000 });
+  const audits = useQuery({
+    queryKey: ["audits", "pending"],
+    queryFn: () => api.audits("pending"),
+    refetchInterval: 5000,
+  });
+  const restart = useMutation({
+    mutationFn: (force: boolean) => api.restart(force),
+    onSuccess: (result) => {
+      toast(result.hint, "info");
+      window.setTimeout(() => window.location.reload(), 2500);
+    },
+    onError: (error) => {
+      if (window.confirm(`${errorText(error)}\n\n是否强制重启？运行中的容器不会被中断。`)) {
+        restart.mutate(true);
+      }
+    },
+  });
+  const versionMismatch = Boolean(version.data && version.data.build_id !== APP_BUILD_ID);
 
   return (
     <div className="app-shell">
@@ -83,6 +109,17 @@ export function AppShell() {
           </button>
         </div>
       </header>
+      {versionMismatch ? (
+        <div className="system-banner version-banner">
+          <AlertTriangle size={15} />
+          <span>
+            页面与后端版本不一致，需要重启后端（页面 {APP_BUILD_ID} / 后端 {version.data?.build_id || "旧版"}）
+          </span>
+          <Button size="small" loading={restart.isPending} onClick={() => restart.mutate(false)}>
+            重启后端
+          </Button>
+        </div>
+      ) : null}
       {status.data?.offline ||
       status.data?.docker_ok === false ||
       status.data?.disk_low ||
@@ -108,6 +145,9 @@ export function AppShell() {
               <NavLink key={item.to} to={item.to} end={item.to === "/"} title={item.label}>
                 <Icon size={19} />
                 <span>{item.label}</span>
+                {item.to === "/audit" && audits.data?.total ? (
+                  <i className="nav-badge">{audits.data.total}</i>
+                ) : null}
               </NavLink>
             );
           })}
@@ -120,11 +160,11 @@ export function AppShell() {
       <Modal open={helpOpen} title="快捷键" onClose={() => setHelpOpen(false)}>
         <div className="shortcut-grid">
           <span>⌘K</span><strong>命令面板</strong>
-          <span>g d / t / s / e / ,</span><strong>切换页面</strong>
+          <span>g d / p / a / t / s / e / ,</span><strong>切换页面</strong>
           <span>j / k · Enter</span><strong>任务列表上下移动 · 打开</strong>
           <span>x / 空格 · ⌘A</span><strong>勾选当前行 · 全选</strong>
           <span>/ · f · r</span><strong>搜索 · 只看卡住 · 刷新</strong>
-          <span>1–7</span><strong>任务详情 Tab</strong>
+          <span>1–8</span><strong>任务详情 Tab</strong>
           <span>[ / ]</span><strong>上一题 / 下一题</strong>
           <span>⌘Enter</span><strong>执行当前主操作</strong>
           <span>⌘S</span><strong>保存当前编辑</strong>

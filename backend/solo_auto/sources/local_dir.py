@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from solo_auto.errors import ApiError
 
@@ -30,7 +30,7 @@ class LocalDirectorySource:
 
     async def detail(self, project_id: str, engineering_id: str) -> dict[str, Any]:
         page = await self.list_engineering(project_id)
-        return page["items"][0]
+        return cast(dict[str, Any], page["items"][0])
 
     async def claim(self, project_id: str, engineering_id: str) -> dict[str, Any]:
         return await self.detail(project_id, engineering_id) | {"claim_id": "local-claim"}

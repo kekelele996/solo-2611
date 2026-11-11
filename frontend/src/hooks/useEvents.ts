@@ -17,6 +17,11 @@ export function useEvents(): void {
     source.addEventListener("system", refresh);
     source.addEventListener("export.updated", refresh);
     source.addEventListener("autopilot.updated", refresh);
+    source.addEventListener("autopilot.breaker", refresh);
+    source.addEventListener("audit.updated", refresh);
+    source.addEventListener("intake.updated", refresh);
+    source.addEventListener("batch.updated", refresh);
+    source.addEventListener("trash.updated", refresh);
     source.addEventListener("toast", (event) => {
       try {
         const payload = JSON.parse((event as MessageEvent<string>).data) as {

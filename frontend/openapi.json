@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "solo-auto",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "paths": {
     "/api/health": {
@@ -74,6 +74,64 @@
                 "schema": {
                   "type": "object",
                   "title": "Response Reconcile Api System Reconcile Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/restart": {
+      "post": {
+        "summary": "Restart",
+        "operationId": "restart_api_system_restart_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Restart Api System Restart Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/diagnostics": {
+      "post": {
+        "summary": "Diagnostics",
+        "operationId": "diagnostics_api_system_diagnostics_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Diagnostics Api System Diagnostics Post"
                 }
               }
             }
@@ -1131,6 +1189,46 @@
         }
       }
     },
+    "/api/tasks/{task_id}/forget": {
+      "post": {
+        "summary": "Forget Task",
+        "operationId": "forget_task_api_tasks__task_id__forget_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Forget Task Api Tasks  Task Id  Forget Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tasks/{task_id}/prompt": {
       "get": {
         "summary": "Get Prompt",
@@ -1721,7 +1819,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "title": "Response Run Log Api Tasks  Task Id  Run Log Get"
+                }
               }
             }
           },
@@ -2331,6 +2431,45 @@
         }
       }
     },
+    "/api/recordings/privacy-recheck": {
+      "post": {
+        "summary": "Privacy Recheck",
+        "operationId": "privacy_recheck_api_recordings_privacy_recheck_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrivacyRecheckRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Privacy Recheck Api Recordings Privacy Recheck Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/recording/stop": {
       "post": {
         "summary": "Stop",
@@ -2563,6 +2702,43 @@
                   "type": "object",
                   "title": "Response Verify Api Tasks  Task Id  Record Verify Get"
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{task_id}/recording/video": {
+      "get": {
+        "summary": "Recording Video",
+        "operationId": "recording_video_api_tasks__task_id__recording_video_get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           },
@@ -3222,6 +3398,25 @@
         }
       }
     },
+    "/api/autopilot/preflight": {
+      "post": {
+        "summary": "Preflight",
+        "operationId": "preflight_api_autopilot_preflight_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Preflight Api Autopilot Preflight Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/autopilot/start": {
       "post": {
         "summary": "Start",
@@ -3300,6 +3495,134 @@
         }
       }
     },
+    "/api/autopilot/pause": {
+      "post": {
+        "summary": "Pause",
+        "operationId": "pause_api_autopilot_pause_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Pause Api Autopilot Pause Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/autopilot/resume": {
+      "post": {
+        "summary": "Resume",
+        "operationId": "resume_api_autopilot_resume_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Resume Api Autopilot Resume Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/autopilot/{task_id}/retry": {
+      "post": {
+        "summary": "Retry",
+        "operationId": "retry_api_autopilot__task_id__retry_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutopilotRetryRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Retry Api Autopilot  Task Id  Retry Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/autopilot/{task_id}/stages": {
+      "get": {
+        "summary": "Stages",
+        "operationId": "stages_api_autopilot__task_id__stages_get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Stages Api Autopilot  Task Id  Stages Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/autopilot/{task_id}/log": {
       "get": {
         "summary": "Log",
@@ -3325,6 +3648,92 @@
               "default": 200,
               "title": "Limit"
             }
+          },
+          {
+            "name": "stage",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Stage"
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Download"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Log Api Autopilot  Task Id  Log Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/autopilot/prompts": {
+      "get": {
+        "summary": "Prompts",
+        "operationId": "prompts_api_autopilot_prompts_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Prompts Api Autopilot Prompts Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audits": {
+      "get": {
+        "summary": "Audits",
+        "operationId": "audits_api_audits_get",
+        "parameters": [
+          {
+            "name": "verdict",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": "pending",
+              "title": "Verdict"
+            }
           }
         ],
         "responses": {
@@ -3334,8 +3743,807 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "title": "Response Log Api Autopilot  Task Id  Log Get"
+                  "title": "Response Audits Api Audits Get"
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audits/{task_id}": {
+      "get": {
+        "summary": "Audit Detail",
+        "operationId": "audit_detail_api_audits__task_id__get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Audit Detail Api Audits  Task Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Decide Audit",
+        "operationId": "decide_audit_api_audits__task_id__post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuditDecisionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Decide Audit Api Audits  Task Id  Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/quality/summary": {
+      "get": {
+        "summary": "Quality",
+        "operationId": "quality_api_quality_summary_get",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "From"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Quality Api Quality Summary Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/batches/check": {
+      "post": {
+        "summary": "Check",
+        "operationId": "check_api_batches_check_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchCheckRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Check Api Batches Check Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/batches": {
+      "get": {
+        "summary": "Listing",
+        "operationId": "listing_api_batches_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Listing Api Batches Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create",
+        "operationId": "create_api_batches_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Create Api Batches Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/batches/{batch_id}": {
+      "get": {
+        "summary": "Detail",
+        "operationId": "detail_api_batches__batch_id__get",
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Detail Api Batches  Batch Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/batches/{batch_id}/bundle": {
+      "post": {
+        "summary": "Bundle",
+        "operationId": "bundle_api_batches__batch_id__bundle_post",
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Bundle Api Batches  Batch Id  Bundle Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/batches/{batch_id}/download": {
+      "get": {
+        "summary": "Download",
+        "operationId": "download_api_batches__batch_id__download_get",
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/intake": {
+      "get": {
+        "summary": "Status",
+        "operationId": "status_api_intake_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Status Api Intake Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create",
+        "operationId": "create_api_intake_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntakeCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Create Api Intake Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/intake/pause": {
+      "post": {
+        "summary": "Pause",
+        "operationId": "pause_api_intake_pause_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Pause Api Intake Pause Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/intake/resume": {
+      "post": {
+        "summary": "Resume",
+        "operationId": "resume_api_intake_resume_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Resume Api Intake Resume Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/intake/stop": {
+      "post": {
+        "summary": "Stop",
+        "operationId": "stop_api_intake_stop_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntakeStopRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Stop Api Intake Stop Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/trash": {
+      "get": {
+        "summary": "Listing",
+        "operationId": "listing_api_trash_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Listing Api Trash Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Empty",
+        "operationId": "empty_api_trash_delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Empty Api Trash Delete"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/trash/{name}/restore": {
+      "post": {
+        "summary": "Restore",
+        "operationId": "restore_api_trash__name__restore_post",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Restore Api Trash  Name  Restore Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/trash/{name}": {
+      "delete": {
+        "summary": "Delete",
+        "operationId": "delete_api_trash__name__delete",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Delete Api Trash  Name  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/usage/projects": {
+      "get": {
+        "summary": "Projects",
+        "operationId": "projects_api_usage_projects_get",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "From"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Projects Api Usage Projects Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/usage/projects/{project_id}/engineering": {
+      "get": {
+        "summary": "Engineering",
+        "operationId": "engineering_api_usage_projects__project_id__engineering_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "From"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Engineering Api Usage Projects  Project Id  Engineering Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/usage/engineering/{engineering_id}": {
+      "get": {
+        "summary": "Records",
+        "operationId": "records_api_usage_engineering__engineering_id__get",
+        "parameters": [
+          {
+            "name": "engineering_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Engineering Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Records Api Usage Engineering  Engineering Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/usage/export.csv": {
+      "get": {
+        "summary": "Export Csv",
+        "operationId": "export_csv_api_usage_export_csv_get",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "From"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           },
@@ -3406,6 +4614,217 @@
         ],
         "title": "AbortRequest"
       },
+      "AuditConfigPatch": {
+        "properties": {
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "all",
+                  "sample",
+                  "off"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "sample_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sample Rate"
+          },
+          "stratify_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stratify By"
+          }
+        },
+        "type": "object",
+        "title": "AuditConfigPatch"
+      },
+      "AuditDecisionRequest": {
+        "properties": {
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "pass",
+              "reject"
+            ],
+            "title": "Verdict"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "default": ""
+          },
+          "disposition": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "redo_feedback",
+                  "manual",
+                  "void"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disposition"
+          }
+        },
+        "type": "object",
+        "required": [
+          "verdict"
+        ],
+        "title": "AuditDecisionRequest"
+      },
+      "AutopilotConfigPatch": {
+        "properties": {
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "agent_bin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Bin"
+          },
+          "agent_args": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Args"
+          },
+          "restricted": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restricted"
+          },
+          "stage_timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Timeout Seconds"
+          },
+          "stage_attempts": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Attempts"
+          },
+          "run_attempts": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Attempts"
+          },
+          "parallel_authoring": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parallel Authoring"
+          },
+          "parallel_delivering": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parallel Delivering"
+          },
+          "stop_kills_containers": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Kills Containers"
+          },
+          "breaker": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BreakerConfigPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "AutopilotConfigPatch"
+      },
       "AutopilotRequest": {
         "properties": {
           "task_ids": {
@@ -3415,10 +4834,122 @@
             "type": "array",
             "maxItems": 200,
             "title": "Task Ids"
+          },
+          "kill_containers": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kill Containers"
           }
         },
         "type": "object",
         "title": "AutopilotRequest"
+      },
+      "AutopilotRetryRequest": {
+        "properties": {
+          "from_stage": {
+            "type": "string",
+            "title": "From Stage",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "AutopilotRetryRequest"
+      },
+      "BatchCheckRequest": {
+        "properties": {
+          "task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Task Ids"
+          },
+          "include_exported": {
+            "type": "boolean",
+            "title": "Include Exported",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_ids"
+        ],
+        "title": "BatchCheckRequest"
+      },
+      "BatchCreateRequest": {
+        "properties": {
+          "task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Task Ids"
+          },
+          "include_exported": {
+            "type": "boolean",
+            "title": "Include Exported",
+            "default": false
+          },
+          "acknowledge_warnings": {
+            "type": "boolean",
+            "title": "Acknowledge Warnings",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_ids"
+        ],
+        "title": "BatchCreateRequest"
+      },
+      "BreakerConfigPatch": {
+        "properties": {
+          "same_kind_failures": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Same Kind Failures"
+          },
+          "audit_reject_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audit Reject Rate"
+          },
+          "audit_reject_window": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audit Reject Window"
+          }
+        },
+        "type": "object",
+        "title": "BreakerConfigPatch"
       },
       "ChromeStartRequest": {
         "properties": {
@@ -3552,6 +5083,66 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/RecordingConfigPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "autopilot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AutopilotConfigPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "audit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AuditConfigPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "intake": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IntakeConfigPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trash": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrashConfigPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "slim": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SlimConfigPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "notify": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NotifyConfigPatch"
               },
               {
                 "type": "null"
@@ -3756,6 +5347,130 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "IntakeConfigPatch": {
+        "properties": {
+          "max_in_hand": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max In Hand"
+          },
+          "exclude_tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exclude Tags"
+          }
+        },
+        "type": "object",
+        "title": "IntakeConfigPatch"
+      },
+      "IntakeCreateRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "target": {
+            "type": "integer",
+            "maximum": 500.0,
+            "minimum": 1.0,
+            "title": "Target"
+          },
+          "filters": {
+            "type": "object",
+            "title": "Filters"
+          },
+          "exclude_delivered": {
+            "type": "boolean",
+            "title": "Exclude Delivered",
+            "default": true
+          },
+          "max_uses": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Max Uses",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "target"
+        ],
+        "title": "IntakeCreateRequest"
+      },
+      "IntakeStopRequest": {
+        "properties": {
+          "release_unstarted": {
+            "type": "boolean",
+            "title": "Release Unstarted",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "IntakeStopRequest"
+      },
+      "NotifyConfigPatch": {
+        "properties": {
+          "macos": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Macos"
+          },
+          "webhook_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Url"
+          }
+        },
+        "type": "object",
+        "title": "NotifyConfigPatch"
+      },
+      "PrivacyRecheckRequest": {
+        "properties": {
+          "task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Task Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_ids"
+        ],
+        "title": "PrivacyRecheckRequest"
+      },
       "PromptDraftRequest": {
         "properties": {
           "text": {
@@ -3958,6 +5673,17 @@
         "type": "object",
         "title": "ResetRequest"
       },
+      "RestartRequest": {
+        "properties": {
+          "force": {
+            "type": "boolean",
+            "title": "Force",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "RestartRequest"
+      },
       "RevealRequest": {
         "properties": {
           "kind": {
@@ -4020,6 +5746,48 @@
         },
         "type": "object",
         "title": "SecretConfigPatch"
+      },
+      "SlimConfigPatch": {
+        "properties": {
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "after_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Days"
+          },
+          "patterns": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Patterns"
+          }
+        },
+        "type": "object",
+        "title": "SlimConfigPatch"
       },
       "SourceConfigPatch": {
         "properties": {
@@ -4129,6 +5897,23 @@
         },
         "type": "object",
         "title": "StorageConfigPatch"
+      },
+      "TrashConfigPatch": {
+        "properties": {
+          "retention_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retention Days"
+          }
+        },
+        "type": "object",
+        "title": "TrashConfigPatch"
       },
       "ValidationError": {
         "properties": {

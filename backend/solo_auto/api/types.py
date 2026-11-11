@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -142,6 +142,52 @@ class RecordingConfigPatch(BaseModel):
     chrome_url: str | None = None
 
 
+class BreakerConfigPatch(BaseModel):
+    same_kind_failures: int | None = None
+    audit_reject_rate: float | None = None
+    audit_reject_window: int | None = None
+
+
+class AutopilotConfigPatch(BaseModel):
+    enabled: bool | None = None
+    agent_bin: str | None = None
+    agent_args: list[str] | None = None
+    restricted: bool | None = None
+    stage_timeout_seconds: int | None = None
+    stage_attempts: int | None = None
+    run_attempts: int | None = None
+    parallel_authoring: int | None = None
+    parallel_delivering: int | None = None
+    stop_kills_containers: bool | None = None
+    breaker: BreakerConfigPatch | None = None
+
+
+class AuditConfigPatch(BaseModel):
+    mode: Literal["all", "sample", "off"] | None = None
+    sample_rate: float | None = None
+    stratify_by: str | None = None
+
+
+class IntakeConfigPatch(BaseModel):
+    max_in_hand: int | None = None
+    exclude_tags: list[str] | None = None
+
+
+class TrashConfigPatch(BaseModel):
+    retention_days: int | None = None
+
+
+class SlimConfigPatch(BaseModel):
+    enabled: bool | None = None
+    after_days: int | None = None
+    patterns: list[str] | None = None
+
+
+class NotifyConfigPatch(BaseModel):
+    macos: bool | None = None
+    webhook_url: str | None = None
+
+
 class SecretConfigPatch(BaseModel):
     source_password: str | None = None
     source_bearer: str | None = None
@@ -156,8 +202,54 @@ class ConfigPatchRequest(BaseModel):
     execution: ExecutionConfigPatch | None = None
     storage: StorageConfigPatch | None = None
     recording: RecordingConfigPatch | None = None
+    autopilot: AutopilotConfigPatch | None = None
+    audit: AuditConfigPatch | None = None
+    intake: IntakeConfigPatch | None = None
+    trash: TrashConfigPatch | None = None
+    slim: SlimConfigPatch | None = None
+    notify: NotifyConfigPatch | None = None
     secrets: SecretConfigPatch | None = None
 
 
 class AutopilotRequest(BaseModel):
     task_ids: list[str] = Field(default_factory=list, max_length=200)
+    kill_containers: bool | None = None
+
+
+class AutopilotRetryRequest(BaseModel):
+    from_stage: str = ""
+
+
+class IntakeCreateRequest(BaseModel):
+    project_id: str
+    target: int = Field(ge=1, le=500)
+    filters: dict[str, Any] = Field(default_factory=dict)
+    exclude_delivered: bool = True
+    max_uses: int = Field(default=0, ge=0, le=100)
+
+
+class IntakeStopRequest(BaseModel):
+    release_unstarted: bool = False
+
+
+class AuditDecisionRequest(BaseModel):
+    verdict: Literal["pass", "reject"]
+    reason: str = ""
+    disposition: Literal["redo_feedback", "manual", "void"] | None = None
+
+
+class BatchCheckRequest(BaseModel):
+    task_ids: list[str] = Field(min_length=1, max_length=500)
+    include_exported: bool = False
+
+
+class BatchCreateRequest(BatchCheckRequest):
+    acknowledge_warnings: bool = False
+
+
+class PrivacyRecheckRequest(BaseModel):
+    task_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+class RestartRequest(BaseModel):
+    force: bool = False

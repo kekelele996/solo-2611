@@ -33,7 +33,13 @@ async def _app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fixture_factory:
         return "0.2.3"
 
     monkeypatch.setattr(SkillGateway, "version", fake_version)
-    return create_app(tmp_path / "app", auto_start=False), root
+    app = create_app(tmp_path / "app", auto_start=False)
+
+    async def fake_preflight() -> dict[str, Any]:
+        return {"ok": True, "items": [], "checked_at": "2026-11-11T00:00:00+08:00"}
+
+    app.state.context.preflight.run = fake_preflight
+    return app, root
 
 
 @pytest.mark.asyncio
@@ -58,7 +64,7 @@ async def test_autopilot_launches_agent_and_fails_honestly(
             for attempt in (1, 2):
                 await pilot.tick()
                 job = pilot.jobs[task_id]
-                assert job.stage == "authoring" and job.attempts["authoring"] == attempt
+                assert job.stage == "authoring" and job.attempts["authoring"] == attempt, job.detail
                 await pilot.agents[task_id].waiter
                 assert "难度论证不足" in job.detail
             await pilot.tick()
@@ -90,6 +96,7 @@ async def test_autopilot_acks_as_autopilot_and_exports(
     (root / "delivery" / "交付表.xlsx").unlink()
     ctx = app.state.context
     await ctx.startup()
+    ctx.audits.settings.mode = "off"
     pilot = ctx.autopilot
     pilot.agent_command = [sys.executable, "-c", "raise SystemExit(1)"]
     try:

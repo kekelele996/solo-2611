@@ -14,7 +14,21 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from solo_auto.api import autopilot, events, evidence, feedback_export, purge, recording, system, tasks
+from solo_auto.api import (
+    audit,
+    autopilot,
+    batches,
+    events,
+    evidence,
+    feedback_export,
+    intake,
+    purge,
+    recording,
+    system,
+    tasks,
+    trash,
+    usage,
+)
 from solo_auto.context import AppContext
 from solo_auto.errors import ApiError
 
@@ -64,7 +78,7 @@ def create_app(home: Path | None = None, *, auto_start: bool = True) -> FastAPI:
 
     app = FastAPI(
         title="solo-auto",
-        version="0.1.0",
+        version="0.2.0",
         docs_url="/api/docs",
         redoc_url=None,
         openapi_url="/api/openapi.json",
@@ -80,6 +94,11 @@ def create_app(home: Path | None = None, *, auto_start: bool = True) -> FastAPI:
     app.include_router(recording.router)
     app.include_router(feedback_export.router)
     app.include_router(autopilot.router)
+    app.include_router(audit.router)
+    app.include_router(batches.router)
+    app.include_router(intake.router)
+    app.include_router(trash.router)
+    app.include_router(usage.router)
     app.include_router(events.router)
 
     @app.exception_handler(ApiError)
@@ -132,8 +151,8 @@ def create_app(home: Path | None = None, *, auto_start: bool = True) -> FastAPI:
         if assets.is_dir():
             app.mount("/assets", StaticFiles(directory=assets), name="assets")
 
-        @app.get("/{full_path:path}", include_in_schema=False)
-        async def spa_fallback(full_path: str):
+        @app.get("/{full_path:path}", include_in_schema=False, response_model=None)
+        async def spa_fallback(full_path: str) -> FileResponse | JSONResponse:
             if full_path.startswith("api/"):
                 return JSONResponse(status_code=404, content={"error": {"code": "NOT_FOUND", "message": "接口不存在"}})
             candidate = (dist / full_path).resolve()

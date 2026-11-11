@@ -28,6 +28,7 @@ class StagingManager:
         engineering_id: str,
         detail: dict[str, Any],
         claim_id: str,
+        project_name: str = "",
     ) -> dict[str, Any]:
         directory = self.directory(engineering_id)
         if directory.exists():
@@ -48,6 +49,7 @@ class StagingManager:
         meta = {
             "engineeringId": engineering_id,
             "projectId": project_id,
+            "projectName": project_name or project_id,
             "name": str(detail.get("name") or engineering_id),
             "versionId": str(detail.get("version_id") or detail.get("versionId") or detail.get("version_number") or ""),
             "claimId": claim_id,

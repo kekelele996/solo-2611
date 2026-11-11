@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import os
 import shutil
+import signal
 import sqlite3
 import tempfile
 import zipfile
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, Query, Response
 
@@ -20,10 +24,13 @@ from solo_auto.api.types import (
     ConfigTestRequest,
     CreateTaskRequest,
     PruneRequest,
+    RestartRequest,
     SourceLoginRequest,
 )
+from solo_auto.build_info import build_id
 from solo_auto.context import AppContext
 from solo_auto.errors import ApiError, SourceAuthError, SourceOfflineError
+from solo_auto.pipeline.usage import UsageLedger
 
 router = APIRouter(prefix="/api")
 
@@ -33,17 +40,20 @@ async def health(ctx: AppContext = Depends(context)) -> dict[str, Any]:
     return {
         "ok": True,
         "uptime_s": round((datetime.now().astimezone() - ctx.started_at).total_seconds(), 1),
-        "version": "0.1.0",
+        "version": "0.2.0",
+        "build_id": build_id(),
     }
 
 
 @router.get("/version")
 async def version(ctx: AppContext = Depends(context)) -> dict[str, Any]:
     skill_config = await ctx.gateway.config()
-    claude = skill_config.get("claude") if isinstance(skill_config.get("claude"), dict) else {}
+    raw_claude = skill_config.get("claude")
+    claude = cast(dict[str, Any], raw_claude) if isinstance(raw_claude, dict) else {}
     return {
-        "app": "0.1.0",
+        "app": "0.2.0",
         "git_sha": ctx.git_sha(),
+        "build_id": build_id(),
         "skill_version": ctx.skill_version,
         "skill_schema": "solo-2611/1",
         "image": claude.get("image", ""),
@@ -60,6 +70,65 @@ async def system_status(ctx: AppContext = Depends(context)) -> dict[str, Any]:
 async def reconcile(ctx: AppContext = Depends(context)) -> dict[str, Any]:
     corrected = await ctx.reconciler.run()
     return {"corrected": corrected}
+
+
+@router.post("/system/restart")
+async def restart(payload: RestartRequest, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    recording = await ctx.recording.status()
+    running_tasks = sorted(set(ctx.scheduler.active) | set(ctx.autopilot.agents))
+    conflicts: list[dict[str, str]] = [
+        {"kind": "container", "task_id": task_id} for task_id in running_tasks
+    ]
+    if recording.get("recording") or recording.get("pending"):
+        conflicts.append({"kind": "recording", "task_id": str(recording.get("task_id") or "")})
+    if conflicts and not payload.force:
+        raise ApiError(
+            409,
+            "SYSTEM_BUSY",
+            "仍有容器或录屏在运行；确认后可用强制重启，已有容器不会被中断",
+            detail={"items": conflicts},
+        )
+    asyncio.get_running_loop().call_later(1.0, os.kill, os.getpid(), signal.SIGTERM)
+    ctx.repo.add_event(
+        "system.restart_requested",
+        "已请求重启后端" + ("（强制）" if conflicts else ""),
+        level="warn",
+        actor="user",
+        details={"running": conflicts},
+    )
+    return {
+        "ok": True,
+        "restarting": True,
+        "build_id": build_id(),
+        "hint": "若未安装 LaunchAgent，请回到终端重新运行 make app。",
+    }
+
+
+@router.post("/system/diagnostics")
+async def diagnostics(ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    target = ctx.paths.backups / f"diagnostics-{stamp}.zip"
+    info = {
+        "version": "0.2.0",
+        "build_id": build_id(),
+        "git_sha": ctx.git_sha(),
+        "skill_version": ctx.skill_version,
+        "host": ctx.settings.host,
+        "port": ctx.settings.port,
+    }
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("version.json", json.dumps(info, ensure_ascii=False, indent=2))
+        if ctx.paths.config.is_file():
+            archive.write(ctx.paths.config, "config.toml")
+        archive.writestr(
+            "events.json",
+            json.dumps(ctx.repo.events(limit=200), ensure_ascii=False, indent=2),
+        )
+        for path in ctx.paths.logs.rglob("*.log"):
+            if path.is_file():
+                archive.write(path, Path("logs") / path.relative_to(ctx.paths.logs))
+    ctx.repo.add_event("system.diagnostics", f"诊断包已生成：{target}", actor="user")
+    return {"path": str(target), "size": target.stat().st_size}
 
 
 @router.get("/system/config")
@@ -79,6 +148,18 @@ async def get_config(ctx: AppContext = Depends(context)) -> dict[str, Any]:
         "execution": ctx.settings.execution.model_dump(),
         "storage": ctx.settings.storage.model_dump(),
         "recording": ctx.settings.recording.model_dump(),
+        "autopilot": {
+            **ctx.settings.autopilot.model_dump(exclude={"breaker"}),
+            "breaker": ctx.settings.autopilot.breaker.model_dump(),
+        },
+        "audit": ctx.settings.audit.model_dump(),
+        "intake": ctx.settings.intake.model_dump(),
+        "trash": ctx.settings.trash.model_dump(),
+        "slim": ctx.settings.slim.model_dump(),
+        "notify": {
+            **ctx.settings.notify.model_dump(),
+            "webhook_url": "<set>" if ctx.secrets.has("notify.webhook") else "",
+        },
         "skill_config": skill_config,
         "github_token": "<set>"
         if ctx.secrets.has("github.token") or _skill_has_github_token(skill_config)
@@ -90,8 +171,21 @@ async def get_config(ctx: AppContext = Depends(context)) -> dict[str, Any]:
 async def patch_config(payload: ConfigPatchRequest, ctx: AppContext = Depends(context)) -> dict[str, Any]:
     payload_data = payload.model_dump(exclude_none=True)
     allowed_top = {"host", "port", "skill_root", "tasks_dir"}
+    groups = {
+        "source",
+        "execution",
+        "storage",
+        "recording",
+        "autopilot",
+        "audit",
+        "intake",
+        "trash",
+        "slim",
+        "notify",
+        "secrets",
+    }
     for key in payload_data:
-        if key not in allowed_top | {"source", "execution", "storage", "recording", "secrets"}:
+        if key not in allowed_top | groups:
             raise ApiError(400, "CONFIG_KEY_INVALID", f"不支持的配置项：{key}")
     for key in allowed_top:
         if key in payload_data:
@@ -101,6 +195,10 @@ async def patch_config(payload: ConfigPatchRequest, ctx: AppContext = Depends(co
         "execution": ctx.settings.execution,
         "storage": ctx.settings.storage,
         "recording": ctx.settings.recording,
+        "audit": ctx.settings.audit,
+        "intake": ctx.settings.intake,
+        "trash": ctx.settings.trash,
+        "slim": ctx.settings.slim,
     }
     for group, model in nested.items():
         patch = payload_data.get(group)
@@ -112,6 +210,31 @@ async def patch_config(payload: ConfigPatchRequest, ctx: AppContext = Depends(co
         }
         for key, value in cleaned.items():
             setattr(model, key, value)
+    autopilot_patch = payload_data.get("autopilot")
+    if isinstance(autopilot_patch, dict):
+        breaker_patch = autopilot_patch.pop("breaker", None)
+        for key, value in autopilot_patch.items():
+            if key in ctx.settings.autopilot.model_fields:
+                setattr(ctx.settings.autopilot, key, value)
+        if isinstance(breaker_patch, dict):
+            for key, value in breaker_patch.items():
+                if key in ctx.settings.autopilot.breaker.model_fields:
+                    setattr(ctx.settings.autopilot.breaker, key, value)
+    notify_patch = payload_data.get("notify")
+    if isinstance(notify_patch, dict):
+        for key, value in notify_patch.items():
+            if key == "webhook_url":
+                continue
+            if key in ctx.settings.notify.model_fields:
+                setattr(ctx.settings.notify, key, value)
+        if "webhook_url" in notify_patch:
+            value = str(notify_patch["webhook_url"] or "")
+            if value:
+                ctx.secrets.set("notify.webhook", value)
+                ctx.settings.notify.webhook_url = value
+            else:
+                ctx.secrets.delete("notify.webhook")
+                ctx.settings.notify.webhook_url = ""
     secrets = payload_data.get("secrets")
     if isinstance(secrets, dict):
         for key, account in (
@@ -125,6 +248,12 @@ async def patch_config(payload: ConfigPatchRequest, ctx: AppContext = Depends(co
                 else:
                     ctx.secrets.delete(account)
     ctx.save_settings()
+    ctx.autopilot.apply_settings(ctx.settings.autopilot)
+    ctx.audits.settings = ctx.settings.audit
+    ctx.intake.intake_settings = ctx.settings.intake
+    ctx.trash.settings = ctx.settings.trash
+    ctx.janitor.settings = ctx.settings.slim
+    ctx.notifier.settings = ctx.settings.notify
     ctx.reconciler.tasks_dir = ctx.settings.tasks_dir
     source_change = isinstance(payload_data.get("source"), dict)
     if source_change:
@@ -133,6 +262,12 @@ async def patch_config(payload: ConfigPatchRequest, ctx: AppContext = Depends(co
 
         ctx.source = ProjectHubClient(ctx.settings.source, ctx.secrets)
         ctx.source_online = False
+        ctx.preflight.source = ctx.source
+        ctx.intake.source = ctx.source
+        ctx.ledger = UsageLedger(ctx.repo, ctx.settings.source.base_url)
+        ctx.tasks.attach_ledger(ctx.ledger)
+        ctx.autopilot.attach_ledger(ctx.ledger)
+        ctx.batch.ledger = ctx.ledger
     execution = payload_data.get("execution")
     if isinstance(execution, dict):
         pairs: list[str] = []
@@ -260,6 +395,16 @@ async def projects(
     except SourceOfflineError as exc:
         raise ApiError(503, "SOURCE_OFFLINE", str(exc)) from exc
     ctx.source_online = True
+    usage = {str(row["project_id"]): row for row in ctx.ledger.project_stats()}
+    for item in items:
+        row = usage.get(str(item.get("id") or ""), {})
+        item["usage"] = {
+            "used": int(row.get("used") or 0),
+            "delivered": int(row.get("delivered") or 0),
+            "submitted": int(row.get("submitted") or 0),
+            "claimed_unused": int(row.get("claimed_unused") or 0),
+            "delivery_rate": float(row.get("delivery_rate") or 0),
+        }
     return {"items": items, "total": len(items), "page": 1, "page_size": len(items)}
 
 
@@ -279,7 +424,7 @@ async def engineering(
     if not project_id.strip():
         raise ApiError(400, "PROJECT_REQUIRED", "请先选择项目")
     try:
-        return await ctx.source.list_engineering(
+        response = await ctx.source.list_engineering(
             project_id,
             q=q,
             language=language,
@@ -290,6 +435,25 @@ async def engineering(
             page=page,
             page_size=page_size,
         )
+        usage = {
+            str(row["engineering_id"]): row
+            for row in ctx.ledger.engineering_stats(project_id=project_id)
+        }
+        for item in response.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            engineering_id = str(item.get("engineering_id") or item.get("id") or "")
+            row = usage.get(engineering_id, {})
+            item["usage"] = {
+                "used": int(row.get("used") or 0),
+                "delivered": int(row.get("delivered") or 0),
+                "submitted": int(row.get("submitted") or 0),
+                "claimed_unused": int(row.get("claimed_unused") or 0),
+                "delivery_rate": float(row.get("delivery_rate") or 0),
+                "last_outcome": str(row.get("last_outcome") or ""),
+                "last_failure_kind": str(row.get("last_failure_kind") or ""),
+            }
+        return response
     except SourceAuthError as exc:
         raise ApiError(401, "SOURCE_AUTH_REQUIRED", str(exc)) from exc
     except SourceOfflineError as exc:
@@ -326,7 +490,17 @@ async def claim(payload: ClaimRequest, ctx: AppContext = Depends(context)) -> di
         claimed = await ctx.source.claim(payload.project_id, payload.engineering_id)
         engineering_id = str(claimed.get("engineering_id") or payload.engineering_id)
         claim_id = str(claimed.get("claim_id") or engineering_id)
-        meta = await ctx.staging.stage(ctx.source, payload.project_id, engineering_id, claimed, claim_id)
+        projects = await ctx.source.list_projects()
+        project = next((item for item in projects if str(item.get("id") or "") == payload.project_id), {})
+        meta = await ctx.staging.stage(
+            ctx.source,
+            payload.project_id,
+            engineering_id,
+            claimed,
+            claim_id,
+            project_name=str(project.get("name") or payload.project_id),
+        )
+        ctx.ledger.record_claim(meta)
         ctx.repo.upsert_claim(
             {
                 "id": claim_id,
@@ -398,6 +572,7 @@ async def release_claim(
         "UPDATE claims SET released_at = ? WHERE id = ?",
         (datetime.now().astimezone().isoformat(), claim_id),
     )
+    ctx.ledger.mark_released(str(meta["projectId"]), str(meta["engineeringId"]))
     ctx.staging.remove(str(meta["engineeringId"]))
     ctx.repo.add_event("claim.released", f"{meta.get('name')} 已归还", actor="user")
     return {"ok": True, "claim_id": claim_id}

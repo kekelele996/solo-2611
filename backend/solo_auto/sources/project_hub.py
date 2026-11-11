@@ -7,7 +7,7 @@ import hashlib
 import json
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -74,7 +74,7 @@ class ProjectHubClient:
             or ""
         )
         self._persist_session()
-        return data
+        return cast(dict[str, Any], data)
 
     async def list_projects(self, *, refresh: bool = False) -> list[dict[str, Any]]:
         await self._ensure_session()
@@ -133,7 +133,7 @@ class ProjectHubClient:
         page = await self.list_engineering(project_id, scope="all", page_size=200)
         for item in page.get("items", []):
             if _engineering_id(item) == engineering_id:
-                return item
+                return cast(dict[str, Any], item)
         raise ApiError(404, "ENGINEERING_NOT_FOUND", f"工程不存在或不在项目内: {engineering_id}")
 
     async def claim(self, project_id: str, engineering_id: str) -> dict[str, Any]:

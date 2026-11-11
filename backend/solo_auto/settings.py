@@ -73,6 +73,68 @@ class RecordingSettings(BaseModel):
     chrome_url: str = "http://127.0.0.1:3000"
 
 
+class BreakerSettings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    same_kind_failures: int = Field(default=3, ge=1, le=50)
+    audit_reject_rate: float = Field(default=0.2, ge=0, le=1)
+    audit_reject_window: int = Field(default=10, ge=1, le=100)
+
+
+class AutopilotSettings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = True
+    agent_bin: str = ""
+    agent_args: list[str] = Field(default_factory=list)
+    restricted: bool = False
+    stage_timeout_seconds: int = Field(default=3600, ge=60)
+    stage_attempts: int = Field(default=2, ge=1, le=10)
+    run_attempts: int = Field(default=2, ge=1, le=10)
+    parallel_authoring: int = Field(default=2, ge=1, le=8)
+    parallel_delivering: int = Field(default=1, ge=1, le=8)
+    stop_kills_containers: bool = True
+    breaker: BreakerSettings = Field(default_factory=BreakerSettings)
+
+
+class AuditSettings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    mode: Literal["all", "sample", "off"] = "sample"
+    sample_rate: float = Field(default=0.3, ge=0, le=1)
+    stratify_by: str = "task_type"
+
+
+class IntakeSettings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    max_in_hand: int = Field(default=0, ge=0, le=100)
+    exclude_tags: list[str] = Field(default_factory=list)
+
+
+class TrashSettings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    retention_days: int = Field(default=7, ge=0, le=3650)
+
+
+class SlimSettings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    after_days: int = Field(default=3, ge=0, le=365)
+    patterns: list[str] = Field(
+        default_factory=lambda: ["node_modules", ".venv", "dist", "build", "target", "__pycache__"]
+    )
+
+
+class NotifySettings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    macos: bool = True
+    webhook_url: str = ""
+
+
 class Settings(BaseSettings):
     """Configuration loaded from ``config.toml`` and a small env override set."""
 
@@ -91,6 +153,12 @@ class Settings(BaseSettings):
     execution: ExecutionSettings = Field(default_factory=ExecutionSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     recording: RecordingSettings = Field(default_factory=RecordingSettings)
+    autopilot: AutopilotSettings = Field(default_factory=AutopilotSettings)
+    audit: AuditSettings = Field(default_factory=AuditSettings)
+    intake: IntakeSettings = Field(default_factory=IntakeSettings)
+    trash: TrashSettings = Field(default_factory=TrashSettings)
+    slim: SlimSettings = Field(default_factory=SlimSettings)
+    notify: NotifySettings = Field(default_factory=NotifySettings)
 
     @field_validator("skill_root", "tasks_dir", mode="before")
     @classmethod
@@ -111,6 +179,10 @@ class Paths(BaseModel):
     skill_logs: Path
     backups: Path
     trash: Path
+    audits: Path
+    batches: Path
+    prompts: Path
+    autopilot_logs: Path
     pid: Path
     instance_lock: Path
 
@@ -125,6 +197,11 @@ class Paths(BaseModel):
             self.logs,
             self.skill_logs,
             self.backups,
+            self.trash,
+            self.audits,
+            self.batches,
+            self.prompts,
+            self.autopilot_logs,
         ):
             path.mkdir(parents=True, exist_ok=True)
 
@@ -144,6 +221,10 @@ def app_paths(home: Path | None = None) -> Paths:
         skill_logs=root / "logs" / "skill",
         backups=root / "backups",
         trash=root / "trash",
+        audits=root / "audits",
+        batches=root / "batches",
+        prompts=root / "prompts",
+        autopilot_logs=root / "logs" / "autopilot",
         pid=root / "run" / "solo-auto.pid",
         instance_lock=root / "run" / "solo-auto.instance.lock",
     )
@@ -154,12 +235,16 @@ def _toml_value(value: Any) -> str:
         return "true" if value else "false"
     if isinstance(value, int | float):
         return str(value)
+    if isinstance(value, list):
+        return json.dumps(value, ensure_ascii=False)
     return json.dumps(str(value), ensure_ascii=False)
 
 
-def _dump_table(name: str, model: BaseModel) -> list[str]:
+def _dump_table(name: str, model: BaseModel, *, exclude: set[str] | None = None) -> list[str]:
     lines = [f"[{name}]"]
     for key, value in model.model_dump().items():
+        if exclude and key in exclude:
+            continue
         lines.append(f"{key} = {_toml_value(value)}")
     return lines
 
@@ -178,6 +263,20 @@ def config_toml(settings: Settings) -> str:
         *_dump_table("storage", settings.storage),
         "",
         *_dump_table("recording", settings.recording),
+        "",
+        *_dump_table("autopilot", settings.autopilot, exclude={"breaker"}),
+        "",
+        *_dump_table("autopilot.breaker", settings.autopilot.breaker),
+        "",
+        *_dump_table("audit", settings.audit),
+        "",
+        *_dump_table("intake", settings.intake),
+        "",
+        *_dump_table("trash", settings.trash),
+        "",
+        *_dump_table("slim", settings.slim),
+        "",
+        *_dump_table("notify", settings.notify, exclude={"webhook_url"}),
         "",
     ]
     return "\n".join(lines)

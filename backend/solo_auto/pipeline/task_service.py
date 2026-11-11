@@ -32,6 +32,10 @@ class TaskService:
         self.staging = staging
         self.reconciler = reconciler
         self.bus = bus
+        self.ledger: Any = None
+
+    def attach_ledger(self, ledger: Any) -> None:
+        self.ledger = ledger
 
     async def create(
         self,
@@ -106,6 +110,8 @@ class TaskService:
             if source.is_file() and not target.exists():
                 target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         self.staging.attach_task(staging_id, task_root)
+        if self.ledger:
+            self.ledger.attach_task(meta, task_id, name)
         self.repo.add_event(
             "task.created",
             f"{name} 已创建",

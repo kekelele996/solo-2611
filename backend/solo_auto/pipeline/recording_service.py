@@ -287,6 +287,48 @@ class RecordingService:
             "errors": errors,
         }
 
+    def privacy_recheck(self, task_id: str) -> dict[str, Any]:
+        task = self._task(task_id)
+        root = Path(task["task_root"])
+        envelope = load_state(root)
+        video = (
+            Path(envelope.state.recording.video)
+            if envelope.state and envelope.state.recording and envelope.state.recording.video
+            else None
+        )
+        if video is None or not video.is_file():
+            return {"task_id": task_id, "status": "cannot_check", "ok": False, "message": "录屏文件不存在"}
+        capture = _read_json(root / "recording" / "运行录屏-window-capture.json")
+        cursor = _read_json(root / "recording" / "运行录屏-cursor-guard.json")
+        if capture.get("status") == "manual-import" or cursor.get("status") == "manual-import":
+            return {
+                "task_id": task_id,
+                "status": "unchecked",
+                "ok": False,
+                "message": "record import 录屏没有采集隐私证据，未做隐私检查",
+            }
+        errors: list[str] = []
+        if capture.get("status") != "ok":
+            errors.append(f"window capture: {capture.get('status') or 'missing'}")
+        if cursor.get("status") != "ok":
+            errors.append(f"cursor guard: {cursor.get('status') or 'missing'}")
+        if cursor.get("pointerStrategy") != "none":
+            errors.append("pointerStrategy 不是 none")
+        rec = envelope.state.recording if envelope.state else None
+        if rec and rec.recordPlanMode == "web":
+            chrome = _read_json(root / "recording" / "chrome-instance.json")
+            cleanup = _read_json(root / "recording" / "chrome-profile-cleanup.json")
+            if chrome.get("dedicatedInstance") is not True or chrome.get("userChromeTouched") is not False:
+                errors.append("Web 独立 Chrome 证据不完整")
+            if cleanup.get("status") != "removed" or cleanup.get("existsAfter") is not False:
+                errors.append("临时 Chrome profile 未确认清理")
+        return {
+            "task_id": task_id,
+            "status": "passed" if not errors else "failed",
+            "ok": not errors,
+            "message": "隐私检查通过" if not errors else "；".join(errors),
+        }
+
     async def delete(self, task_id: str, *, confirm: bool) -> dict[str, Any]:
         task = self._task(task_id)
         if not confirm:

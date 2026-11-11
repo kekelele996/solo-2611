@@ -1,5 +1,7 @@
 # 09 · 验收方案
 
+> v2 脚注：静态检查已改为全量 `mypy --strict solo_auto`，OpenAPI 契约在临时目录重生成后比对，不再依赖 Git 暂存状态。v2 的 AP/QA/ST/IN/LF/PL 用例见 `docs/v2/03-plan-acceptance.md`。
+
 ## 1. 验收的对象是什么
 
 不是「界面好看」，也不是「功能都有」，而是四件事：
