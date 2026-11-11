@@ -41,8 +41,16 @@ async def test_historical_prompt_falls_back_and_reopen_requires_reason(fixture_f
         bus=None,  # type: ignore[arg-type]
         spec=load_spec(Path(os.environ["SOLO_AUTO_SKILL_ROOT"])),
     )
+    legacy = paths.drafts / str(task["id"]) / "题面草稿.md"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(
+        "把真实项目里的业务场景、现有流程、两条互相牵制的约束，以及实现错误时出现的可见结果，"
+        "写成一段自然的需求说明。不要写文件路径、端口、技术栈或逐步修复指令。\n",
+        encoding="utf-8",
+    )
     prompt = service.get(str(task["id"]))
     assert prompt["draft"].startswith("真实项目里")
+    assert "把真实项目里的业务场景" not in prompt["draft"]
     assert prompt["readonly"] is True
     assert prompt["can_reopen"] is True
     service.reopen(str(task["id"]), "修正业务背景")

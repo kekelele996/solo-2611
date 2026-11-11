@@ -18,6 +18,10 @@ from solo_auto.store.repo import Repository
 from solo_auto.store.state import load_state
 
 NON_SPACE = re.compile(r"\s+")
+LEGACY_DRAFT_HELP = (
+    "把真实项目里的业务场景、现有流程、两条互相牵制的约束，以及实现错误时出现的可见结果，"
+    "写成一段自然的需求说明。不要写文件路径、端口、技术栈或逐步修复指令。"
+)
 
 
 class PromptService:
@@ -57,7 +61,9 @@ class PromptService:
         root = Path(task["task_root"])
         installed_path = root / "delivery" / "提示词.md"
         installed = _read_text(installed_path)
-        draft = _read_text(self.draft_path(task_id)) or installed
+        draft = _read_text(self.draft_path(task_id)).strip()
+        if draft == LEGACY_DRAFT_HELP:
+            draft = ""
         envelope = load_state(root)
         attempts = len(envelope.state.attempts) if envelope.state else 0
         reopen_path = self.paths.drafts / task_id / "reopen.json"
@@ -67,13 +73,14 @@ class PromptService:
             and reopen_path.stat().st_mtime > installed_path.stat().st_mtime
         )
         readonly = bool(installed and (attempts > 0 or not reopened))
+        displayed_draft = installed if installed else draft
         return {
-            "draft": draft,
+            "draft": displayed_draft,
             "installed": installed,
             "installed_sha256": envelope.state.promptSha256 if envelope.state else "",
             "readonly": readonly,
             "can_reopen": bool(installed and attempts == 0 and readonly),
-            "chars": _chars(draft),
+            "chars": _chars(displayed_draft),
             "limits": {"preferred": 170, "hard": 240},
         }
 

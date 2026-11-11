@@ -71,13 +71,6 @@ class TaskService:
         task_id = self.repo.task_id_for_root(task_root)
         drafts = self.paths.drafts / task_id
         drafts.mkdir(parents=True, exist_ok=True)
-        draft_path = drafts / "题面草稿.md"
-        if not draft_path.exists():
-            draft_path.write_text(
-                "把真实项目里的业务场景、现有流程、两条互相牵制的约束，以及实现错误时出现的可见结果，"
-                "写成一段自然的需求说明。不要写文件路径、端口、技术栈或逐步修复指令。\n",
-                encoding="utf-8",
-            )
         template_result = await self.gateway.call(
             ["prompt", "--task-root", str(task_root), "--init"],
             timeout=120,
