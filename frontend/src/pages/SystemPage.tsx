@@ -72,6 +72,7 @@ export function SystemPage() {
         execution: form.execution,
         storage: form.storage,
         recording: form.recording,
+        submission: form.submission,
         autopilot: form.autopilot,
         audit: form.audit,
         intake: form.intake,
@@ -88,7 +89,7 @@ export function SystemPage() {
       });
     },
     onSuccess: () => {
-      toast("已保存。自动交付/抽检/计划设置将在下一次阶段或抽样时生效；通知立即生效。", "ok");
+      toast("已保存。自动提交、自动交付、抽检和计划设置将在下一次阶段或抽样时生效；通知立即生效。", "ok");
       setPassword("");
       setSolo2Password("");
       setWebhook("");
@@ -292,6 +293,23 @@ export function SystemPage() {
               placeholder="留空则不修改 Keychain"
             />
           </Field>
+          <label className="check-inline">
+            <input
+              type="checkbox"
+              checked={form.submission.auto_submit}
+              onChange={(event) =>
+                update({
+                  ...form,
+                  submission: { ...form.submission, auto_submit: event.target.checked },
+                })
+              }
+            />
+            自动提交到 SOLO2 <span className="effect-tag">下次导出</span>
+          </label>
+          <p className="form-note">
+            关闭时只生成本地交付，人工检查后再执行提交。打开后会上传轨迹和录屏、提交并轮询质检；
+            遇到待返修会保留平台原文并进入返修流程。
+          </p>
           {testRow("solo2", "测试登录")}
         </Panel>
 

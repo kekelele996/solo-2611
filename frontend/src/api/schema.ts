@@ -1946,6 +1946,7 @@ export interface components {
             execution?: components["schemas"]["ExecutionConfigPatch"] | null;
             storage?: components["schemas"]["StorageConfigPatch"] | null;
             recording?: components["schemas"]["RecordingConfigPatch"] | null;
+            submission?: components["schemas"]["SubmissionConfigPatch"] | null;
             autopilot?: components["schemas"]["AutopilotConfigPatch"] | null;
             audit?: components["schemas"]["AuditConfigPatch"] | null;
             intake?: components["schemas"]["IntakeConfigPatch"] | null;
@@ -2246,6 +2247,15 @@ export interface components {
             event_retention_days?: number | null;
             /** Skill Log Retention Days */
             skill_log_retention_days?: number | null;
+        };
+        /** SubmissionConfigPatch */
+        SubmissionConfigPatch: {
+            /** Auto Submit */
+            auto_submit?: boolean | null;
+            /** Poll Interval Seconds */
+            poll_interval_seconds?: number | null;
+            /** Poll Timeout Seconds */
+            poll_timeout_seconds?: number | null;
         };
         /** TrashConfigPatch */
         TrashConfigPatch: {

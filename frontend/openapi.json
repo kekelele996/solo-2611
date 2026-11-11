@@ -5187,6 +5187,16 @@
               }
             ]
           },
+          "submission": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubmissionConfigPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "autopilot": {
             "anyOf": [
               {
@@ -6056,6 +6066,49 @@
         },
         "type": "object",
         "title": "StorageConfigPatch"
+      },
+      "SubmissionConfigPatch": {
+        "properties": {
+          "auto_submit": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Submit"
+          },
+          "poll_interval_seconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 3600.0,
+                "minimum": 10.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Poll Interval Seconds"
+          },
+          "poll_timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 604800.0,
+                "minimum": 60.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Poll Timeout Seconds"
+          }
+        },
+        "type": "object",
+        "title": "SubmissionConfigPatch"
       },
       "TrashConfigPatch": {
         "properties": {

@@ -73,6 +73,14 @@ class RecordingSettings(BaseModel):
     chrome_url: str = "http://127.0.0.1:3000"
 
 
+class SubmissionSettings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    auto_submit: bool = False
+    poll_interval_seconds: int = Field(default=300, ge=10, le=3600)
+    poll_timeout_seconds: int = Field(default=86400, ge=60, le=604800)
+
+
 class BreakerSettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -170,6 +178,7 @@ class Settings(BaseSettings):
     execution: ExecutionSettings = Field(default_factory=ExecutionSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     recording: RecordingSettings = Field(default_factory=RecordingSettings)
+    submission: SubmissionSettings = Field(default_factory=SubmissionSettings)
     autopilot: AutopilotSettings = Field(default_factory=AutopilotSettings)
     audit: AuditSettings = Field(default_factory=AuditSettings)
     intake: IntakeSettings = Field(default_factory=IntakeSettings)
@@ -281,6 +290,8 @@ def config_toml(settings: Settings) -> str:
         *_dump_table("storage", settings.storage),
         "",
         *_dump_table("recording", settings.recording),
+        "",
+        *_dump_table("submission", settings.submission),
         "",
         *_dump_table("autopilot", settings.autopilot, exclude={"breaker"}),
         "",

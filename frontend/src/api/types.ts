@@ -507,6 +507,11 @@ export type ConfigResponse = {
   execution: { max_containers: number; run_timeout_seconds: number; attempts: number; stale_after_seconds: number };
   storage: { disk_floor_gb: number; event_retention_days: number; skill_log_retention_days: number };
   recording: { max_seconds: number; chrome_url: string };
+  submission: {
+    auto_submit: boolean;
+    poll_interval_seconds: number;
+    poll_timeout_seconds: number;
+  };
   autopilot: {
     enabled: boolean;
     agent_mode: "chatgpt" | "cli";

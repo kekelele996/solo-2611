@@ -14,6 +14,7 @@ from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, Query, Response
 
@@ -134,6 +135,26 @@ async def diagnostics(ctx: AppContext = Depends(context)) -> dict[str, Any]:
 @router.get("/system/config")
 async def get_config(ctx: AppContext = Depends(context)) -> dict[str, Any]:
     skill_config = await ctx.gateway.config()
+    raw_skill_submission = skill_config.get("submission")
+    skill_submission = cast(dict[str, Any], raw_skill_submission) if isinstance(raw_skill_submission, dict) else {}
+    submission = ctx.settings.submission.model_dump()
+    submission.update(
+        {
+            "auto_submit": bool(
+                skill_submission.get("autoSubmit", submission["auto_submit"])
+            ),
+            "poll_interval_seconds": int(
+                skill_submission.get(
+                    "pollIntervalSeconds", submission["poll_interval_seconds"]
+                )
+            ),
+            "poll_timeout_seconds": int(
+                skill_submission.get(
+                    "pollTimeoutSeconds", submission["poll_timeout_seconds"]
+                )
+            ),
+        }
+    )
     return {
         "host": ctx.settings.host,
         "port": ctx.settings.port,
@@ -148,6 +169,7 @@ async def get_config(ctx: AppContext = Depends(context)) -> dict[str, Any]:
         "execution": ctx.settings.execution.model_dump(),
         "storage": ctx.settings.storage.model_dump(),
         "recording": ctx.settings.recording.model_dump(),
+        "submission": submission,
         "autopilot": {
             **ctx.settings.autopilot.model_dump(exclude={"breaker"}),
             "breaker": ctx.settings.autopilot.breaker.model_dump(),
@@ -196,6 +218,7 @@ async def patch_config(payload: ConfigPatchRequest, ctx: AppContext = Depends(co
         "execution",
         "storage",
         "recording",
+        "submission",
         "autopilot",
         "audit",
         "intake",
@@ -216,6 +239,7 @@ async def patch_config(payload: ConfigPatchRequest, ctx: AppContext = Depends(co
         "execution": ctx.settings.execution,
         "storage": ctx.settings.storage,
         "recording": ctx.settings.recording,
+        "submission": ctx.settings.submission,
         "audit": ctx.settings.audit,
         "intake": ctx.settings.intake,
         "trash": ctx.settings.trash,
@@ -271,6 +295,22 @@ async def patch_config(payload: ConfigPatchRequest, ctx: AppContext = Depends(co
                 else:
                     ctx.secrets.delete(account)
     ctx.save_settings()
+    if "submission" in payload_data or "solo2" in payload_data:
+        parsed = urlsplit(ctx.settings.solo2.base_url)
+        server = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+        submission_pairs = [
+            f"submission.autoSubmit={'true' if ctx.settings.submission.auto_submit else 'false'}",
+            f"submission.pollIntervalSeconds={ctx.settings.submission.poll_interval_seconds}",
+            f"submission.pollTimeoutSeconds={ctx.settings.submission.poll_timeout_seconds}",
+            f"submission.server={server}",
+        ]
+        result = await ctx.gateway.call(["config", "set", *submission_pairs], timeout=60)
+        if result.code != 0:
+            raise ApiError(
+                500,
+                "SKILL_SUBMISSION_CONFIG_UPDATE_FAILED",
+                result.err.strip() or "技能自动提交配置更新失败",
+            )
     ctx.autopilot.apply_settings(ctx.settings.autopilot)
     ctx.audits.settings = ctx.settings.audit
     ctx.intake.intake_settings = ctx.settings.intake

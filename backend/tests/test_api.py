@@ -63,12 +63,19 @@ async def test_api_fact_routes_without_real_skill(
                         "base_url": "https://solo2.jzxhnh.com/app",
                         "username": "reviewer",
                     },
+                    "submission": {
+                        "auto_submit": True,
+                        "poll_interval_seconds": 120,
+                        "poll_timeout_seconds": 3600,
+                    },
                     "secrets": {"solo2_password": "saved-password"},
                 },
             )
             assert saved.status_code == 200
             assert saved.json()["solo2"]["username"] == "reviewer"
             assert saved.json()["solo2"]["password"] == "<set>"
+            assert saved.json()["submission"]["auto_submit"] is True
+            assert saved.json()["submission"]["poll_interval_seconds"] == 120
             assert "saved-password" not in saved.text
             assert context.secrets.get("solo2.password") == "saved-password"
 

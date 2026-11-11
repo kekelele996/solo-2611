@@ -24,6 +24,7 @@ const CONFIG: ConfigResponse = {
   execution: { max_containers: 4, run_timeout_seconds: 7200, attempts: 3, stale_after_seconds: 5400 },
   storage: { disk_floor_gb: 30, event_retention_days: 30, skill_log_retention_days: 14 },
   recording: { max_seconds: 90, chrome_url: "http://127.0.0.1:3000" },
+  submission: { auto_submit: false, poll_interval_seconds: 300, poll_timeout_seconds: 86400 },
   autopilot: {
     enabled: true,
     agent_mode: "chatgpt",
@@ -126,5 +127,25 @@ describe("settings page", () => {
     expect((patch.mock.calls[0][0] as { secrets?: { solo2_password?: string } }).secrets?.solo2_password).toBe(
       "new-password",
     );
+  });
+
+  it("saves the automatic SOLO2 submission switch", async () => {
+    const patch = vi.spyOn(api, "patchConfig").mockResolvedValue(CONFIG);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <ToastProvider>
+          <SystemPage />
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+    const toggle = await screen.findByRole("checkbox", { name: /自动提交到 SOLO2/ });
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole("button", { name: "保存配置" }));
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+    expect(
+      (patch.mock.calls[0][0] as { submission?: { auto_submit?: boolean } }).submission?.auto_submit,
+    ).toBe(true);
   });
 });

@@ -142,6 +142,12 @@ class RecordingConfigPatch(BaseModel):
     chrome_url: str | None = None
 
 
+class SubmissionConfigPatch(BaseModel):
+    auto_submit: bool | None = None
+    poll_interval_seconds: int | None = Field(default=None, ge=10, le=3600)
+    poll_timeout_seconds: int | None = Field(default=None, ge=60, le=604800)
+
+
 class BreakerConfigPatch(BaseModel):
     same_kind_failures: int | None = None
     audit_reject_rate: float | None = None
@@ -213,6 +219,7 @@ class ConfigPatchRequest(BaseModel):
     execution: ExecutionConfigPatch | None = None
     storage: StorageConfigPatch | None = None
     recording: RecordingConfigPatch | None = None
+    submission: SubmissionConfigPatch | None = None
     autopilot: AutopilotConfigPatch | None = None
     audit: AuditConfigPatch | None = None
     intake: IntakeConfigPatch | None = None
