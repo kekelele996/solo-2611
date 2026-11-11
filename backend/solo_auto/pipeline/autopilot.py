@@ -73,6 +73,7 @@ AGENT_FLAGS = (
     "--dangerously-bypass-approvals-and-sandbox",
 )
 VERDICT = "AUTOPILOT:"
+CHATGPT_LAUNCH_TIMEOUT_SECONDS = 5 * 60
 
 
 def _now() -> str:
@@ -834,6 +835,18 @@ class Autopilot:
                             task_id=task_id,
                             details={"rollout": str(path), "thread_id": job.desktop_thread_id},
                         )
+                if path is None:
+                    elapsed = (datetime.now().astimezone() - started).total_seconds()
+                    if elapsed >= CHATGPT_LAUNCH_TIMEOUT_SECONDS:
+                        detail = f"发出深链接后 {CHATGPT_LAUNCH_TIMEOUT_SECONDS // 60} 分钟未建立可跟踪会话"
+                        await self._finish_desktop_stage(
+                            job,
+                            outcome="failed",
+                            kind="agent_launch_lost",
+                            detail=detail,
+                        )
+                        self._finish(job, "failed", detail)
+                        return
                 await asyncio.sleep(0.5)
         except asyncio.CancelledError:
             raise
@@ -874,6 +887,16 @@ class Autopilot:
             task_id=job.task_id,
             details={"rollout": job.desktop_rollout, "thread_id": job.desktop_thread_id},
         )
+        if outcome == "failed" and self.dispatcher is not None and self.dispatcher.v3_enabled:
+            await self.dispatcher.on_failure(
+                job.task_id,
+                Evidence(
+                    stage="chatgpt",
+                    trace_tail=detail,
+                    context={"failure_kind": kind.replace("_", ".") if kind else "agent.reported"},
+                ),
+                actor=ACTOR,
+            )
         self._changed()
 
     async def _stop_desktop_follower(self, task_id: str) -> None:

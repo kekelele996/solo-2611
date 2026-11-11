@@ -940,14 +940,22 @@ class Dispatcher:
         if isinstance(jobs, dict):
             for task_id, job in jobs.items():
                 key = f"task:{task_id}"
-                if bool(getattr(job, "desktop_running", False)):
+                desktop_running = bool(getattr(job, "desktop_running", False))
+                agent_running = task_id in agents
+                if desktop_running:
                     sessions.add(key)
-                if task_id in agents:
+                if agent_running:
                     stage = str(getattr(agents[task_id], "stage", ""))
                     if stage == "authoring":
                         authoring.add(key)
                     elif stage == "delivering":
                         delivering.add(key)
+                item = self.queue.get(task_id)
+                stage_name = str(getattr(job, "stage", "pending"))
+                if item is not None and stage_name not in {"awaiting_audit", "done", "failed", "stopped"}:
+                    desired_status = "active" if desktop_running or agent_running else "queued"
+                    if item.status != desired_status or item.stage != stage_name:
+                        self.queue.update(task_id, status=desired_status, stage=stage_name)
         self.pools_book.observe("sessions", sessions)
         self.pools_book.observe("authoring", authoring)
         self.pools_book.observe("delivering", delivering)
