@@ -34,13 +34,14 @@ DEFAULT_HELPERS = (
 class ChatGPTDesktop:
     def __init__(self, *, home: Path, helper: str = "", sessions_dir: Path | None = None) -> None:
         self.home = home
+        self.app_path = Path("/Applications/ChatGPT.app")
         self.helper = Path(helper).expanduser() if helper else self._find_helper()
         self.sessions_dir = sessions_dir or Path(
             os.environ.get("CODEX_SESSIONS_DIR") or Path.home() / ".codex" / "sessions"
         )
 
     def available(self) -> bool:
-        return Path("/Applications/ChatGPT.app").is_dir() and (self.helper is not None or shutil.which("open") is not None)
+        return self.app_path.is_dir() and (self.helper is not None or shutil.which("open") is not None)
 
     def launch(
         self,
@@ -51,7 +52,7 @@ class ChatGPTDesktop:
         prompt: str,
         folder_id: str = "",
     ) -> dict[str, Any]:
-        if not Path("/Applications/ChatGPT.app").is_dir():
+        if not self.app_path.is_dir():
             raise ApiError(409, "CHATGPT_APP_MISSING", "未找到 ChatGPT.app，无法创建桌面会话")
         marker = f"solo-auto-chatgpt:{task_id}:{uuid.uuid4().hex[:12]}"
         marked_prompt = (
@@ -63,6 +64,8 @@ class ChatGPTDesktop:
         directory = self.home / "desktop" / task_id
         directory.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        grouped_workdir = self.home / "chatgpt-workspaces" / datetime.now().strftime("%Y-%m-%d")
+        grouped_workdir.mkdir(parents=True, exist_ok=True)
         prompt_path = directory / f"chatgpt-{stamp}.md"
         prompt_path.write_text(marked_prompt, encoding="utf-8")
         link_prompt = (
@@ -73,7 +76,7 @@ class ChatGPTDesktop:
             f"任务目录：`{task_root}`\n"
             "不要只总结指令，直接开始执行，直到前 10 项门禁通过或出现真实阻断。"
         )
-        link = build_deep_link(workdir=task_root, prompt=link_prompt, folder_id=folder_id)
+        link = build_deep_link(workdir=grouped_workdir, prompt=link_prompt, folder_id=folder_id)
         (directory / f"chatgpt-{stamp}.url.txt").write_text(link + "\n", encoding="utf-8")
         opened_with = "open"
         if self.helper and self.helper.is_file() and os.access(self.helper, os.X_OK):
@@ -109,6 +112,7 @@ class ChatGPTDesktop:
             "prompt_path": str(prompt_path),
             "deep_link": link,
             "opened_with": opened_with,
+            "workdir": str(grouped_workdir),
             "started_at": datetime.now().astimezone().replace(microsecond=0).isoformat(),
         }
 

@@ -658,7 +658,7 @@ class Autopilot:
         job.desktop_running = True
         job.desktop_marker = str(launched["marker"])
         job.desktop_prompt_file = str(launched["prompt_path"])
-        job.desktop_workdir = str(root)
+        job.desktop_workdir = str(launched["workdir"])
         job.desktop_deep_link = str(launched["deep_link"])
         job.desktop_started_at = str(launched["started_at"])
         job.desktop_last_progress_at = str(launched["started_at"])

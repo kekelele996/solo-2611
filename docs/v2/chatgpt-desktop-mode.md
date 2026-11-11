@@ -13,7 +13,8 @@
    `~/solo-auto/desktop/<taskId>/chatgpt-<time>.md`。
 2. 平台构造短提示词，明确要求 ChatGPT 使用 `$solo-2611` 并读取上述指令文件。
 3. `CodexQueuePush` 打开：
-   `codex://threads/new?path=<taskRoot>&mode=work&prompt=<shortPrompt>`。
+   `codex://threads/new?path=~/solo-auto/chatgpt-workspaces/YYYY-MM-DD&mode=work&prompt=<shortPrompt>`。
+   ChatGPT 文件夹按自然日复用；任务根目录只写在短提示词和完整指令文件中。
 4. ChatGPT 桌面端创建新 thread 并提交首条消息；提示词不再通过 URL 传递数 KB 正文。
 5. 平台在 `~/.codex/sessions/` 中查找同时满足以下条件的 rollout：
    - 首条用户消息包含本次唯一 marker；

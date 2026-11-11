@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import urllib.parse
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -13,6 +16,7 @@ from solo_auto.app import create_app
 from solo_auto.errors import ApiError
 from solo_auto.gateway.skill import SkillGateway
 from solo_auto.pipeline.autopilot import Job
+from solo_auto.pipeline.desktop_chatgpt import ChatGPTDesktop
 from solo_auto.pipeline.prompt_templates import PromptTemplates
 from solo_auto.settings import app_paths
 
@@ -53,6 +57,35 @@ def test_prompt_template_rejects_bypass_instruction(tmp_path: Path) -> None:
             missing=[],
         )
     assert error.value.code == "PROMPT_TEMPLATE_UNSAFE"
+
+
+def test_chatgpt_deep_link_uses_one_workspace_per_date(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_path = tmp_path / "ChatGPT.app"
+    app_path.mkdir()
+    desktop = ChatGPTDesktop(home=tmp_path / "home")
+    desktop.app_path = app_path
+    desktop.helper = None
+    captured: list[str] = []
+
+    def fake_run(args: list[str], **_: Any) -> SimpleNamespace:
+        captured.extend(args)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    task_root = tmp_path / "tasks" / "task-a"
+    result = desktop.launch(
+        task_id="task-a",
+        task_name="任务 A",
+        task_root=task_root,
+        prompt="执行任务",
+    )
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(captured[1]).query)
+    assert Path(query["path"][0]) == tmp_path / "home" / "chatgpt-workspaces" / datetime.now().strftime("%Y-%m-%d")
+    assert str(task_root) in query["prompt"][0]
+    assert result["workdir"] == query["path"][0]
 
 
 @pytest.mark.asyncio
@@ -503,6 +536,7 @@ async def test_chatgpt_mode_launches_a_visible_desktop_session(
             "prompt_path": str(prompt),
             "deep_link": "codex://threads/new?path=test&mode=work&prompt=test",
             "opened_with": "test-helper",
+            "workdir": str(tmp_path / "chatgpt-workspaces" / "2026-11-11"),
             "started_at": "2026-11-11T17:00:00+08:00",
         }
 
