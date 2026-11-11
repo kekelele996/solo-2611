@@ -15,6 +15,7 @@ import {
   Panel,
 } from "../components/ui";
 import { useToast } from "../components/toast-context";
+import { formatNames } from "../utils/display";
 import { formatDateTime } from "../utils/time";
 
 export function SourcePage() {
@@ -193,7 +194,7 @@ export function SourcePage() {
                           </span>
                         </div>
                       </td>
-                      <td>{(item.languages ?? item.tech_stack ?? []).join(" / ") || "—"}</td>
+                      <td>{languageText(item)}</td>
                       <td className="numeric mono">{item.source_file_count ?? "—"}</td>
                       <td>{tagText(item)}</td>
                       <td className="mono">v{item.version_number ?? "—"}</td>
@@ -351,6 +352,10 @@ function tagText(item: EngineeringRow): string {
   return tags
     .map((tag) => (typeof tag === "string" ? tag : tag.name))
     .join(" / ") || "—";
+}
+
+function languageText(item: EngineeringRow): string {
+  return formatNames(item.languages) || formatNames(item.tech_stack) || "—";
 }
 
 function unknownText(value: unknown): string {

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { Step } from "../api/types";
 import { Meter, StepRail } from "../components/ui";
 import { formatClock, formatDateTime } from "../utils/time";
+import { formatNames } from "../utils/display";
 
 describe("delivery components", () => {
   it("renders all eleven steps and marks the current gate", () => {
@@ -31,5 +32,15 @@ describe("delivery components", () => {
   it("renders UTC evidence timestamps in Asia/Shanghai", () => {
     expect(formatDateTime("2026-11-10T17:10:13+00:00", true)).toBe("2026-11-11 01:10:13");
     expect(formatClock("2026-11-10T17:10:13Z")).toBe("01:10:13");
+  });
+
+  it("formats Project Hub language objects without leaking object strings", () => {
+    expect(
+      formatNames([
+        { name: "Python", percentage: 53.8 },
+        { name: "TypeScript", percentage: 34.1 },
+        "CSS",
+      ]),
+    ).toBe("Python / TypeScript / CSS");
   });
 });

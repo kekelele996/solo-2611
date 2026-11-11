@@ -10,7 +10,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([]);
   const toast = useCallback((message: string, tone: ToastTone = "info") => {
     const id = Date.now() + Math.random();
-    setItems((current) => [...current.slice(-2), { id, message, tone }]);
+    setItems((current) => [
+      ...current.filter((item) => item.message !== message || item.tone !== tone).slice(-2),
+      { id, message, tone },
+    ]);
     window.setTimeout(() => {
       setItems((current) => current.filter((item) => item.id !== id));
     }, 4000);
@@ -20,6 +23,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <ToastContext.Provider value={value}>
       {children}
       <div className="toast-stack" aria-live="polite">
+        {items.length ? (
+          <button className="toast-clear" onClick={() => setItems([])}>
+            全部清除
+          </button>
+        ) : null}
         {items.map((item) => (
           <div key={item.id} className={`toast toast-${item.tone}`}>
             {item.tone === "ok" ? <Check size={14} /> : <ChevronRight size={14} />}

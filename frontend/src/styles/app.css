@@ -885,6 +885,16 @@ select:focus {
   gap: 8px;
 }
 
+.toast-clear {
+  align-self: flex-end;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
 .toast {
   display: flex;
   align-items: center;

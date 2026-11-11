@@ -126,8 +126,8 @@ export type EngineeringRow = {
   id?: string;
   engineering_id?: string;
   name: string;
-  languages?: string[];
-  tech_stack?: string[];
+  languages?: Array<string | { name?: string; files?: number; percentage?: number }>;
+  tech_stack?: Array<string | { name?: string; files?: number; percentage?: number }>;
   source_file_count?: number;
   version_number?: number;
   tags?: Array<string | { id: string; name: string }>;

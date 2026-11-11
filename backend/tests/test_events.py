@@ -12,10 +12,13 @@ async def test_event_bus_replay_and_queue() -> None:
     queue = bus.subscribe()
     first = bus.publish("task.updated", {"task_id": "a"})
     second = bus.publish("queue.updated", {"limit": 4})
+    toast = bus.publish("toast", {"message": "old"})
     assert first.seq + 1 == second.seq
+    assert second.seq + 1 == toast.seq
     received = await asyncio.wait_for(queue.get(), timeout=1)
     assert received.event == "task.updated"
     assert [event.seq for event in bus.replay(first.seq)] == [second.seq]
+    assert all(event.event != "toast" for event in bus.replay(0))
     bus.unsubscribe(queue)
 
 

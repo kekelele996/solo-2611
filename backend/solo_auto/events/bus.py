@@ -43,8 +43,9 @@ class EventBus:
         payload = dict(data)
         payload.setdefault("at", datetime.now().astimezone().replace(microsecond=0).isoformat())
         item = BusEvent(self._seq, event, payload)
-        self._history.append(item)
-        self._history = self._history[-500:]
+        if event != "toast":
+            self._history.append(item)
+            self._history = self._history[-500:]
         for queue in tuple(self._queues):
             if queue.full():
                 with suppress(asyncio.QueueEmpty):

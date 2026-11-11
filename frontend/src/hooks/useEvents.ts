@@ -26,7 +26,6 @@ export function useEvents(): void {
       } catch {
         return;
       }
-      refresh();
     });
     return () => source.close();
   }, [queryClient, toast]);
