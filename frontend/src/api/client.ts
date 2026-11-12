@@ -416,7 +416,7 @@ export const api = {
     ),
   dispatchQueueAction: (
     taskId: string,
-    action: "pin" | "move" | "retry" | "quarantine" | "release" | "keep",
+    action: "pin" | "move" | "retry" | "quarantine" | "ignore" | "release" | "keep",
     direction?: "up" | "down" | "top",
   ) =>
     request<{ ok: boolean; snapshot?: DispatchSnapshot }>(

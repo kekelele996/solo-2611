@@ -248,6 +248,21 @@ async def test_dispatch_api_queue_and_explain(
             assert pinned.status_code == 200
             held = await client.post("/api/dispatch/holds/llm_guard/probe")
             assert held.status_code == 200
+            # 只有失败待处理的任务可以忽略；忽略后进入已结束且保留失败原因。
+            early = await client.post(f"/api/dispatch/queue/{task_id}/ignore")
+            assert early.status_code == 409
+            context.dispatcher.queue.update(
+                task_id, status="quarantined", wait_code="quarantined", wait_text="导出被拒绝"
+            )
+            ignored = await client.post(f"/api/dispatch/queue/{task_id}/ignore")
+            assert ignored.status_code == 200
+            after = ignored.json()["snapshot"]
+            assert after["counts"]["needs_action"] == 0
+            assert after["counts"]["finished"] == 1
+            assert after["queue"][0]["status"] == "removed"
+            assert after["queue"][0]["wait_code"] == "ignored"
+            assert after["queue"][0]["wait_text"] == "导出被拒绝"
+            assert after["guard"]["count"] == 0
     finally:
         await context.shutdown()
 

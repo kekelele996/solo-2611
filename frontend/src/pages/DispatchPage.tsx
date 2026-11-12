@@ -9,6 +9,7 @@ import {
   MoreHorizontal,
   PauseCircle,
   Pin,
+  Radio,
   RefreshCw,
   ShieldCheck,
   Sparkles,
@@ -22,6 +23,7 @@ import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import type { DispatchHold, DispatchLimitsRequest, DispatchQueueItem, DispatchSnapshot } from "../api/types";
 import { IntakePanel } from "../components/IntakePanel";
+import { LiveTracePanel } from "../components/task/LiveTracePanel";
 import { useToast } from "../components/toast-context";
 import { Badge, Button, EmptyState, ErrorPanel, LoadingLines, Panel, StatusDot } from "../components/ui";
 import { errorText, formatDuration } from "../utils/display";
@@ -29,7 +31,7 @@ import { formatDateTime } from "../utils/time";
 
 type QueueTab = "all" | "needs_action" | "active" | "waiting" | "finished";
 type Group = Exclude<QueueTab, "all">;
-type RowAction = "pin" | "retry" | "quarantine" | "release" | "keep" | "up" | "down";
+type RowAction = "pin" | "retry" | "quarantine" | "ignore" | "release" | "keep" | "up" | "down";
 
 const PRESETS: Array<{ value: DispatchSnapshot["preset"]; label: string; hint: string }> = [
   { value: "throughput", label: "跑满", hint: "容器优先，在手自适应" },
@@ -75,6 +77,7 @@ export function DispatchPage() {
   const [tab, setTab] = useState<QueueTab>("all");
   const [draft, setDraft] = useState<DispatchLimitsRequest | null>(null);
   const [explainFor, setExplainFor] = useState<DispatchQueueItem | null>(null);
+  const [traceFor, setTraceFor] = useState<DispatchQueueItem | null>(null);
   // 与顶栏共用 ["dispatch"] 缓存，同一份快照只请求一次。
   const dispatch = useQuery({
     queryKey: ["dispatch"],
@@ -119,8 +122,8 @@ export function DispatchPage() {
       action === "up" || action === "down"
         ? api.dispatchQueueAction(item.task_id, "move", action)
         : api.dispatchQueueAction(item.task_id, action),
-    onSuccess: () => {
-      toast("队列已更新", "ok");
+    onSuccess: (_, variables) => {
+      toast(variables.action === "ignore" ? "已忽略该失败，不再重试" : "队列已更新", "ok");
       refresh();
     },
     onError: (error) => toast(errorText(error), "error"),
@@ -288,6 +291,7 @@ export function DispatchPage() {
                       group={group.key}
                       eta={eta.get(item.task_id)}
                       onExplain={() => setExplainFor(item)}
+                      onTrace={() => setTraceFor(item)}
                       onAction={(name) => action.mutate({ item, action: name })}
                       busy={busyId === item.task_id}
                       readonly={readonly}
@@ -367,6 +371,7 @@ export function DispatchPage() {
       </div>
 
       {explainFor ? <ExplainDrawer item={explainFor} onClose={() => setExplainFor(null)} /> : null}
+      {traceFor ? <LiveTraceDrawer item={traceFor} onClose={() => setTraceFor(null)} /> : null}
     </div>
   );
 }
@@ -437,15 +442,17 @@ function DispatchHeader({
 function CapacityStrip({ snapshot, inHand }: { snapshot: DispatchSnapshot; inHand: number }) {
   const pool = (name: string) => snapshot.pools[name] ?? { used: 0, limit: 0 };
   const containers = pool("containers");
+  const sessions = pool("sessions");
+  const waiting = snapshot.queue.filter((item) => !item.active && !FINISHED.has(item.status)).length;
   const cells: Array<{ label: string; used: number; limit: number; note?: string; major?: boolean }> = [
     {
       label: "容器",
       used: containers.used,
       limit: containers.limit,
       major: true,
-      note: snapshot.elastic.enabled ? `弹性 ${snapshot.elastic.floor}–${snapshot.elastic.ceiling}` : undefined,
+      note: snapshot.elastic.enabled ? `弹性 ${snapshot.elastic.floor}–${snapshot.elastic.ceiling} · 按需创建` : undefined,
     },
-    { label: "会话", used: pool("sessions").used, limit: pool("sessions").limit, major: true },
+    { label: "会话", used: sessions.used, limit: sessions.limit, major: true },
     { label: "在手", used: inHand, limit: snapshot.limits.in_hand, major: true },
     { label: "起草", used: pool("authoring").used, limit: pool("authoring").limit },
     { label: "交付", used: pool("delivering").used, limit: pool("delivering").limit },
@@ -468,6 +475,16 @@ function CapacityStrip({ snapshot, inHand }: { snapshot: DispatchSnapshot; inHan
           </div>
         );
       })}
+      {containers.available > 0 && sessions.used >= sessions.limit ? (
+        <p className="dispatch-capacity-notice" role="status">
+          容器还有 {containers.available} 个空位；当前会话已满 {sessions.used}/{sessions.limit}，新任务会等待会话释放。
+        </p>
+      ) : null}
+      {containers.available > 0 && waiting === 0 ? (
+        <p className="dispatch-capacity-notice" role="status">
+          当前没有等待任务，剩余 {containers.available} 个容器位按需保留，不会预建空容器。
+        </p>
+      ) : null}
     </section>
   );
 }
@@ -477,6 +494,7 @@ function QueueRow({
   group,
   eta,
   onExplain,
+  onTrace,
   onAction,
   busy,
   readonly,
@@ -485,6 +503,7 @@ function QueueRow({
   group: Group;
   eta?: string;
   onExplain: () => void;
+  onTrace: () => void;
   onAction: (name: RowAction) => void;
   busy: boolean;
   readonly: boolean;
@@ -510,7 +529,14 @@ function QueueRow({
             执行中 · 最近更新 <Elapsed since={item.updated_at} /> 前
           </span>
         ) : group === "finished" ? (
-          <span className="dispatch-row-sub">{item.status === "done" ? "已完成" : item.status} · {formatDateTime(item.updated_at)}</span>
+          <span className="dispatch-row-sub" title={item.wait_code === "ignored" ? item.wait_text : undefined}>
+            {item.status === "done"
+              ? "已完成"
+              : item.wait_code === "ignored"
+                ? `已忽略${item.wait_text ? `：${item.wait_text}` : ""}`
+                : item.status}
+            {" · "}{formatDateTime(item.updated_at)}
+          </span>
         ) : (
           <button type="button" className="dispatch-reason" onClick={onExplain} title="查看门禁明细">
             {item.reason}
@@ -527,9 +553,24 @@ function QueueRow({
         {item.keep ? <Badge tone="info">保留</Badge> : null}
       </div>
       <div className="dispatch-row-actions">
+        {item.active ? (
+          <Button className="dispatch-live-link" size="small" variant="ghost" onClick={onTrace} title="在当前页查看实时更新中的运行轨迹">
+            <Radio size={12} /> 实时轨迹
+          </Button>
+        ) : null}
         {needs || item.status === "backoff" ? (
           <Button size="small" variant={needs ? "primary" : "secondary"} loading={busy} disabled={readonly} onClick={() => onAction("retry")}>
             <ListRestart size={12} /> 重试
+          </Button>
+        ) : null}
+        {needs ? (
+          <Button
+            size="small"
+            disabled={readonly || busy}
+            onClick={() => onAction("ignore")}
+            title="接受这次失败：不再重试，也不再提醒，移到已结束"
+          >
+            忽略
           </Button>
         ) : null}
         {movable ? (
@@ -592,7 +633,14 @@ function LimitForm({
           <input
             type="checkbox"
             checked={elasticOn}
-            onChange={(event) => setDraft({ ...draft, elastic: { ...draft.elastic, enabled: event.target.checked } })}
+            onChange={(event) => {
+              const enabled = event.target.checked;
+              setDraft({
+                ...draft,
+                elastic: { ...draft.elastic, enabled },
+                ...(enabled ? { sessions: 0, in_hand: 0 } : {}),
+              });
+            }}
           />
           <input
             className="compact-number"
@@ -611,7 +659,9 @@ function LimitForm({
       <AutoLimit label="在手上限" value={draft.in_hand ?? 0} autoValue={snapshot.limits.in_hand} onChange={(in_hand) => setDraft({ ...draft, in_hand })} />
       <LimitNumber label="启动间隔" suffix="秒" value={draft.launch_spacing_seconds ?? 45} min={10} max={3600} onChange={(launch_spacing_seconds) => setDraft({ ...draft, launch_spacing_seconds })} />
       <LimitNumber label="录屏并发" value={draft.recording ?? 1} min={1} max={16} onChange={(recording) => setDraft({ ...draft, recording })} />
-      <p className="dispatch-limit-note">会话、在手填 0 表示随预设自动计算。应用后预设切换为「自定义」。</p>
+      <p className="dispatch-limit-note">
+        会话、在手填 0 表示随负载自动计算。开启弹性时会自动切到 0，避免只扩容器却被会话或在手上限卡住。
+      </p>
       <div className="dispatch-limit-actions" data-dirty={dirty || undefined}>
         <span>{dirty ? "有未应用的修改" : ""}</span>
         <Button size="small" variant="ghost" disabled={!dirty} onClick={() => setDraft(baseline)}>还原</Button>
@@ -652,6 +702,38 @@ function ExplainDrawer({ item, onClose }: { item: DispatchQueueItem; onClose: ()
             </li>
           ))}
         </ol>
+      </aside>
+    </div>
+  );
+}
+
+function LiveTraceDrawer({ item, onClose }: { item: DispatchQueueItem; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div className="dispatch-drawer-layer dispatch-trace-layer" onMouseDown={onClose}>
+      <aside
+        className="dispatch-drawer dispatch-trace-drawer"
+        role="dialog"
+        aria-label={`实时轨迹：${item.task_name}`}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header>
+          <div>
+            <span className="eyebrow">LIVE TRACE</span>
+            <h2>{item.task_name}</h2>
+          </div>
+          <div className="dispatch-trace-head-actions">
+            <Link to={`/tasks/${item.task_id}?tab=timeline`}>完整任务页</Link>
+            <Button size="small" variant="ghost" onClick={onClose} title="关闭（Esc）"><X size={14} /></Button>
+          </div>
+        </header>
+        <LiveTracePanel taskId={item.task_id} />
       </aside>
     </div>
   );

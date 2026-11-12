@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlsplit, urlunsplit
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 
 from solo_auto.api.dependencies import context
 from solo_auto.api.types import (
@@ -383,6 +383,27 @@ async def test_config(payload: ConfigTestRequest, ctx: AppContext = Depends(cont
     if payload.target == "api":
         return await ctx.preflight.probe_api()
     raise ApiError(400, "TEST_TARGET_INVALID", "未知测试目标")
+
+
+@router.post("/system/solo2/session")
+async def solo2_session(request: Request, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    """Issue a short-lived SOLO2 session to the local skill only.
+
+    Credentials remain owned by the workbench. The skill must not read the
+    system keychain or reuse a cached browser session.
+    """
+    client_host = request.client.host if request.client else ""
+    if client_host not in {"127.0.0.1", "::1", "localhost"}:
+        raise ApiError(403, "LOCAL_ONLY", "SOLO2 会话只能由本机技能获取")
+    result = await ctx.solo2.login_session()
+    if not result.get("ok"):
+        raise ApiError(
+            502,
+            "SOLO2_SESSION_FAILED",
+            str(result.get("message") or "SOLO2 登录失败"),
+            detail=result.get("detail") or {},
+        )
+    return result
 
 
 @router.get("/system/logs")

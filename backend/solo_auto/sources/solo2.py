@@ -117,3 +117,113 @@ class Solo2Client:
                 "account": account,
             },
         }
+
+    async def login_session(self) -> dict[str, Any]:
+        """Return one in-memory SOLO2 session derived only from workbench settings.
+
+        The workbench is the sole owner of the configured username, platform URL
+        and stored password. The returned account must exactly match the
+        configured username; otherwise callers must stop rather than reuse a
+        stale or cross-account session.
+        """
+        username = self.settings.username.strip()
+        password = self.secrets.get(PASSWORD_ACCOUNT) or ""
+        if not username or not password:
+            return {
+                "ok": False,
+                "message": "请先保存 Solo2 平台账号和密码",
+                "detail": {},
+            }
+        try:
+            origin, login_url = _origin_and_api(self.settings.base_url)
+        except ValueError as exc:
+            return {"ok": False, "message": str(exc), "detail": {}}
+
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Origin": origin,
+            "Referer": self.settings.base_url,
+            "User-Agent": "solo-auto/0.2",
+        }
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(self.settings.timeout_seconds),
+                follow_redirects=True,
+                transport=self.transport,
+            ) as client:
+                response = await client.post(
+                    login_url,
+                    json={"username": username, "password": password},
+                    headers=headers,
+                )
+        except httpx.HTTPError as exc:
+            return {
+                "ok": False,
+                "message": f"无法连接 Solo2：{exc.__class__.__name__}",
+                "detail": {},
+            }
+
+        if response.status_code in {401, 403}:
+            return {
+                "ok": False,
+                "message": "Solo2 账号或密码错误",
+                "detail": {"status": response.status_code},
+            }
+        if not response.is_success:
+            return {
+                "ok": False,
+                "message": f"Solo2 登录失败（HTTP {response.status_code}）",
+                "detail": {"status": response.status_code},
+            }
+
+        try:
+            payload = response.json()
+        except ValueError:
+            return {
+                "ok": False,
+                "message": "Solo2 登录响应不是 JSON",
+                "detail": {"status": response.status_code},
+            }
+        csrf = str(payload.get("csrf_token") or "").strip()
+        account = ""
+        if isinstance(payload, dict):
+            nested = payload.get("data")
+            candidates = [payload, nested] if isinstance(nested, dict) else [payload]
+            for candidate in candidates:
+                user = candidate.get("user")
+                if isinstance(user, dict) and user.get("username"):
+                    account = str(user["username"]).strip()
+                    break
+                if candidate.get("username"):
+                    account = str(candidate["username"]).strip()
+                    break
+        cookie = "; ".join(f"{name}={response.cookies[name]}" for name in response.cookies)
+        if not csrf or not cookie:
+            return {
+                "ok": False,
+                "message": "Solo2 登录响应缺少 Cookie 或 CSRF",
+                "detail": {"status": response.status_code},
+            }
+        if not account:
+            return {
+                "ok": False,
+                "message": "Solo2 登录响应未返回真实账号，无法验证身份",
+                "detail": {"status": response.status_code},
+            }
+        if account != username:
+            return {
+                "ok": False,
+                "message": f"Solo2 登录账号不一致：配置 {username}，平台返回 {account}",
+                "detail": {
+                    "status": response.status_code,
+                    "configuredAccount": username,
+                    "platformAccount": account,
+                },
+            }
+        return {
+            "ok": True,
+            "account": account,
+            "server": origin,
+            "cookie": cookie,
+            "csrf": csrf,
+        }

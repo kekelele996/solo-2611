@@ -650,7 +650,8 @@ class IntakeService:
                 active += 1
             elif job.get("stage") in {"failed", "stopped"}:
                 failed += 1
-                recoverable += 1
+                if not job.get("ignored"):
+                    recoverable += 1
         staged = sum(
             1
             for item in self.staging.list()

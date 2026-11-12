@@ -27,6 +27,7 @@ import { useDraft } from "../../hooks/useDraft";
 import { useUIStore } from "../../stores/ui";
 import { errorText, formatDuration, shortDetail, splitPath, statusLabel } from "../../utils/display";
 import { formatClock } from "../../utils/time";
+import { LiveTracePanel } from "./LiveTracePanel";
 import { useToast } from "../toast-context";
 import {
   Badge,
@@ -579,7 +580,15 @@ export function TimelineTab({ task }: { task: TaskDetail }) {
   const [mounted, setMounted] = useState<number | null>(null);
   const parentRef = useRef<HTMLDivElement>(null);
   const lockedUntil = useRef(0);
-  const timeline = useQuery({ queryKey: ["timeline", task.id], queryFn: () => api.timeline(task.id) });
+  const timelineReady = task.steps.find((step) => step.number === 8)?.state === "done";
+  const timeline = useQuery({
+    queryKey: ["timeline", task.id],
+    queryFn: () => api.timeline(task.id),
+    enabled: timelineReady,
+  });
+  const live = task.skill_status === "running" || task.job_status === "running" || task.job_status === "queued" || !timelineReady
+    ? <LiveTracePanel taskId={task.id} />
+    : null;
   const rows = useMemo(() => {
     const all = timeline.data?.steps ?? [];
     const term = query.trim().toLowerCase();
@@ -619,12 +628,42 @@ export function TimelineTab({ task }: { task: TaskDetail }) {
     if (opening) window.setTimeout(() => virtualizer.scrollToIndex(index, { align: "start" }), 210);
   };
 
-  if (timeline.isPending) return <LoadingLines rows={8} />;
-  if (timeline.isError) return <ErrorPanel error={timeline.error} onRetry={() => void timeline.refetch()} />;
-  if (!timeline.data?.steps.length) return <EmptyState title="运行完成后生成轨迹时间线。" />;
+  if (!timelineReady) {
+    return (
+      <div className="timeline-tab">
+        {live}
+        <EmptyState title={task.skill_status === "running" ? "正在接收实时轨迹；完成后会生成结构化时间线。" : "该任务还没有可用的结构化时间线。"} />
+      </div>
+    );
+  }
+  if (timeline.isPending) {
+    return <div className="timeline-tab">{live}<LoadingLines rows={8} /></div>;
+  }
+  if (timeline.isError) {
+    const traceUnavailable = (timeline.error as { code?: string }).code === "TRACE_NOT_AVAILABLE";
+    return (
+      <div className="timeline-tab">
+        {live}
+        {traceUnavailable ? (
+          <EmptyState title={task.skill_status === "running" ? "正在接收实时轨迹；完成后会生成结构化时间线。" : "该任务还没有可用的结构化时间线。"} />
+        ) : (
+          <ErrorPanel error={timeline.error} onRetry={() => void timeline.refetch()} />
+        )}
+      </div>
+    );
+  }
+  if (!timeline.data?.steps.length) {
+    return (
+      <div className="timeline-tab">
+        {live}
+        <EmptyState title={task.skill_status === "running" ? "正在接收实时轨迹；完成后会生成结构化时间线。" : "运行完成后生成轨迹时间线。"} />
+      </div>
+    );
+  }
 
   return (
     <div className="timeline-tab">
+      {live}
       <div className="timeline-toolbar">
         <label className="search-box">
           <Search size={14} />

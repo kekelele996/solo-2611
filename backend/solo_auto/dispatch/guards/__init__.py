@@ -78,6 +78,10 @@ class GuardRunner:
             hit.ignored = True
         return hit
 
+    def drop(self, task_id: str) -> None:
+        for hit_id in [key for key, hit in self.hits.items() if hit.task_id == task_id]:
+            del self.hits[hit_id]
+
     def _hit(self, item: DispatchItem, *, kind: str, reason: str, action: str) -> GuardHit:
         hit_id = f"{kind}:{item.task_id}"
         existing = self.hits.get(hit_id)

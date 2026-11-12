@@ -254,6 +254,25 @@ async def quarantine(task_id: str, ctx: AppContext = Depends(context)) -> dict[s
     return {"ok": True, "snapshot": ctx.dispatcher.snapshot()}
 
 
+@router.post("/queue/{task_id}/ignore")
+async def ignore(task_id: str, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    item = ctx.dispatcher.queue.get(task_id)
+    if item is None:
+        raise ApiError(404, "DISPATCH_ITEM_NOT_FOUND", "任务不在调度队列")
+    if item.status != "quarantined":
+        raise ApiError(409, "DISPATCH_ITEM_NOT_FAILED", "只有失败待处理的任务可以忽略")
+    ctx.autopilot.ignore(task_id)
+    ctx.dispatcher.queue.ignore(task_id)
+    ctx.dispatcher.guards.drop(task_id)
+    ctx.repo.add_event(
+        "dispatch.ignored",
+        f"已忽略失败：{item.wait_text or '未记录原因'}",
+        actor="user",
+        task_id=task_id,
+    )
+    return {"ok": True, "snapshot": ctx.dispatcher.snapshot()}
+
+
 @router.post("/queue/{task_id}/release")
 async def release(task_id: str, ctx: AppContext = Depends(context)) -> dict[str, Any]:
     item = ctx.dispatcher.queue.remove(task_id)

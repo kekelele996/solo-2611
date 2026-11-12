@@ -147,6 +147,17 @@ class DispatchQueue:
         item.wait_until = ""
         return self.upsert(item)
 
+    def ignore(self, task_id: str) -> DispatchItem | None:
+        """Close a failed item without retrying; the failure reason stays visible."""
+        item = self.get(task_id)
+        if item is None:
+            return None
+        item.status = "removed"
+        item.wait_code = "ignored"
+        item.wait_until = ""
+        item.not_before = ""
+        return self.upsert(item)
+
     def clear_finished(self) -> int:
         return self.repo.execute(
             "DELETE FROM dispatch_items WHERE status IN ('done', 'failed', 'removed')"
@@ -198,7 +209,7 @@ class DispatchQueue:
             if not isinstance(raw, dict) or not raw.get("task_id"):
                 continue
             stage = str(raw.get("stage") or "pending")
-            if stage in {"done", "awaiting_audit"}:
+            if stage in {"done", "awaiting_audit"} or raw.get("ignored"):
                 continue
             status = "quarantined" if stage in {"failed", "stopped"} else "queued"
             self.enqueue(

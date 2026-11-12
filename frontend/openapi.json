@@ -234,6 +234,26 @@
         }
       }
     },
+    "/api/system/solo2/session": {
+      "post": {
+        "summary": "Solo2 Session",
+        "description": "Issue a short-lived SOLO2 session to the local skill only.\n\nCredentials remain owned by the workbench. The skill must not read the\nsystem keychain or reuse a cached browser session.",
+        "operationId": "solo2_session_api_system_solo2_session_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Solo2 Session Api System Solo2 Session Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/system/logs": {
       "get": {
         "summary": "Logs",
@@ -4346,6 +4366,46 @@
                 "schema": {
                   "type": "object",
                   "title": "Response Quarantine Api Dispatch Queue  Task Id  Quarantine Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dispatch/queue/{task_id}/ignore": {
+      "post": {
+        "summary": "Ignore",
+        "operationId": "ignore_api_dispatch_queue__task_id__ignore_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Ignore Api Dispatch Queue  Task Id  Ignore Post"
                 }
               }
             }

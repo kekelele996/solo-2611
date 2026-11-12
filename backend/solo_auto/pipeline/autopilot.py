@@ -104,6 +104,8 @@ class Job:
     audit: dict[str, Any] = field(default_factory=dict)
     redo_feedback: bool = False
     reconfirm_required: bool = False
+    # 人工确认"失败就失败了"：不再提醒，也不会被继续计划重新拉起；手动重试会清除。
+    ignored: bool = False
     agent_pid: int = 0
     desktop_running: bool = False
     desktop_marker: str = ""
@@ -337,6 +339,9 @@ class Autopilot:
             if current and current.active:
                 already_active.append(task_id)
                 continue
+            if current and current.ignored and current.stage in {"failed", "stopped"}:
+                skipped.append({"task_id": task_id, "reason": "失败已忽略，不再重新拉起"})
+                continue
             if current and recover_terminal and current.stage in {"failed", "stopped"}:
                 previous_stage = current.stage
                 try:
@@ -465,6 +470,7 @@ class Autopilot:
         job.stage = "pending"
         job.detail = f"从「{STAGE_LABELS.get(target, target)}」续跑"
         job.failure_kind = ""
+        job.ignored = False
         job.finished_at = ""
         job.stage_started_at = _now()
         job.agent_pid = 0
@@ -484,6 +490,17 @@ class Autopilot:
         if task_id not in self.jobs:
             raise ApiError(404, "AUTOPILOT_JOB_NOT_FOUND", "该任务没有自动交付记录")
         return self.repo.autopilot_stages(task_id)
+
+    def ignore(self, task_id: str) -> bool:
+        """Accept a failed job as final so nothing retries it automatically."""
+        job = self.jobs.get(task_id)
+        if job is None:
+            return False
+        if job.active:
+            raise ApiError(409, "AUTOPILOT_ACTIVE", "自动交付仍在运行，不能忽略")
+        job.ignored = True
+        self._changed()
+        return True
 
     def forget(self, task_id: str) -> None:
         """Drop the record of a task that has been removed from the platform."""

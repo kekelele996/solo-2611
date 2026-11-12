@@ -84,3 +84,62 @@ async def test_solo2_login_requires_saved_credentials(
         "message": "请先保存 Solo2 平台账号和密码",
         "detail": {},
     }
+
+
+@pytest.mark.asyncio
+async def test_solo2_login_session_is_fresh_and_identity_verified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLO_AUTO_DISABLE_KEYCHAIN", "1")
+    secrets = SecretStore(tmp_path / "app")
+    secrets.set("solo2.password", "secret-value")
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"csrf_token": "csrf-value", "user": {"username": "reviewer"}},
+            headers={"set-cookie": "sid=fresh-session; Path=/; HttpOnly"},
+        )
+
+    client = Solo2Client(
+        Solo2Settings(username="reviewer"),
+        secrets,
+        transport=httpx.MockTransport(handler),
+    )
+    result = await client.login_session()
+
+    assert result["ok"] is True
+    assert result["account"] == "reviewer"
+    assert result["server"] == "https://solo2.jzxhnh.com"
+    assert result["cookie"] == "sid=fresh-session"
+    assert result["csrf"] == "csrf-value"
+
+
+@pytest.mark.asyncio
+async def test_solo2_login_session_rejects_account_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLO_AUTO_DISABLE_KEYCHAIN", "1")
+    secrets = SecretStore(tmp_path / "app")
+    secrets.set("solo2.password", "secret-value")
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"csrf_token": "csrf-value", "user": {"username": "other-user"}},
+            headers={"set-cookie": "sid=fresh-session; Path=/; HttpOnly"},
+        )
+
+    client = Solo2Client(
+        Solo2Settings(username="reviewer"),
+        secrets,
+        transport=httpx.MockTransport(handler),
+    )
+    result = await client.login_session()
+
+    assert result["ok"] is False
+    assert "登录账号不一致" in result["message"]
+    assert result["detail"]["configuredAccount"] == "reviewer"
+    assert result["detail"]["platformAccount"] == "other-user"

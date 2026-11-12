@@ -23,6 +23,8 @@ export function IntakePanel() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [planOpen, setPlanOpen] = useState(false);
+  const [capOpen, setCapOpen] = useState(false);
+  const [capDraft, setCapDraft] = useState(CONTINUOUS_DAILY_CAP);
   const intake = useQuery({ queryKey: ["intake"], queryFn: api.intake, refetchInterval: 3000 });
 
   const action = useMutation({
@@ -56,6 +58,28 @@ export function IntakePanel() {
     },
     onSuccess: () => {
       toast(`已转为持续生产：题库循环复用，每日最多领取 ${CONTINUOUS_DAILY_CAP} 次`, "ok");
+      void queryClient.invalidateQueries();
+    },
+    onError: (error) => toast(errorText(error), "error"),
+  });
+
+  // 只改每日领取上限，筛选、复用规则等其余参数按当前计划原样带回。
+  const updateCap = useMutation({
+    mutationFn: (cap: number) => {
+      const plan = intake.data?.plan;
+      if (!plan) throw new Error("当前没有生产计划");
+      return api.createIntake({
+        project_id: plan.project_id,
+        mode: "continuous",
+        daily_cap: cap,
+        filters: plan.filters,
+        exclude_delivered: Boolean(plan.exclude_delivered),
+        max_uses: plan.max_uses ?? 0,
+      });
+    },
+    onSuccess: (_, cap) => {
+      toast(`每日领取上限已改为 ${cap} 次`, "ok");
+      setCapOpen(false);
       void queryClient.invalidateQueries();
     },
     onError: (error) => toast(errorText(error), "error"),
@@ -126,6 +150,18 @@ export function IntakePanel() {
                   转为持续生产
                 </Button>
               ) : null}
+              {continuous ? (
+                <Button
+                  size="small"
+                  onClick={() => {
+                    setCapDraft(daily?.cap || plan.daily_cap || CONTINUOUS_DAILY_CAP);
+                    setCapOpen(true);
+                  }}
+                  title="修改持续生产每天最多领取的次数，立即生效"
+                >
+                  调整每日上限
+                </Button>
+              ) : null}
               {plan.status === "running" ? (
                 <Button size="small" onClick={() => action.mutate("pause")} loading={action.isPending}>暂停计划</Button>
               ) : (
@@ -140,6 +176,31 @@ export function IntakePanel() {
           </>
         )}
       </div>
+      <Modal
+        open={capOpen}
+        title="调整每日领取上限"
+        onClose={() => setCapOpen(false)}
+        footer={
+          <>
+            <Button onClick={() => setCapOpen(false)}>取消</Button>
+            <Button
+              variant="primary"
+              disabled={!Number.isInteger(capDraft) || capDraft < 1 || capDraft > 10000}
+              loading={updateCap.isPending}
+              onClick={() => updateCap.mutate(capDraft)}
+            >
+              保存
+            </Button>
+          </>
+        }
+      >
+        <div className="form-grid">
+          <Field label="每日领取上限" hint={`今日已领取 ${daily?.claimed ?? 0} 次；达到上限后停止领取，次日 00:00 自动继续`}>
+            <input type="number" min={1} max={10000} value={capDraft} onChange={(event) => setCapDraft(Number(event.target.value))} />
+          </Field>
+        </div>
+        <p className="form-note">只修改上限，筛选条件和复用规则保持不变。调高后如果在手未满，会立即继续领取。</p>
+      </Modal>
       <PlanModal
         open={planOpen}
         onClose={() => setPlanOpen(false)}
