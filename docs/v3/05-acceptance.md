@@ -317,7 +317,8 @@
 | D7 | 自 | `turn_aborted` | `agent.aborted` 退避重试 |
 | D8 | 自 | 起草阶段超过 90 分钟预算 | 终止并 `agent.timeout`；睡眠时长不计入 |
 | D9 | 自 | 假 Agent 挂住不输出 31 分钟 | `agent.no_progress` |
-| D10 | 自 | 结论行 `AUTOPILOT: FAILED 题面超长` × 2 | 第二次原因相同 → 止损隔离；原因原文可见 |
+| D10 | 自 | 结论行 `AUTOPILOT: FAILED 临时读取失败` | `agent.reported` 按策略重试；原因原文可见 |
+| D10a | 自 | 结论行 `AUTOPILOT: BLOCKED 三次尝试已用尽` | `agent.blocked` 立即隔离，不排后续重试 |
 | D11 | 自 | 同 RT3 | 同 RT3 |
 | D12 | 自 | `task_complete` 后 20 秒门禁才全过 | 不判失败；稳定窗口内等到通过 |
 | D13 | 自 | 模板含绕过门禁字样 | `skill_guard` 挂起 sessions |

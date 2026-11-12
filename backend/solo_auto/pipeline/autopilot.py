@@ -620,7 +620,7 @@ class Autopilot:
                 await self._launch(job, "authoring", root, [f"{duplicate.reason}，请重新设计题面后再安装"])
                 return
             if str(task.get("job_status")) == "blocked":
-                self._finish(job, "failed", "上次运行因鉴权失败被阻断，请检查网关 Key 后重试")
+                self._finish(job, "failed", "任务当前处于阻断状态，请检查失败原因并在任务页确认后续处理")
                 return
             if job.attempts.get("running", 0) >= self.run_attempts:
                 self._finish(job, "failed", "容器单轮执行多次未得到结构完整的会话")
@@ -697,6 +697,7 @@ class Autopilot:
         if not envelope.compatible or envelope.state is None:
             self._finish(job, "failed", envelope.error or "任务状态不可读")
             return
+        state = envelope.state
         facts = evaluate_steps(
             root,
             duplicate_sessions=self.repo.session_counts(),
@@ -735,7 +736,13 @@ class Autopilot:
                     self._stage(job, "chatgpt", "ChatGPT 回合已结束，等待磁盘门禁稳定")
                     return
                 final_text = rollout_last_assistant(rollout) if rollout and rollout.is_file() else ""
-                kind = "agent_reported" if terminal == "task_complete" else self._failure_kind("chatgpt", final_text, 1)
+                kind = (
+                    "agent_blocked"
+                    if state.status == "run_failed" or "AUTOPILOT: BLOCKED" in final_text
+                    else "agent_reported"
+                    if terminal == "task_complete"
+                    else self._failure_kind("chatgpt", final_text, 1)
+                )
                 detail = final_text or f"ChatGPT 会话终止：{terminal}"
                 await self._finish_desktop_stage(job, outcome="failed", kind=kind, detail=detail)
                 self._finish(job, "failed", f"ChatGPT 会话未完成前 10 项：{detail[:300]}")
@@ -1081,12 +1088,17 @@ class Autopilot:
         else:
             tripped = False
             if self.dispatcher is not None and self.dispatcher.v3_enabled:
+                verdict = (
+                    f"AUTOPILOT: {verdict}"
+                    if verdict.startswith(("OK", "FAILED", "BLOCKED"))
+                    else f"AUTOPILOT: FAILED {verdict}"
+                )
                 await self.dispatcher.on_failure(
                     job.task_id,
                     Evidence(
                         stage=stage,
                         exit_code=code,
-                        agent_verdict=f"AUTOPILOT: FAILED {verdict}" if not succeeded else verdict,
+                        agent_verdict=verdict,
                         trace_tail="\n".join(
                             str(line.get("text") or "") for line in read_log(log, 80)
                         )
@@ -1150,6 +1162,8 @@ class Autopilot:
 
     def _failure_kind(self, stage: str, detail: str, code: int | None) -> str:
         lowered = detail.lower()
+        if "BLOCKED" in detail[:40].upper():
+            return "agent_blocked"
         if "超过时限" in detail:
             return "agent_timeout"
         if "雷同" in detail:
@@ -1318,6 +1332,7 @@ def _dispatch_failure_kind(kind: str) -> str:
     return {
         "agent_launch_lost": "agent.launch_lost",
         "agent_timeout": "agent.timeout",
+        "agent_blocked": "agent.blocked",
         "agent_reported": "agent.reported",
         "agent_no_progress": "agent.no_progress",
         "agent_aborted": "agent.aborted",
@@ -1427,9 +1442,10 @@ def build_prompt(stage: str, *, root: Path, skill_root: Path, missing: list[str]
 这次交付没有人工复核，你写下的分数和事实就是最终内容。每个结论都要能回查到轨迹或你亲手跑出的结果，拿不准的不写。"""
     rules = """通用边界：不修改技能目录、校验器和平台文件；不使用任何强制通过、允许缺项之类绕过门禁的参数；
 不伪造任何证据文件。门禁确实过不去时如实报告失败。
-全部结束后，最后一行只输出下面两种之一：
+全部结束后，最后一行只输出下面三种之一：
 AUTOPILOT: OK
-AUTOPILOT: FAILED <一句话原因>"""
+AUTOPILOT: FAILED <一句话原因，可在后续尝试中恢复>
+AUTOPILOT: BLOCKED <一句话原因，按规则停止并需要人工处理>"""
     notes = ""
     if missing:
         notes += "\n平台当前看到的缺项：\n" + "\n".join(f"- {item}" for item in missing[:6])

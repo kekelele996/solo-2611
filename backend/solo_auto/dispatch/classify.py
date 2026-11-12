@@ -113,6 +113,8 @@ class FailureClassifier:
             return _failure("container.exited", evidence, matched_by="container")
         if evidence.gate_errors:
             return _failure("gate.rejected", evidence, matched_by="gate_errors")
+        if "AUTOPILOT: BLOCKED" in evidence.agent_verdict:
+            return _failure("agent.blocked", evidence, matched_by="agent_verdict")
         if "AUTOPILOT: FAILED" in evidence.agent_verdict:
             return _failure("agent.reported", evidence, matched_by="agent_verdict")
         self._reload_if_changed()
@@ -188,6 +190,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "agent.launch_lost": {"transient": True, "charge": False, "max": 2, "multiplier": 0.5},
     "agent.timeout": {"transient": True, "charge": True, "max": 2, "multiplier": 1},
     "agent.no_progress": {"transient": True, "charge": True, "max": 1, "multiplier": 1},
+    "agent.blocked": {"transient": False, "charge": False, "max": 0, "multiplier": 0, "disposition": "manual"},
     "agent.reported": {"transient": False, "charge": True, "max": 2, "multiplier": 1},
     "agent.aborted": {"transient": True, "charge": True, "max": 2, "multiplier": 1},
     "agent.usage_limited": {"transient": True, "charge": False, "max": 0, "multiplier": 0, "hold": "session_guard", "scope": ["sessions"]},

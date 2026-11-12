@@ -37,9 +37,10 @@ DEFAULT_TEMPLATES = {
 
 通用边界：不修改技能目录、校验器和平台文件；不使用任何强制通过、允许缺项之类绕过门禁的参数；
 不伪造任何证据文件。门禁确实过不去时如实报告失败。
-全部结束后，最后一行只输出下面两种之一：
+全部结束后，最后一行只输出下面三种之一：
 AUTOPILOT: OK
 AUTOPILOT: FAILED <一句话原因>
+AUTOPILOT: BLOCKED <一句话原因>
 {notes}""",
     "delivering": """你在无人值守模式下工作：全程不要提问，不会有人回复你，遇到选择自己按技能规则决定。
 使用 solo-2611 技能。先完整阅读 {skill_root}/SKILL.md，以及它在对应环节要求阅读的 references。
@@ -58,9 +59,10 @@ AUTOPILOT: FAILED <一句话原因>
 
 通用边界：不修改技能目录、校验器和平台文件；不使用任何强制通过、允许缺项之类绕过门禁的参数；
 不伪造任何证据文件。门禁确实过不去时如实报告失败。
-全部结束后，最后一行只输出下面两种之一：
+全部结束后，最后一行只输出下面三种之一：
 AUTOPILOT: OK
 AUTOPILOT: FAILED <一句话原因>
+AUTOPILOT: BLOCKED <一句话原因>
 {notes}""",
     "chatgpt": """使用 `$solo-2611`，在当前 ChatGPT 桌面会话中完成下面这道题，直到平台要求的前 10 项交付门禁全部通过。
 先完整阅读 {skill_root}/SKILL.md 及对应 references。任务目录 ROOT={root}，脚本 S={script}。
@@ -90,9 +92,15 @@ AUTOPILOT: FAILED <一句话原因>
 - 所有结论必须能回查到轨迹或亲手执行的结果。
 最后一行只输出：
 AUTOPILOT: OK
-或
 AUTOPILOT: FAILED <一句话原因>
+AUTOPILOT: BLOCKED <一句话原因>
 {notes}""",
+}
+
+LEGACY_DEFAULT_HASHES = {
+    "authoring": "81d46cd77e0e9b5e0d1ff90fb87377d5b0eaa5349cd9d75fc9c7a0005cb540cf",
+    "delivering": "1efc7489b24da9d2e8a5f70a766234674f124522c869fa062c6623952acb6300",
+    "chatgpt": "8c3b6d959cc92466e696644b1307906637dcfe3c42f665d8878c022e8c1c719e",
 }
 
 
@@ -104,10 +112,10 @@ class PromptTemplates:
         self.defaults.mkdir(parents=True, exist_ok=True)
         for stage, text in DEFAULT_TEMPLATES.items():
             default = self.defaults / f"{stage}.md"
-            if not default.is_file():
+            if not default.is_file() or default.read_text(encoding="utf-8") != text:
                 default.write_text(text, encoding="utf-8")
             active = self.root / f"{stage}.md"
-            if not active.is_file():
+            if not active.is_file() or hashlib.sha256(active.read_bytes()).hexdigest() == LEGACY_DEFAULT_HASHES[stage]:
                 active.write_text(text, encoding="utf-8")
 
     def validate(self) -> list[dict[str, Any]]:

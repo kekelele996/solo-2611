@@ -112,6 +112,7 @@ regex   = '''(?i)pull access denied|manifest unknown|no such image|error pulling
 | `agent.launch_lost` | 是 | 否 | 2（独立计数） | ×0.5 | 连续 3 题 → `session_guard` | 隔离 |
 | `agent.timeout` | 是 | 是 | 2 | ×1 | — | 隔离 |
 | `agent.no_progress` | 是 | 是 | 1 | ×1 | — | 隔离 |
+| `agent.blocked` | 否 | 否 | 0 | — | Agent 按技能规则确认不可继续 | 立即人工隔离，不自动重试 |
 | `agent.reported` | 否 | 是 | 2 | ×1 | — | 隔离，原因原文展示 |
 | `agent.aborted` | 是 | 是 | 2 | ×1 | 回合被中止 / 流错误 | 隔离 |
 | `agent.usage_limited` | 是 | 否 | — | 到重置时间 | `session_guard` 挂起 sessions | — |
@@ -216,6 +217,8 @@ regex   = '''(?i)pull access denied|manifest unknown|no such image|error pulling
 
 ### D. Agent 与桌面会话
 
+技能状态 `run_failed` 表示技能自身的重试预算已经用尽，必须映射为 `blocked`，不能再被外层调度当成 `ready` 自动拉起。
+
 | # | 情形 | 信号 | 级 | 处置 | 恢复 | 升级 |
 |---|---|---|---|---|---|---|
 | D1 | Agent 可执行文件不存在（CLI） | 启动抛 `FileNotFoundError` / 预检项失败 | L2 | `session_guard` 挂起 sessions；题不标失败 | 每 2 分钟探测；可执行即解除 | 30 分钟 |
@@ -227,7 +230,8 @@ regex   = '''(?i)pull access denied|manifest unknown|no such image|error pulling
 | D7 | 回合被中止 / 流错误 | `turn_aborted` / `stream_error` | L1 | `agent.aborted` 退避重试 | — | 隔离 |
 | D8 | Agent 阶段超时 | 超过阶段预算（扣除睡眠） | L1 | 终止 Agent（CLI）或标记会话需手动停止（桌面）；`agent.timeout` 重试 | — | 隔离 |
 | D9 | Agent 无进展 | 阶段内 30 分钟所有进展信号无写入 | L1 | 同 D8，类别 `agent.no_progress` | — | 隔离 |
-| D10 | Agent 自报失败 | `AUTOPILOT: FAILED <原因>` | L1 | `agent.reported`；原因与上次相同则止损 | — | 隔离，原因原文可见 |
+| D10 | Agent 自报可恢复失败 | `AUTOPILOT: FAILED <原因>` | L1 | `agent.reported`；原因与上次相同则止损 | — | 隔离，原因原文可见 |
+| D10a | Agent 按规则确认阻断 | `AUTOPILOT: BLOCKED <原因>` | L1 | `agent.blocked`；不消耗重试次数，立即人工隔离 | — | 原因原文可见 |
 | D11 | 门禁反复不过 | 技能门禁返回 errors | L1 | `gate.rejected`；errors 指纹与上次相同 → 立即隔离不再重试 | — | 隔离，errors 原文可见 |
 | D12 | 回合结束了但门禁没稳定 | `task_complete` 后磁盘门禁仍未全过 | L0 | 等一个稳定窗口（默认 60 秒）再判定，避免把「文件还在落盘」判成失败 | — | — |
 | D13 | 提示词模板自检失败 | 模板包含绕过门禁类字样（v2 自检） | L4 | `skill_guard` 挂起 sessions | 人工修模板 | 立即 |

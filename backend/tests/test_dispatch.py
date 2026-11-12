@@ -192,6 +192,34 @@ def test_launch_lost_is_retried_before_quarantine(tmp_path: Path) -> None:
     assert second.status == "quarantined"
 
 
+def test_agent_blocked_is_terminal_but_reported_failure_can_retry(tmp_path: Path) -> None:
+    classifier = FailureClassifier(tmp_path)
+    policy = RecoveryPolicy(DispatchSettings().retry)
+
+    blocked = classifier.classify(
+        Evidence(
+            stage="chatgpt",
+            agent_verdict="AUTOPILOT: BLOCKED 三次尝试已用尽，需要人工换题",
+        )
+    )
+    blocked_decision = policy.decide(DispatchItem("blocked"), blocked)
+    assert blocked.kind == "agent.blocked"
+    assert blocked.disposition == "manual"
+    assert blocked_decision.action == "quarantine"
+    assert blocked_decision.status == "quarantined"
+
+    failed = classifier.classify(
+        Evidence(
+            stage="chatgpt",
+            agent_verdict="AUTOPILOT: FAILED 页面加载失败，可重试",
+        )
+    )
+    failed_decision = policy.decide(DispatchItem("failed"), failed)
+    assert failed.kind == "agent.reported"
+    assert failed_decision.action == "retry"
+    assert failed_decision.status == "backoff"
+
+
 def test_capacity_gate_names_the_full_pool(tmp_path: Path) -> None:
     decision = evaluate_session_gates(
         DispatchItem(task_id="task-1"),

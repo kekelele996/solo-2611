@@ -236,6 +236,5 @@ def derive_job_status(
     if status == "exported":
         return "exported"
     if status == "run_failed":
-        errors = " ".join(error for attempt in state.attempts[-1:] for error in attempt.errors).lower()
-        return "blocked" if "401" in errors or "authenticat" in errors else "ready"
+        return "blocked"
     return "blocked"

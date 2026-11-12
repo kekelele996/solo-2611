@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -15,6 +16,7 @@ import pytest
 from solo_auto.app import create_app
 from solo_auto.errors import ApiError
 from solo_auto.gateway.skill import SkillGateway
+from solo_auto.pipeline import prompt_templates
 from solo_auto.pipeline.autopilot import Job
 from solo_auto.pipeline.desktop_chatgpt import ChatGPTDesktop
 from solo_auto.pipeline.prompt_templates import PromptTemplates
@@ -70,7 +72,30 @@ def test_default_chatgpt_template_requires_platform_submission(tmp_path: Path) -
     assert "python3 $S submit --task-root ROOT --execute --watch" in prompt
     assert "用户名使用工作台配置的用户" in prompt
     assert "绝对不要写入正式题面文件" in prompt
+    assert "AUTOPILOT: BLOCKED" in prompt
     assert "不要执行 export" not in prompt
+
+
+def test_default_prompt_templates_migrate_only_untouched_legacy_copies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    templates = PromptTemplates(app_paths(tmp_path / "app"))
+    legacy = "旧模板\nAUTOPILOT: OK\nAUTOPILOT: FAILED <一句话原因>\n"
+    active = templates.root / "chatgpt.md"
+    active.write_text(legacy, encoding="utf-8")
+    monkeypatch.setitem(
+        prompt_templates.LEGACY_DEFAULT_HASHES,
+        "chatgpt",
+        hashlib.sha256(legacy.encode()).hexdigest(),
+    )
+    PromptTemplates(app_paths(tmp_path / "app"))
+    assert "AUTOPILOT: BLOCKED" in active.read_text(encoding="utf-8")
+
+    custom = "自定义模板\nAUTOPILOT: OK\n"
+    active.write_text(custom, encoding="utf-8")
+    PromptTemplates(app_paths(tmp_path / "app"))
+    assert active.read_text(encoding="utf-8") == custom
 
 
 def test_chatgpt_deep_link_uses_one_workspace_per_date(

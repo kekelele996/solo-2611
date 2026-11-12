@@ -239,4 +239,5 @@ def test_prompts_keep_the_agent_inside_the_gates(tmp_path: Path) -> None:
     for stage, banned in (("authoring", "不执行 run"), ("delivering", "不执行 run、reset、export")):
         text = build_prompt(stage, root=tmp_path, skill_root=tmp_path / "skill", missing=["9. 运行录屏：未录制"])
         assert banned in text and "绕过门禁的参数" in text and "AUTOPILOT: OK" in text
+        assert "AUTOPILOT: BLOCKED" in text
         assert "9. 运行录屏：未录制" in text

@@ -195,7 +195,7 @@ def test_job_status_mapping_branches(fixture_factory) -> None:
     state.attempts[0].errors = ["401 invalid token"]
     assert derive_job_status(state) == "blocked"
     state.attempts[0].errors = ["container exited"]
-    assert derive_job_status(state) == "ready"
+    assert derive_job_status(state) == "blocked"
     state.status = "recorded"
     assert derive_job_status(state, recording_ok=False) == "ran"
     state.status = "unknown"
