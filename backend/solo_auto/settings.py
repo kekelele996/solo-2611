@@ -79,7 +79,7 @@ class RecordingSettings(BaseModel):
 class SubmissionSettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    auto_submit: bool = False
+    auto_submit: bool = True
     poll_interval_seconds: int = Field(default=300, ge=10, le=3600)
     poll_timeout_seconds: int = Field(default=86400, ge=60, le=604800)
 

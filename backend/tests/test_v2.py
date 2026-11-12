@@ -59,6 +59,20 @@ def test_prompt_template_rejects_bypass_instruction(tmp_path: Path) -> None:
     assert error.value.code == "PROMPT_TEMPLATE_UNSAFE"
 
 
+def test_default_chatgpt_template_requires_platform_submission(tmp_path: Path) -> None:
+    templates = PromptTemplates(app_paths(tmp_path / "app"))
+    prompt = templates.render(
+        "chatgpt",
+        root=tmp_path / "task",
+        skill_root=tmp_path / "skill",
+        missing=[],
+    )
+    assert "python3 $S submit --task-root ROOT --execute --watch" in prompt
+    assert "用户名使用工作台配置的用户" in prompt
+    assert "绝对不要写入正式题面文件" in prompt
+    assert "不要执行 export" not in prompt
+
+
 def test_chatgpt_deep_link_uses_one_workspace_per_date(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -85,6 +99,9 @@ def test_chatgpt_deep_link_uses_one_workspace_per_date(
     query = urllib.parse.parse_qs(urllib.parse.urlsplit(captured[1]).query)
     assert Path(query["path"][0]) == tmp_path / "home" / "chatgpt-workspaces" / datetime.now().strftime("%Y-%m-%d")
     assert str(task_root) in query["prompt"][0]
+    assert "完成后提交到 SOLO2 平台" in query["prompt"][0]
+    assert "使用本地工作台配置的用户" in query["prompt"][0]
+    assert "绝对不要写入正式题面文件" in query["prompt"][0]
     assert result["workdir"] == query["path"][0]
 
 

@@ -305,10 +305,10 @@ export function SystemPage() {
                 })
               }
             />
-            自动提交到 SOLO2 <span className="effect-tag">下次导出</span>
+            自动提交到 SOLO2 <span className="effect-tag">默认开启</span>
           </label>
           <p className="form-note">
-            关闭时只生成本地交付，人工检查后再执行提交。打开后会上传轨迹和录屏、提交并轮询质检；
+            导出通过门禁后直接上传轨迹和录屏、提交并轮询质检；需要排障时再关闭或显式执行 dry-run。
             遇到待返修会保留平台原文并进入返修流程。
           </p>
           {testRow("solo2", "测试登录")}

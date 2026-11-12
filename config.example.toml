@@ -25,7 +25,7 @@ max_seconds = 90
 chrome_url = "http://127.0.0.1:3000"
 
 [submission]
-auto_submit = false
+auto_submit = true
 poll_interval_seconds = 300
 poll_timeout_seconds = 86400
 

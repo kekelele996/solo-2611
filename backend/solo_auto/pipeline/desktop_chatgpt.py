@@ -74,7 +74,9 @@ class ChatGPTDesktop:
             f"唯一任务标识：`{marker}`\n"
             f"唯一任务名：`{task_name}`\n"
             f"任务目录：`{task_root}`\n"
-            "不要只总结指令，直接开始执行，直到前 10 项门禁通过或出现真实阻断。"
+            "不要只总结指令，直接开始执行，直到前 10 项门禁通过或出现真实阻断。\n"
+            "完成后提交到 SOLO2 平台，用户名：使用本地工作台配置的用户。\n"
+            "提交流程只写在本会话指令中，绝对不要写入正式题面文件。"
         )
         link = build_deep_link(workdir=grouped_workdir, prompt=link_prompt, folder_id=folder_id)
         (directory / f"chatgpt-{stamp}.url.txt").write_text(link + "\n", encoding="utf-8")

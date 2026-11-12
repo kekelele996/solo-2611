@@ -70,13 +70,21 @@ AUTOPILOT: FAILED <一句话原因>
 执行顺序：
 1. 先运行 python3 $S status --task-root ROOT，读取磁盘现状；已完成的步骤不得重复破坏。
 2. 题面尚未通过时完成出题、两份审核、prompt 安装与 repo 初始快照，直到前 3 项通过。
+   安装 prompt 时按真实工程填写环境可复现等级，Docker Compose 可一键启动的工程使用
+   `--repro "已容器化，可一键起环境"`。
 3. 执行 python3 $S run --task-root ROOT，真实运行单轮容器并收集原生产物、SessionID、PromptID、轨迹与产物快照。
 4. 按技能规则复核产物。随后生成 record-plan，执行 python3 $S record auto --task-root ROOT 完成 720p 录屏和隐私门禁。
 5. 执行 feedback --init，依据轨迹和真实产物起草 Feedback，运行 feedback --check，修正到机器检查通过。
-6. 再次运行 status，确认第 1 到第 10 项全部通过。不要执行 export，最终自动确认和导出由平台完成。
+6. 再次运行 status，确认第 1 到第 10 项全部通过。随后执行
+   python3 $S export --task-root ROOT --no-submit 生成交付表，再执行
+   python3 $S submit --task-root ROOT --execute --watch 提交到 SOLO2 平台，并持续轮询到 QC_PASSED。
+   若返回 PENDING_FIX，返修原记录；其他终态失败保留证据并停止。
 
 边界：
 - 不修改技能目录或平台文件，不使用强制通过、允许缺项或绕过门禁的参数。
+- SOLO2 账号、认证会话和平台地址只能从本地工作台读取；用户名使用工作台配置的用户，
+  不得硬编码、猜测或复用历史会话。
+- 提交流程只写在本会话指令中，绝对不要写入正式题面文件；题面文件只保留业务需求。
 - 不伪造轨迹、截图、录屏、Feedback、分数或命令输出。
 - 遇到可恢复错误时按技能规则修正后继续；真实失败时保留证据并停止。
 - 所有结论必须能回查到轨迹或亲手执行的结果。
