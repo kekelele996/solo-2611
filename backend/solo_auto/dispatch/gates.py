@@ -186,12 +186,23 @@ def _resync_gate(value: str, now: datetime) -> GateResult:
     return GateResult("G8", True)
 
 
+_POOL_LABELS = {
+    "containers": "容器",
+    "sessions": "会话",
+    "authoring": "起草",
+    "delivering": "交付",
+    "recording": "录屏",
+    "exporting": "导出",
+}
+
+
 def _capacity_gate(pool: dict[str, Any]) -> GateResult:
     used = int(pool.get("used") or 0)
     limit = int(pool.get("limit") or 0)
     if used >= limit:
         suffix = "，收敛中" if used > limit else ""
-        return GateResult("G10", False, "capacity.full", f"容器已满 {used}/{limit}{suffix}")
+        label = _POOL_LABELS.get(str(pool.get("name") or ""), "容器")
+        return GateResult("G10", False, "capacity.full", f"{label}已满 {used}/{limit}{suffix}")
     return GateResult("G10", True)
 
 

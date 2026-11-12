@@ -11,7 +11,7 @@ import pytest
 from solo_auto.app import create_app
 from solo_auto.dispatch.classify import Evidence, FailureClassifier
 from solo_auto.dispatch.facts import DockerFacts, FactsSnapshot
-from solo_auto.dispatch.gates import evaluate_container_gates
+from solo_auto.dispatch.gates import evaluate_container_gates, evaluate_session_gates
 from solo_auto.dispatch.holds import HoldRegistry
 from solo_auto.dispatch.policy import RecoveryPolicy
 from solo_auto.dispatch.pools import PoolBook
@@ -192,6 +192,21 @@ def test_launch_lost_is_retried_before_quarantine(tmp_path: Path) -> None:
     assert second.status == "quarantined"
 
 
+def test_capacity_gate_names_the_full_pool(tmp_path: Path) -> None:
+    decision = evaluate_session_gates(
+        DispatchItem(task_id="task-1"),
+        settings=DispatchSettings(),
+        desired_state="running",
+        holds=HoldRegistry(tmp_path / "holds.json"),
+        pools={"sessions": {"name": "sessions", "used": 4, "limit": 4, "available": 0, "draining": False}},
+        startup_elapsed=60,
+        last_session_at=0,
+        now=datetime.now(UTC),
+    )
+    assert decision.code == "capacity.full"
+    assert decision.text == "会话已满 4/4"
+
+
 @pytest.mark.asyncio
 async def test_dispatch_api_queue_and_explain(
     fixture_factory: Any,
@@ -223,6 +238,9 @@ async def test_dispatch_api_queue_and_explain(
             snapshot = (await client.get("/api/dispatch")).json()
             assert snapshot["counts"]["all"] == 1
             assert snapshot["queue"][0]["task_id"] == task_id
+            upcoming = snapshot["upcoming"]
+            assert [item["task_id"] for item in upcoming] == [task_id]
+            assert upcoming[0]["task_name"] == snapshot["queue"][0]["task_name"]
             explained = await client.get("/api/dispatch/explain", params={"task_id": task_id})
             assert explained.status_code == 200
             assert any(not check["ok"] for check in explained.json()["decision"]["checks"])
@@ -230,5 +248,43 @@ async def test_dispatch_api_queue_and_explain(
             assert pinned.status_code == 200
             held = await client.post("/api/dispatch/holds/llm_guard/probe")
             assert held.status_code == 200
+    finally:
+        await context.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_finished_jobs_stop_counting_as_in_hand(
+    fixture_factory: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from solo_auto.pipeline.autopilot import Job
+
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    monkeypatch.setenv("SOLO_AUTO_HOME", str(tmp_path / "app"))
+    monkeypatch.setenv("SOLO_AUTO_TASKS_DIR", str(tasks_dir))
+    monkeypatch.setenv("SOLO_AUTO_DISABLE_KEYCHAIN", "1")
+    monkeypatch.setenv("SOLO_AUTO_DISPATCH__ENGINE", "v3")
+    app = create_app(tmp_path / "app", auto_start=False)
+    context = app.state.context
+    await context.startup()
+    try:
+        kernel = context.dispatcher
+        stages = {"running": "chatgpt", "audit": "awaiting_audit", "failed": "failed"}
+        for task_id, stage in stages.items():
+            kernel.queue.enqueue(task_id, stage="chatgpt")
+            kernel.queue.update(task_id, status="active")
+            context.autopilot.jobs[task_id] = Job(task_id=task_id, task_name=task_id, stage=stage)
+        assert kernel.in_hand_count() == 3
+        kernel._sync_runtime_pools()
+        assert kernel.queue.get("audit").status == "done"
+        assert kernel.queue.get("failed").status == "quarantined"
+        assert kernel.in_hand_count() == 1
+        assert f"在手 1/{kernel.effective_in_hand}" in kernel.status_sentence()
+        outcomes = kernel.repo.query("SELECT task_id FROM dispatch_outcomes")
+        kernel._sync_runtime_pools()
+        kernel.on_job_finished("audit", outcome="done")
+        assert len(kernel.repo.query("SELECT task_id FROM dispatch_outcomes")) == len(outcomes) == 2
     finally:
         await context.shutdown()

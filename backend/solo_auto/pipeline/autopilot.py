@@ -38,6 +38,7 @@ from solo_auto.pipeline.desktop_chatgpt import (
 from solo_auto.pipeline.export_service import ExportService
 from solo_auto.pipeline.feedback_service import FeedbackService
 from solo_auto.pipeline.notify import Notifier
+from solo_auto.pipeline.prompt_history import PromptHistory
 from solo_auto.pipeline.prompt_templates import PromptTemplates
 from solo_auto.pipeline.reconcile import Reconciler
 from solo_auto.pipeline.scheduler import RunScheduler
@@ -161,6 +162,7 @@ class Autopilot:
         self.desktop = ChatGPTDesktop(home=paths.home, helper=settings.chatgpt_push_helper)
         self.breaker = Breaker(paths.home / "breaker.json", bus, settings)
         self.prompt_templates = PromptTemplates(paths)
+        self.prompt_history = PromptHistory(repo, paths.home / "prompt-history.jsonl")
         self.notifier: Notifier | None = None
         self._agent_command_override: list[str] | None = None
         self.audit_service: Any = None
@@ -223,6 +225,8 @@ class Autopilot:
     # ---- lifecycle -------------------------------------------------
 
     async def start(self) -> None:
+        with suppress(Exception):
+            self.prompt_history.backfill()
         if not self.settings.enabled:
             return
         if self._loop_task is None:
@@ -534,6 +538,13 @@ class Autopilot:
 
     async def tick(self) -> None:
         async with self._lock:
+            if self.breaker.tripped and self.breaker.maybe_auto_reset():
+                self.repo.add_event(
+                    "autopilot.breaker.auto_reset",
+                    f"熔断冷却结束，自动恢复（第 {self.breaker.auto_resets} 次）",
+                    level="warn",
+                    actor=ACTOR,
+                )
             if not self.settings.enabled or self.paused or self.breaker.tripped:
                 return
             for job in list(self.jobs.values()):
@@ -587,6 +598,10 @@ class Autopilot:
                     return
                 await self._launch(job, "authoring", root, facts.missing)
                 return
+            duplicate = self.prompt_history.duplicate(job.task_id, root)
+            if duplicate is not None:
+                await self._launch(job, "authoring", root, [f"{duplicate.reason}，请重新设计题面后再安装"])
+                return
             if str(task.get("job_status")) == "blocked":
                 self._finish(job, "failed", "上次运行因鉴权失败被阻断，请检查网关 Key 后重试")
                 return
@@ -605,6 +620,8 @@ class Autopilot:
             await self._launch(job, "delivering", root, [item for item in facts.missing if item[:2] in {"9.", "10"}])
             return
 
+        if self._reject_duplicate(job, root):
+            return
         self._stage(job, "exporting", "机器门禁通过，自动确认并导出")
         if job.reconfirm_required or not final.steps[9].ok:
             check = await self.feedback.check(job.task_id)
@@ -623,6 +640,7 @@ class Autopilot:
 
     async def _complete_or_audit(self, job: Job, task: dict[str, Any], root: Path) -> None:
         job.reconfirm_required = False
+        self.prompt_history.remember(job.task_id, root)
         ack = self._read_json(root / "monitor" / "review-ack.json")
         if ack.get("ackedBy") == ACTOR and self.audit_service is not None:
             audit = self.audit_service.assess(job.task_id, str(task.get("task_type") or ""))
@@ -638,6 +656,14 @@ class Autopilot:
         if self.ledger:
             self.ledger.mark_delivered(job.task_id)
         self._finish(job, "done", "十一项交付与抽检策略均已通过")
+
+    def _reject_duplicate(self, job: Job, root: Path) -> bool:
+        duplicate = self.prompt_history.duplicate(job.task_id, root)
+        if duplicate is None:
+            return False
+        job.failure_kind = "prompt_duplicate"
+        self._finish(job, "failed", f"{duplicate.reason}，不导出；工程归还后会换题重出")
+        return True
 
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any]:
@@ -746,6 +772,7 @@ class Autopilot:
             skill_root=self.skill_root,
             missing=missing,
             previous=job.detail,
+            history=self.prompt_history.notes(job.task_id),
         )
         stage_id = self.repo.start_autopilot_stage(
             task_id=job.task_id,
@@ -916,6 +943,8 @@ class Autopilot:
         if not all(step.ok for step in facts.steps[:10]):
             await self._launch_chatgpt(job, root, facts.missing)
             return
+        if self._reject_duplicate(job, root):
+            return
         self._stage(job, "exporting", "ChatGPT 已通过前 10 项，平台检查并导出")
         check = await self.feedback.check(job.task_id)
         if not check["ok"]:
@@ -959,6 +988,7 @@ class Autopilot:
             skill_root=self.skill_root,
             missing=missing,
             previous=job.detail,
+            history=self.prompt_history.notes(job.task_id) if stage == "authoring" else None,
         )
         stage_id = self.repo.start_autopilot_stage(
             task_id=job.task_id,
@@ -1105,6 +1135,8 @@ class Autopilot:
         lowered = detail.lower()
         if "超过时限" in detail:
             return "agent_timeout"
+        if "雷同" in detail:
+            return "prompt_duplicate"
         if "401" in detail or "authenticat" in lowered or "鉴权" in detail:
             return "auth"
         if "门禁" in detail or "errors" in lowered:

@@ -550,6 +550,105 @@
         }
       }
     },
+    "/api/source/projects/{project_id}/disabled": {
+      "get": {
+        "summary": "Disabled Engineering",
+        "operationId": "disabled_engineering_api_source_projects__project_id__disabled_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Disabled Engineering Api Source Projects  Project Id  Disabled Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/source/projects/{project_id}/engineering/{engineering_id}/disabled": {
+      "put": {
+        "summary": "Set Engineering Disabled",
+        "operationId": "set_engineering_disabled_api_source_projects__project_id__engineering__engineering_id__disabled_put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "engineering_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Engineering Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EngineeringDisableRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Set Engineering Disabled Api Source Projects  Project Id  Engineering  Engineering Id  Disabled Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/source/projects/{project_id}/engineering/{engineering_id}": {
       "get": {
         "summary": "Engineering Detail",
@@ -6906,6 +7005,30 @@
         ],
         "title": "DispatchStateRequest"
       },
+      "EngineeringDisableRequest": {
+        "properties": {
+          "disabled": {
+            "type": "boolean",
+            "title": "Disabled"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "default": ""
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "Reason",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "disabled"
+        ],
+        "title": "EngineeringDisableRequest"
+      },
       "ExecutionConfigPatch": {
         "properties": {
           "max_containers": {
@@ -7063,11 +7186,28 @@
             "type": "string",
             "title": "Project Id"
           },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "target",
+              "continuous"
+            ],
+            "title": "Mode",
+            "default": "target"
+          },
           "target": {
             "type": "integer",
             "maximum": 15.0,
+            "minimum": 0.0,
+            "title": "Target",
+            "default": 0
+          },
+          "daily_cap": {
+            "type": "integer",
+            "maximum": 10000.0,
             "minimum": 1.0,
-            "title": "Target"
+            "title": "Daily Cap",
+            "default": 30
           },
           "filters": {
             "type": "object",
@@ -7076,7 +7216,7 @@
           "exclude_delivered": {
             "type": "boolean",
             "title": "Exclude Delivered",
-            "default": true
+            "default": false
           },
           "max_uses": {
             "type": "integer",
@@ -7088,8 +7228,7 @@
         },
         "type": "object",
         "required": [
-          "project_id",
-          "target"
+          "project_id"
         ],
         "title": "IntakeCreateRequest"
       },

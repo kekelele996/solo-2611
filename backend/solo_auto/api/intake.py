@@ -34,6 +34,8 @@ async def create(payload: IntakeCreateRequest, ctx: AppContext = Depends(context
         filters=payload.filters,
         exclude_delivered=payload.exclude_delivered,
         max_uses=payload.max_uses,
+        mode=payload.mode,
+        daily_cap=payload.daily_cap,
     )
 
 

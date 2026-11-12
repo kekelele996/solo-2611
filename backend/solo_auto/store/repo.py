@@ -228,6 +228,13 @@ CREATE TABLE IF NOT EXISTS engineering_cooldown (
   reason TEXT NOT NULL,
   failures INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS engineering_disabled (
+  engineering_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  engineering_name TEXT NOT NULL DEFAULT '',
+  reason TEXT NOT NULL DEFAULT '',
+  disabled_at TEXT NOT NULL
+);
 """
 
 
@@ -486,6 +493,37 @@ class Repository:
                 """,
                 claim,
             )
+
+    def disabled_engineering(self, project_id: str | None = None) -> dict[str, dict[str, Any]]:
+        if project_id:
+            rows = self.query(
+                "SELECT * FROM engineering_disabled WHERE project_id = ? ORDER BY disabled_at DESC", (project_id,)
+            )
+        else:
+            rows = self.query("SELECT * FROM engineering_disabled ORDER BY disabled_at DESC")
+        return {str(row["engineering_id"]): row for row in rows}
+
+    def set_engineering_disabled(
+        self,
+        *,
+        project_id: str,
+        engineering_id: str,
+        disabled: bool,
+        name: str = "",
+        reason: str = "",
+    ) -> None:
+        if not disabled:
+            self.execute("DELETE FROM engineering_disabled WHERE engineering_id = ?", (engineering_id,))
+            return
+        self.execute(
+            """
+            INSERT INTO engineering_disabled(engineering_id, project_id, engineering_name, reason, disabled_at)
+            VALUES(?, ?, ?, ?, ?)
+            ON CONFLICT(engineering_id) DO UPDATE SET
+              project_id=excluded.project_id, engineering_name=excluded.engineering_name, reason=excluded.reason
+            """,
+            (engineering_id, project_id, name, reason, now()),
+        )
 
     def start_autopilot_stage(
         self,

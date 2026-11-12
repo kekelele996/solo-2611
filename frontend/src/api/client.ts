@@ -162,11 +162,16 @@ export const api = {
     request<{ items: ProjectRow[]; total: number }>(`/api/source/projects${qs({ refresh })}`),
   engineering: (projectId: string, filters: Record<string, string | number | string[] | undefined>) =>
     request<{ items: EngineeringRow[]; total: number; page: number; page_size: number }>(
-      `/api/source/projects/${encodeURIComponent(projectId)}/engineering${qs({ ...filters, scope: "available" })}`,
+      `/api/source/projects/${encodeURIComponent(projectId)}/engineering${qs({ scope: "available", ...filters })}`,
     ),
   engineeringDetail: (projectId: string, engineeringId: string) =>
     request<EngineeringRow>(
       `/api/source/projects/${encodeURIComponent(projectId)}/engineering/${encodeURIComponent(engineeringId)}`,
+    ),
+  setEngineeringDisabled: (projectId: string, engineeringId: string, disabled: boolean, name = "") =>
+    request<{ ok: boolean; engineering_id: string; disabled: boolean }>(
+      `/api/source/projects/${encodeURIComponent(projectId)}/engineering/${encodeURIComponent(engineeringId)}/disabled`,
+      { method: "PUT", body: JSON.stringify({ disabled, name }) },
     ),
   claim: (projectId: string, engineeringId: string) =>
     request<{ claim_id: string; staging_id: string; staging_path: string; sha256_verified: boolean }>("/api/claims", {
@@ -561,7 +566,9 @@ export const api = {
   intake: () => request<IntakeSnapshot>("/api/intake"),
   createIntake: (body: {
     project_id: string;
-    target: number;
+    mode?: "target" | "continuous";
+    target?: number;
+    daily_cap?: number;
     filters?: Record<string, unknown>;
     exclude_delivered?: boolean;
     max_uses?: number;

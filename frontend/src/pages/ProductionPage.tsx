@@ -17,9 +17,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../api/client";
-import type { AutopilotJob, AutopilotSnapshot, IntakeSnapshot } from "../api/types";
+import type { AutopilotJob, AutopilotSnapshot } from "../api/types";
+import { IntakePanel, PlanModal } from "../components/IntakePanel";
 import { useToast } from "../components/toast-context";
-import { Badge, Button, EmptyState, ErrorPanel, Field, LoadingLines, Modal, StatusDot } from "../components/ui";
+import { Badge, Button, EmptyState, ErrorPanel, LoadingLines, Modal, StatusDot } from "../components/ui";
 import { errorText } from "../utils/display";
 import { formatDateTime } from "../utils/time";
 
@@ -50,7 +51,6 @@ export function ProductionPage() {
   const [planOpen, setPlanOpen] = useState(false);
   const [failureFilter, setFailureFilter] = useState("");
   const pilot = useQuery({ queryKey: ["autopilot"], queryFn: api.autopilot, refetchInterval: 3000 });
-  const intake = useQuery({ queryKey: ["intake"], queryFn: api.intake, refetchInterval: 3000 });
   const preflight = useMutation({
     mutationFn: api.autopilotPreflight,
     onSuccess: () => setPreflightOpen(true),
@@ -117,22 +117,6 @@ export function ProductionPage() {
     mutationFn: api.openChatGPT,
     onError: (error) => toast(errorText(error), "error"),
   });
-  const intakeAction = useMutation({
-    mutationFn: (action: "pause" | "resume" | "stop") =>
-      action === "pause" ? api.pauseIntake() : action === "resume" ? api.resumeIntake() : api.stopIntake(true),
-    onSuccess: (_, action) => {
-      const message =
-        action === "stop"
-          ? "生产计划已终止，未开工工程已归还"
-          : action === "pause"
-            ? "生产计划已暂停"
-            : "生产计划已继续，中断任务已重新拉起";
-      toast(message, "ok");
-      void queryClient.invalidateQueries();
-    },
-    onError: (error) => toast(errorText(error), "error"),
-  });
-
   const jobs = useMemo(() => pilot.data?.jobs ?? [], [pilot.data?.jobs]);
   const grouped = useMemo(() => {
     const result = new Map<string, AutopilotJob[]>(COLUMNS.map((column) => [column.key, []]));
@@ -189,7 +173,7 @@ export function ProductionPage() {
             <Square size={12} /> 全部停止
           </Button>
           <Button size="small" variant="primary" onClick={() => setPlanOpen(true)}>
-            <WandSparkles size={13} /> 今天交付 N 题
+            <WandSparkles size={13} /> 下达生产计划
           </Button>
         </div>
       </header>
@@ -205,7 +189,7 @@ export function ProductionPage() {
         </div>
       ) : null}
 
-      <IntakeBar data={intake.data} action={(kind) => intakeAction.mutate(kind)} busy={intakeAction.isPending} />
+      <IntakePanel />
 
       <div className="production-toolbar">
         <span className="mono">
@@ -289,54 +273,6 @@ export function ProductionPage() {
           void queryClient.invalidateQueries();
         }}
       />
-    </div>
-  );
-}
-
-function IntakeBar({
-  data,
-  action,
-  busy,
-}: {
-  data?: IntakeSnapshot;
-  action: (action: "pause" | "resume" | "stop") => void;
-  busy: boolean;
-}) {
-  const plan = data?.plan;
-  if (!plan) {
-    return (
-      <div className="intake-bar is-empty">
-        <span><WandSparkles size={14} /> 当前没有生产计划。计划会按在手上限补位领取，不会一次囤积。</span>
-      </div>
-    );
-  }
-  const counts = data?.counts;
-  const progress = Math.min(100, Math.round(((counts?.completed ?? 0) / Math.max(1, plan.target)) * 100));
-  return (
-    <div className="intake-bar">
-      <div className="intake-head">
-        <strong>生产计划 · {plan.status}</strong>
-        <span>
-          目标 {plan.target} · 完成 {counts?.completed ?? 0} · 进行中 {counts?.active ?? 0} ·
-          可恢复 {counts?.recoverable ?? 0} · 缺队列 {counts?.orphaned ?? 0} ·
-          暂存 {counts?.staged ?? 0} · 失败 {counts?.failed ?? 0}
-        </span>
-        {data?.eta ? <span>预计 {formatDateTime(data.eta)} 完成</span> : <span>样本不足 3 题，不估算完成时间</span>}
-      </div>
-      <div className="intake-progress"><span style={{ width: `${progress}%` }} /></div>
-      {plan.status === "paused" && plan.pause_reason ? <p className="danger-text">{plan.pause_reason}</p> : null}
-      <div className="row-actions">
-        {plan.status === "running" ? (
-          <Button size="small" onClick={() => action("pause")} loading={busy}>暂停计划</Button>
-        ) : plan.status === "paused" ? (
-          <Button size="small" variant="primary" onClick={() => action("resume")} loading={busy}>
-            开始并恢复计划
-          </Button>
-        ) : null}
-        {["running", "paused"].includes(plan.status) ? (
-          <Button size="small" variant="danger" onClick={() => action("stop")} loading={busy}>终止并归还未开工</Button>
-        ) : null}
-      </div>
     </div>
   );
 }
@@ -525,87 +461,6 @@ function PreflightModal({
           ))}
         </div>
       )}
-    </Modal>
-  );
-}
-
-function PlanModal({
-  open,
-  onClose,
-  onCreated,
-}: {
-  open: boolean;
-  onClose: () => void;
-  onCreated: () => void;
-}) {
-  const { toast } = useToast();
-  const projects = useQuery({ queryKey: ["projects"], queryFn: () => api.projects(), enabled: open });
-  const [projectId, setProjectId] = useState("");
-  const [target, setTarget] = useState(15);
-  const [q, setQ] = useState("");
-  const [language, setLanguage] = useState("");
-  const [maxUses, setMaxUses] = useState(0);
-  const [excludeDelivered, setExcludeDelivered] = useState(false);
-  const create = useMutation({
-    mutationFn: () =>
-      api.createIntake({
-        project_id: projectId,
-        target,
-        filters: { q, language },
-        exclude_delivered: excludeDelivered,
-        max_uses: maxUses,
-      }),
-    onSuccess: () => {
-      toast("生产计划已启动，将按在手上限补位领取", "ok");
-      onCreated();
-    },
-    onError: (error) => toast(errorText(error), "error"),
-  });
-  return (
-    <Modal
-      open={open}
-      title="今天交付 N 题"
-      onClose={onClose}
-      footer={
-        <>
-          <Button onClick={onClose}>取消</Button>
-          <Button variant="primary" disabled={!projectId || target < 1} loading={create.isPending} onClick={() => create.mutate()}>
-            下达计划
-          </Button>
-        </>
-      }
-    >
-      <div className="form-grid">
-        <Field label="项目" hint="生产计划必须明确指定一个项目">
-          <select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
-            <option value="">请选择项目</option>
-            {projects.data?.items.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-          </select>
-        </Field>
-        <Field label="目标题数">
-          <input type="number" min={1} max={15} value={target} onChange={(event) => setTarget(Number(event.target.value))} />
-        </Field>
-        <Field label="工程名筛选">
-          <input value={q} onChange={(event) => setQ(event.target.value)} placeholder="可留空" />
-        </Field>
-        <Field label="语言">
-          <input value={language} onChange={(event) => setLanguage(event.target.value)} placeholder="如 Python" />
-        </Field>
-        <Field label="最大历史使用次数" hint="0 表示允许复用；达到目标前优先使用次数较少的工程">
-          <input type="number" min={0} max={100} value={maxUses} onChange={(event) => setMaxUses(Number(event.target.value))} />
-        </Field>
-      </div>
-      <label className="check-inline">
-        <input
-          type="checkbox"
-          checked={excludeDelivered}
-          onChange={(event) => setExcludeDelivered(event.target.checked)}
-        />
-        排除已经交付过的工程
-      </label>
-      <p className="form-note">
-        单项目最多 15 题。先接回已领取但未建题的材料，再按在手上限补位；任务结束后归还原工程，并在需要时按使用次数从少到多复用。
-      </p>
     </Modal>
   );
 }

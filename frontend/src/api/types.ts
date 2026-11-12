@@ -259,7 +259,11 @@ export type IntakeSnapshot = {
     id: string;
     project_id: string;
     filters: Record<string, unknown>;
+    mode?: "target" | "continuous";
     target: number;
+    daily_cap?: number;
+    max_uses?: number;
+    waiting_reason?: string;
     status: string;
     created_at: string;
     updated_at: string;
@@ -281,7 +285,9 @@ export type IntakeSnapshot = {
   };
   max_in_hand: number;
   eta: string;
-  attempts_left?: number;
+  disabled_count?: number;
+  attempts_left?: number | null;
+  daily?: { date: string; claimed: number; cap: number } | null;
 };
 
 export type TrashItem = {
@@ -375,6 +381,10 @@ export type EngineeringRow = {
   claimed_name?: string;
   claim_id?: string;
   assets?: Array<{ id?: string; url?: string; kind?: string }>;
+  disabled?: boolean;
+  disabled_reason?: string;
+  /** mine：自己的生产计划正在用；other：被别人占用；空：可用。 */
+  holder?: "mine" | "other" | "";
   usage?: {
     used: number;
     delivered: number;

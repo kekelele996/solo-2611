@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from solo_auto.events.bus import EventBus
 from solo_auto.pipeline.notify import Notifier
 from solo_auto.settings import AutopilotSettings
+
+MANUAL_KINDS = frozenset({"auth", "audit_reject"})
+AUTO_RESET_CAP_MINUTES = 240
 
 
 def _now() -> str:
@@ -27,6 +30,7 @@ class Breaker:
         self.consecutive_kind = ""
         self.consecutive_count = 0
         self.audit_verdicts: list[str] = []
+        self.auto_resets = 0
         self.notifier: Notifier | None = None
         self._load()
 
@@ -42,7 +46,37 @@ class Breaker:
             "consecutive_kind": self.consecutive_kind,
             "consecutive_count": self.consecutive_count,
             "audit_verdicts": self.audit_verdicts[-self.settings.breaker.audit_reject_window :],
+            "auto_resets": self.auto_resets,
+            "auto_reset_at": self.auto_reset_at,
         }
+
+    @property
+    def auto_reset_at(self) -> str:
+        base = self.settings.breaker.auto_reset_minutes
+        if not self.tripped or base <= 0 or self.kind in MANUAL_KINDS:
+            return ""
+        try:
+            since = datetime.fromisoformat(self.since)
+        except ValueError:
+            return ""
+        wait = min(base * 2**self.auto_resets, AUTO_RESET_CAP_MINUTES)
+        return (since + timedelta(minutes=wait)).isoformat()
+
+    def maybe_auto_reset(self) -> bool:
+        due = self.auto_reset_at
+        if not due or datetime.now().astimezone() < datetime.fromisoformat(due):
+            return False
+        kind = self.kind
+        self.auto_resets += 1
+        self.tripped = False
+        self.kind = ""
+        self.since = ""
+        self.consecutive_kind = ""
+        self.consecutive_count = 0
+        self._save()
+        self.bus.publish("autopilot.breaker", {"tripped": False, "auto": True, "kind": kind})
+        self.bus.publish("toast", {"level": "info", "message": f"熔断冷却结束，自动恢复交付（{kind}）"})
+        return True
 
     def record_failure(self, kind: str, detail: str) -> bool:
         if kind == self.consecutive_kind:
@@ -62,6 +96,7 @@ class Breaker:
     def record_success(self) -> None:
         self.consecutive_kind = ""
         self.consecutive_count = 0
+        self.auto_resets = 0
         self._save()
 
     def record_audit(self, verdict: str) -> bool:
@@ -99,6 +134,7 @@ class Breaker:
         self.since = ""
         self.consecutive_kind = ""
         self.consecutive_count = 0
+        self.auto_resets = 0
         self._save()
         self.bus.publish("autopilot.breaker", {"tripped": False})
 
@@ -119,4 +155,5 @@ class Breaker:
         self.consecutive_kind = str(data.get("consecutive_kind") or "")
         self.consecutive_count = int(data.get("consecutive_count") or 0)
         self.audit_verdicts = [str(item) for item in data.get("audit_verdicts") or []]
+        self.auto_resets = int(data.get("auto_resets") or 0)
 

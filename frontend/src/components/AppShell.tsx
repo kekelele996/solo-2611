@@ -58,8 +58,9 @@ export function AppShell() {
     queryFn: () => api.audits("pending"),
     refetchInterval: 5000,
   });
+  // 与调度页共用缓存键，停留在调度页时不会重复拉取同一份快照。
   const dispatch = useQuery({
-    queryKey: ["dispatch", "shell"],
+    queryKey: ["dispatch"],
     queryFn: api.dispatch,
     refetchInterval: 4000,
   });

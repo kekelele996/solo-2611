@@ -6,6 +6,7 @@ import { useNavigate } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import type { EngineeringRow, ProjectRow, StagingRow } from "../api/types";
 import {
+  Badge,
   Button,
   EmptyState,
   ErrorPanel,
@@ -53,6 +54,7 @@ export function SourcePage() {
         language,
         min_files: minFiles,
         max_files: maxFiles,
+        scope: "all",
         page_size: 200,
       }),
     enabled: Boolean(projectId),
@@ -76,6 +78,16 @@ export function SourcePage() {
       toast(errorText(error), "error");
       void queryClient.invalidateQueries({ queryKey: ["engineering"] });
     },
+  });
+  const toggleDisabled = useMutation({
+    mutationFn: (item: EngineeringRow) =>
+      api.setEngineeringDisabled(projectId, engineeringId(item), !item.disabled, item.name),
+    onSuccess: (result, item) => {
+      toast(result.disabled ? `已禁用「${item.name}」，生产计划不再领取` : `已重新启用「${item.name}」`, "ok");
+      void queryClient.invalidateQueries({ queryKey: ["engineering"] });
+      void queryClient.invalidateQueries({ queryKey: ["intake"] });
+    },
+    onError: (error) => toast(errorText(error), "error"),
   });
   const release = useMutation({
     mutationFn: (claimId: string) => api.releaseClaim(claimId),
@@ -116,12 +128,17 @@ export function SourcePage() {
     if (sortBy) rows.sort((left, right) => (right.usage?.[sortBy] ?? 0) - (left.usage?.[sortBy] ?? 0));
     return rows;
   }, [engineering.data?.items, sortBy, unusedOnly]);
+  const allRows = engineering.data?.items ?? [];
+  const disabledCount = allRows.filter((item) => item.disabled).length;
+  const inUseCount = allRows.filter((item) => !item.disabled && item.holder === "mine").length;
+  const takenCount = allRows.filter((item) => !item.disabled && item.holder === "other").length;
+  const usableCount = allRows.length - disabledCount - takenCount;
 
   return (
     <div className="page source-page">
       <header className="page-head">
         <div>
-          <span className="eyebrow">SOURCE / EXCLUSIVE CLAIM</span>
+          <span className="eyebrow">SOURCE / AUTO ROTATION</span>
           <h1>题源</h1>
         </div>
         <Button onClick={() => setLoginOpen(true)}>
@@ -176,9 +193,17 @@ export function SourcePage() {
             <input value={language} onChange={(event) => setLanguage(event.target.value)} placeholder="语言，如 Python" />
             <input value={minFiles} onChange={(event) => setMinFiles(event.target.value)} placeholder="最少文件" inputMode="numeric" />
             <input value={maxFiles} onChange={(event) => setMaxFiles(event.target.value)} placeholder="最多文件" inputMode="numeric" />
-            <span className="toolbar-count">{engineering.data?.total ?? 0} 个可领取</span>
+            <span className="toolbar-count" title="生产计划默认轮转该项目下全部题目，禁用的题不再使用">
+              共 {allRows.length} 题 · 可用 {usableCount}
+              {inUseCount ? `（生产中 ${inUseCount}）` : ""}
+              {takenCount ? ` · 他人占用 ${takenCount}` : ""}
+              {disabledCount ? ` · 已禁用 ${disabledCount}` : ""}
+            </span>
             <label className="check-inline"><input type="checkbox" checked={unusedOnly} onChange={(event) => setUnusedOnly(event.target.checked)} /> 未使用过（仅筛当前页）</label>
           </div>
+          <p className="form-note source-note">
+            题目默认全部可用，不需要手动领取：生产计划会按使用次数轮流自动领取，用完自动归还。不想用的题点「禁用」即可，随时可以重新启用。
+          </p>
           {engineering.isPending ? <LoadingLines rows={6} /> : null}
           {engineering.isError ? <ErrorPanel error={engineering.error} onRetry={() => void engineering.refetch()} /> : null}
           <Panel className="table-panel density-dense">
@@ -205,14 +230,23 @@ export function SourcePage() {
                 </thead>
                 <tbody>
                   {engineeringRows.map((item) => (
-                    <tr key={engineeringId(item)}>
+                    <tr key={engineeringId(item)} className={item.disabled ? "is-disabled" : undefined}>
                       <td>
                         <div className="engineering-cell">
                           {item.assets?.[0]?.id ? (
                             <img src={`/api/source/assets/${encodeURIComponent(item.assets[0].id)}`} alt="" loading="lazy" />
                           ) : <span className="asset-placeholder" />}
                           <span>
-                            <strong>{item.name}</strong>
+                            <strong>
+                              {item.name}
+                              {item.disabled ? (
+                                <> <Badge tone="warn">已禁用</Badge></>
+                              ) : item.holder === "mine" ? (
+                                <> <Badge tone="info">生产中</Badge></>
+                              ) : item.holder === "other" ? (
+                                <> <Badge tone="idle">他人占用</Badge></>
+                              ) : null}
+                            </strong>
                             <small className="mono">{unknownText(item.github_ref ?? item.repo_url)}</small>
                           </span>
                         </div>
@@ -228,11 +262,24 @@ export function SourcePage() {
                         <div className="row-actions">
                           <Button
                             size="small"
-                            disabled={!system.data?.source_online}
-                            onClick={() => setClaimTarget(item)}
+                            variant={item.disabled ? "primary" : "secondary"}
+                            loading={toggleDisabled.isPending && toggleDisabled.variables === item}
+                            title={item.disabled ? "恢复后生产计划会重新轮转到这道题" : "禁用后生产计划不再使用这道题；正在跑的任务不受影响"}
+                            onClick={() => toggleDisabled.mutate(item)}
                           >
-                            领取
+                            {item.disabled ? "启用" : "禁用"}
                           </Button>
+                          {!item.holder && !item.disabled ? (
+                            <Button
+                              size="small"
+                              variant="ghost"
+                              disabled={!system.data?.source_online}
+                              title="不走生产计划，手动领取后自己建题"
+                              onClick={() => setClaimTarget(item)}
+                            >
+                              手动建题
+                            </Button>
+                          ) : null}
                         </div>
                       </td>
                     </tr>
@@ -240,7 +287,7 @@ export function SourcePage() {
                 </tbody>
               </table>
             ) : (
-              <EmptyState title="当前筛选没有可领取工程。" />
+              <EmptyState title="当前筛选没有题目。" />
             )}
           </Panel>
         </>
@@ -287,7 +334,7 @@ export function SourcePage() {
 
       <Modal
         open={Boolean(claimTarget)}
-        title="领取后独占该工程"
+        title="手动领取：领取后独占该工程"
         onClose={() => setClaimTarget(null)}
         footer={
           <>

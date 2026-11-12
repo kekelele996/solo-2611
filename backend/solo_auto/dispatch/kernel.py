@@ -34,7 +34,7 @@ from solo_auto.dispatch.intents import IntentLog
 from solo_auto.dispatch.policy import PolicyDecision, RecoveryPolicy
 from solo_auto.dispatch.pools import PoolBook
 from solo_auto.dispatch.probes import ProbeManager, ProbeResult
-from solo_auto.dispatch.queue import DispatchItem, DispatchQueue
+from solo_auto.dispatch.queue import IN_HAND, DispatchItem, DispatchQueue
 from solo_auto.dispatch.recovery import DispatchRecovery, RecoveryResult
 from solo_auto.dispatch.storage import read_json, write_json
 from solo_auto.dispatch.throughput import Outcome, ThroughputLedger
@@ -537,6 +537,8 @@ class Dispatcher:
         if item is None:
             return
         status = "done" if outcome in {"done", "awaiting_audit"} else ("quarantined" if outcome == "failed" else outcome)
+        if item.status == status:
+            return
         self.queue.update(
             task_id,
             status=status,
@@ -732,10 +734,12 @@ class Dispatcher:
 
     def upcoming(self, limit: int = 10) -> list[dict[str, Any]]:
         ordered = self.queue.ordered()
+        # 已在执行的条目不算「接下来启动」，只列真正等待的。
+        waiting = [item for item in ordered if not item.active][:limit]
         now = self.clock.wall()
         spacing = max(10, self.config.launch_spacing_seconds)
         items: list[dict[str, Any]] = []
-        for index, item in enumerate(ordered[:limit]):
+        for index, item in enumerate(waiting):
             decision = self._decision_for(item, queue_head=index == 0)
             until = _parse_dt(decision.until)
             if decision.allowed:
@@ -744,9 +748,11 @@ class Dispatcher:
                 seconds = max(0, int((until - now).total_seconds()))
             else:
                 seconds = spacing * (index + 1)
+            task = self.repo.get_task(item.task_id) or {}
             items.append(
                 {
-                    **item.view(queue_position=index + 1),
+                    **item.view(queue_position=ordered.index(item) + 1),
+                    "task_name": str(task.get("task_name") or item.task_id),
                     "estimated_start_at": (now + timedelta(seconds=seconds)).replace(microsecond=0).isoformat(),
                     "estimated_seconds": seconds,
                     "reason": decision.text or "可启动",
@@ -789,11 +795,15 @@ class Dispatcher:
     def effective_session_limit(self) -> int:
         return min(8, self.config.sessions or self.effective_in_hand)
 
+    def in_hand_count(self) -> int:
+        """已领取、仍会继续推进的任务数；需人工处理和已结束的不占在手。"""
+        return sum(1 for item in self.queue.all_items(include_terminal=False) if item.status in IN_HAND)
+
     def status_sentence(self) -> str:
         pools = self.pools_book.snapshot()
         containers = pools["containers"]
         sessions = pools["sessions"]
-        in_hand = sum(1 for item in self.queue.all_items(include_terminal=False) if item.status not in {"removed"})
+        in_hand = self.in_hand_count()
         prefix = {
             "paused": "已暂停",
             "draining": "排空中",
@@ -957,6 +967,9 @@ class Dispatcher:
                     desired_status = "active" if desktop_running or agent_running else "queued"
                     if item.status != desired_status or item.stage != stage_name:
                         self.queue.update(task_id, status=desired_status, stage=stage_name)
+                elif item is not None and item.status in {"queued", "launching", "active"}:
+                    # 作业已结束（待抽检/失败/停止）但队列项仍挂着：补记收尾，避免虚占在手。
+                    self.on_job_finished(task_id, outcome=stage_name, detail=str(getattr(job, "detail", "")))
         self.pools_book.observe("sessions", sessions)
         self.pools_book.observe("authoring", authoring)
         self.pools_book.observe("delivering", delivering)
@@ -1117,7 +1130,7 @@ class Dispatcher:
             occupied=int(pool["containers"]["used"]),
             limit_effective=int(pool["containers"]["limit"]),
             limit_floor=self.config.containers,
-            in_hand=sum(1 for item in self.queue.all_items(include_terminal=False)),
+            in_hand=self.in_hand_count(),
             sessions=int(pool["sessions"]["used"]),
             held=[hold.source for hold in self.holds.active()],
         )

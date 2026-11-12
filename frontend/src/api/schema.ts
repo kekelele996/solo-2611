@@ -243,6 +243,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/source/projects/{project_id}/disabled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Disabled Engineering */
+        get: operations["disabled_engineering_api_source_projects__project_id__disabled_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/source/projects/{project_id}/engineering/{engineering_id}/disabled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set Engineering Disabled */
+        put: operations["set_engineering_disabled_api_source_projects__project_id__engineering__engineering_id__disabled_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/source/projects/{project_id}/engineering/{engineering_id}": {
         parameters: {
             query?: never;
@@ -2598,6 +2632,21 @@ export interface components {
              */
             desired: "running" | "paused" | "draining";
         };
+        /** EngineeringDisableRequest */
+        EngineeringDisableRequest: {
+            /** Disabled */
+            disabled: boolean;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+        };
         /** ExecutionConfigPatch */
         ExecutionConfigPatch: {
             /** Max Containers */
@@ -2642,13 +2691,27 @@ export interface components {
         IntakeCreateRequest: {
             /** Project Id */
             project_id: string;
-            /** Target */
+            /**
+             * Mode
+             * @default target
+             * @enum {string}
+             */
+            mode: "target" | "continuous";
+            /**
+             * Target
+             * @default 0
+             */
             target: number;
+            /**
+             * Daily Cap
+             * @default 30
+             */
+            daily_cap: number;
             /** Filters */
             filters?: Record<string, never>;
             /**
              * Exclude Delivered
-             * @default true
+             * @default false
              */
             exclude_delivered: boolean;
             /**
@@ -3301,6 +3364,73 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    disabled_engineering_api_source_projects__project_id__disabled_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_engineering_disabled_api_source_projects__project_id__engineering__engineering_id__disabled_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                engineering_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EngineeringDisableRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

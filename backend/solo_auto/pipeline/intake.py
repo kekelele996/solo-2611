@@ -21,6 +21,15 @@ from solo_auto.sources.project_hub import ProjectHubClient
 from solo_auto.sources.staging import StagingManager
 from solo_auto.store.repo import Repository
 
+# 领取或建题失败的工程先冷却一段时间再参与轮转，避免一次偶发失败把它永久剔出题库。
+FAILED_CLAIM_COOLDOWN = timedelta(hours=6)
+# 熔断、登录失效、题源离线这类失败与工程本身无关，不让工程进入冷却。
+SYSTEM_CLAIM_CODES = frozenset(
+    {"AUTOPILOT_BREAKER_OPEN", "AUTOPILOT_DISABLED", "SOURCE_AUTH_REQUIRED", "SOURCE_OFFLINE", "SOURCE_FORBIDDEN"}
+)
+# 题源暂无候选时的重查间隔（秒），逐次拉长，有候选后清零。
+EMPTY_BACKOFF_SECONDS = (60, 120, 300, 600, 1800)
+
 
 class IntakeService:
     def __init__(
@@ -104,7 +113,8 @@ class IntakeService:
             and job.get("stage") in {"done", "awaiting_audit", "failed"}
         ]
         eta = ""
-        if len(durations) >= 3 and counts["completed"] < target:
+        continuous = self.plan.get("mode") == "continuous"
+        if not continuous and len(durations) >= 3 and counts["completed"] < target:
             remaining = target - counts["completed"]
             median = statistics.median(durations[-10:])
             concurrency = max(1, min(self.max_in_hand, self.settings.execution.max_containers))
@@ -116,8 +126,14 @@ class IntakeService:
             "counts": counts,
             "max_in_hand": self.max_in_hand,
             "eta": eta,
-            "attempts_left": max(0, int(self.plan.get("claim_limit") or 0) - len(self.plan.get("task_ids") or [])
-                                  - len(self.plan.get("failed_claims") or [])),
+            "attempts_left": None if continuous else max(
+                0,
+                int(self.plan.get("claim_limit") or 0)
+                - len(self.plan.get("task_ids") or [])
+                - len(self.plan.get("failed_claims") or []),
+            ),
+            "daily": self._daily(self.plan) if continuous else None,
+            "disabled_count": len(self.repo.disabled_engineering(str(self.plan.get("project_id") or ""))),
         }
 
     async def create(
@@ -126,14 +142,28 @@ class IntakeService:
         project_id: str,
         target: int,
         filters: dict[str, Any] | None = None,
-        exclude_delivered: bool = True,
+        exclude_delivered: bool = False,
         max_uses: int = 0,
+        mode: str = "target",
+        daily_cap: int = 30,
     ) -> dict[str, Any]:
         if not project_id.strip():
             raise ApiError(400, "PROJECT_REQUIRED", "创建生产计划前必须选择项目")
-        if self.plan and self.plan.get("status") in {"running", "paused"}:
+        continuous = mode == "continuous"
+        if continuous and daily_cap < 1:
+            raise ApiError(400, "DAILY_CAP_REQUIRED", "持续生产必须设置每日领取上限")
+        active = self.plan if self.plan and self.plan.get("status") in {"running", "paused"} else None
+        if active is not None:
+            if continuous and str(active.get("project_id")) == project_id:
+                return await self._convert_to_continuous(
+                    active,
+                    filters=filters,
+                    exclude_delivered=exclude_delivered,
+                    max_uses=max_uses,
+                    daily_cap=daily_cap,
+                )
             raise ApiError(409, "INTAKE_ACTIVE", "已有进行中的生产计划")
-        if target < 1 or target > 15:
+        if not continuous and (target < 1 or target > 15):
             raise ApiError(400, "INTAKE_TARGET_INVALID", "单个项目的目标题数必须在 1–15 之间")
         projects = await self.source.list_projects()
         project = next((item for item in projects if str(item.get("id") or "") == project_id), None)
@@ -144,7 +174,10 @@ class IntakeService:
             "project_id": project_id,
             "project_name": str(project.get("name") or project_id),
             "filters": filters or {},
-            "target": target,
+            "mode": "continuous" if continuous else "target",
+            "target": 0 if continuous else target,
+            "daily_cap": daily_cap if continuous else 0,
+            "daily": {"date": _today(), "claimed": 0},
             "status": "running",
             "created_at": _now(),
             "updated_at": _now(),
@@ -154,15 +187,50 @@ class IntakeService:
             "failed_claims": [],
             "exclude_delivered": exclude_delivered,
             "max_uses": max_uses,
-            "claim_limit": max(target * 2, target + 3),
+            "claim_limit": 0 if continuous else max(target * 2, target + 3),
         }
         self._save()
         self.repo.add_event(
             "intake.started",
-            f"生产计划启动：目标 {target} 题",
+            f"持续生产启动：每日最多领取 {daily_cap} 次" if continuous else f"生产计划启动：目标 {target} 题",
             actor="user",
             details={"project_id": project_id, "filters": filters or {}},
         )
+        await self.tick()
+        return self.snapshot()
+
+    async def _convert_to_continuous(
+        self,
+        plan: dict[str, Any],
+        *,
+        filters: dict[str, Any] | None,
+        exclude_delivered: bool,
+        max_uses: int,
+        daily_cap: int,
+    ) -> dict[str, Any]:
+        was_continuous = plan.get("mode") == "continuous"
+        plan.update(
+            {
+                "mode": "continuous",
+                "target": 0,
+                "daily_cap": daily_cap,
+                "claim_limit": 0,
+                "filters": filters if filters is not None else plan.get("filters") or {},
+                "exclude_delivered": exclude_delivered,
+                "max_uses": max_uses,
+                "status": "running",
+            }
+        )
+        plan.setdefault("daily", {"date": _today(), "claimed": 0})
+        plan.pop("pause_reason", None)
+        self._save()
+        self.repo.add_event(
+            "intake.converted",
+            f"{'持续生产参数已更新' if was_continuous else '生产计划已转为持续生产'}：每日最多领取 {daily_cap} 次",
+            actor="user",
+            details={"project_id": plan.get("project_id"), "max_uses": max_uses},
+        )
+        self.bus.publish("intake.updated", {"status": "running", "mode": "continuous"})
         await self.tick()
         return self.snapshot()
 
@@ -259,10 +327,12 @@ class IntakeService:
                 self._save()
                 return
             if self.autopilot.breaker.tripped:
-                plan["status"] = "paused"
-                plan["pause_reason"] = f"自动交付已熔断：{self.autopilot.breaker.kind or '连续失败'}"
-                plan["updated_at"] = _now()
-                self._save()
+                resume_at = self.autopilot.breaker.auto_reset_at
+                self._wait(
+                    plan,
+                    f"自动交付已熔断（{self.autopilot.breaker.kind or '连续失败'}），"
+                    + (f"{_clock(resume_at)} 自动试恢复，暂停补位" if resume_at else "人工恢复后继续补位"),
+                )
                 return
             if self.autopilot.paused:
                 return
@@ -282,8 +352,12 @@ class IntakeService:
                 threshold = dispatcher.config.refill.backpressure_threshold
                 if backlog <= threshold * 0.7 and "backpressure" in dispatcher.holds.holds:
                     dispatcher.release_hold("backpressure", actor="backpressure")
-                hold = dispatcher.holds.blocking(["intake"])
-                if hold is not None:
+                # 「题源暂无候选」由本计划自己按退避重查，其余挂起照常拦住补位。
+                retry_empty = self._empty_retry_due(plan)
+                if any(
+                    not (hold.reason_code == "source.empty" and retry_empty)
+                    for hold in dispatcher.holds.active(scope="intake")
+                ):
                     return
                 if backlog > threshold:
                     dispatcher.register_hold(
@@ -298,13 +372,14 @@ class IntakeService:
             await self._release_finished_claims(plan)
             counts = self._counts(plan)
             target = int(plan.get("target") or 0)
-            if counts["completed"] >= target:
+            continuous = plan.get("mode") == "continuous"
+            if not continuous and counts["completed"] >= target:
                 plan["status"] = "completed"
                 plan["updated_at"] = _now()
                 self._save()
                 self.notifier.notify(title="solo-auto 生产计划", status=f"完成 {counts['completed']} 题")
                 return
-            if len(plan.get("task_ids") or []) + len(plan.get("failed_claims") or []) >= int(
+            if not continuous and len(plan.get("task_ids") or []) + len(plan.get("failed_claims") or []) >= int(
                 plan.get("claim_limit") or 0
             ):
                 plan["status"] = "paused"
@@ -320,18 +395,23 @@ class IntakeService:
                 self.notifier.notify(title="solo-auto 计划暂停", status="达到领取上限")
                 return
             staged = self._pending_staged(plan)
-            remaining_capacity = max(
-                0,
-                min(self.max_in_hand, target - counts["completed"]) - counts["active"],
-            )
+            wanted = self.max_in_hand if continuous else min(self.max_in_hand, target - counts["completed"])
+            remaining_capacity = max(0, wanted - counts["active"])
             if staged:
                 if remaining_capacity > 0:
                     await self._adopt_staged(plan, staged[0])
                 else:
                     await self._release_staged_claim(staged[-1], "超过在手上限，已归还，等待后续补位")
                 return
-            remaining_target = max(0, target - counts["completed"])
-            if self._in_hand(plan) >= min(self.max_in_hand, remaining_target):
+            if self._in_hand(plan) >= wanted:
+                self._wait(plan, "")
+                return
+            if continuous:
+                daily = self._daily(plan)
+                if daily["claimed"] >= daily["cap"]:
+                    self._wait(plan, f"今日已领取 {daily['claimed']}/{daily['cap']}，明天 00:00 自动继续")
+                    return
+            if not self._empty_retry_due(plan):
                 return
             free_gb = shutil.disk_usage(self.paths.home).free / 1024**3
             if free_gb < self.settings.storage.disk_floor_gb:
@@ -382,21 +462,32 @@ class IntakeService:
                 self.bus.publish("intake.updated", {"status": "paused"})
                 return
             if candidate is None:
+                step = int(plan.get("empty_step") or 0)
+                delay = EMPTY_BACKOFF_SECONDS[min(step, len(EMPTY_BACKOFF_SECONDS) - 1)]
+                retry_at = datetime.now().astimezone() + timedelta(seconds=delay)
+                plan["empty_step"] = step + 1
+                plan["empty_retry_at"] = retry_at.replace(microsecond=0).isoformat()
+                reason = f"当前筛选下没有可领取或可复用的工程，{_clock(plan['empty_retry_at'])} 自动重查"
+                self._wait(plan, reason)
                 if dispatcher is not None and dispatcher.v3_enabled:
                     dispatcher.register_hold(
                         source="source_guard",
                         scope=["intake"],
                         reason_code="source.empty",
-                        reason="当前筛选下没有可领取或可复用的工程",
+                        reason=reason,
                         auto=True,
                     )
-                    return
-                plan["status"] = "paused"
-                plan["pause_reason"] = "当前筛选下没有可领取或可复用的工程"
-                plan["updated_at"] = _now()
-                self._save()
                 return
-            if dispatcher is not None and dispatcher.v3_enabled and "source_guard" in dispatcher.holds.holds:
+            if "empty_step" in plan or "empty_retry_at" in plan:
+                plan.pop("empty_step", None)
+                plan.pop("empty_retry_at", None)
+                self._save()
+            if (
+                dispatcher is not None
+                and dispatcher.v3_enabled
+                and (existing := dispatcher.holds.holds.get("source_guard")) is not None
+                and existing.reason_code == "source.empty"
+            ):
                 dispatcher.release_hold("source_guard", actor="intake")
             engineering_id = str(_engineering_id(candidate))
             plan["attempted_engineering_ids"].append(engineering_id)
@@ -404,6 +495,7 @@ class IntakeService:
             task_created = False
             try:
                 claimed = await self.source.claim(str(plan["project_id"]), engineering_id)
+                self._count_claim(plan)
                 claim_id = str(claimed.get("claim_id") or engineering_id)
                 meta = await self.staging.stage(
                     self.source,
@@ -433,15 +525,26 @@ class IntakeService:
                 )
                 task_created = True
                 task_id = str(task["task_id"])
-                await self.autopilot.enroll([task_id])
+                # 先记入计划：即便接入自动交付失败，下一轮 _repair_missing_jobs 也会补上。
                 plan["task_ids"].append(task_id)
                 plan["claimed_engineering_ids"].append(engineering_id)
-                plan["updated_at"] = _now()
+                self._wait(plan, "")
                 self._save()
+                await self.autopilot.enroll([task_id])
             except ApiError as exc:
-                if claimed_meta is not None and not task_created:
+                if task_created:
+                    self.repo.add_event(
+                        "intake.enroll_deferred",
+                        f"{engineering_id} 已建题，接入自动交付失败（{exc.message}），稍后自动补接",
+                        level="warn",
+                        actor="intake",
+                    )
+                    return
+                if claimed_meta is not None:
                     await self._release_staged_claim(claimed_meta, "自动建题失败，已归还原工程")
-                plan["failed_claims"].append({"engineering_id": engineering_id, "code": exc.code, "message": exc.message})
+                plan["failed_claims"].append(
+                    {"engineering_id": engineering_id, "code": exc.code, "message": exc.message, "at": _now()}
+                )
                 plan["updated_at"] = _now()
                 self._save()
                 if exc.status_code == 401:
@@ -461,11 +564,7 @@ class IntakeService:
     async def _next_candidate(self, plan: dict[str, Any]) -> dict[str, Any] | None:
         filters = dict(plan.get("filters") or {})
         page = 1
-        failed = {
-            str(item.get("engineering_id") or "")
-            for item in plan.get("failed_claims") or []
-            if isinstance(item, dict)
-        }
+        failed = _cooling_failures(plan)
         active_staging = {
             str(item.get("engineeringId") or "")
             for item in self.staging.list()
@@ -476,6 +575,7 @@ class IntakeService:
             for row in self.ledger.engineering_stats(project_id=str(plan["project_id"]))
         }
         excluded_tags = {str(tag) for tag in self.intake_settings.exclude_tags}
+        disabled = set(self.repo.disabled_engineering(str(plan["project_id"])))
         candidates: list[dict[str, Any]] = []
         while page <= 20:
             response = await self.source.list_engineering(
@@ -492,7 +592,12 @@ class IntakeService:
             items = [item for item in response.get("items") or [] if isinstance(item, dict)]
             for item in items:
                 engineering_id = str(_engineering_id(item))
-                if not engineering_id or engineering_id in failed or engineering_id in active_staging:
+                if (
+                    not engineering_id
+                    or engineering_id in failed
+                    or engineering_id in active_staging
+                    or engineering_id in disabled
+                ):
                     continue
                 tags = {_tag_name(tag) for tag in item.get("tags") or []}
                 if tags & excluded_tags:
@@ -511,10 +616,11 @@ class IntakeService:
         if not candidates:
             return None
 
-        def priority(pair: tuple[int, dict[str, Any]]) -> tuple[int, int]:
+        def priority(pair: tuple[int, dict[str, Any]]) -> tuple[int, str, int]:
+            # 用得最少的先上；同样次数时最久没用过的先上，让题库整轮转起来。
             index, item = pair
             usage = stats.get(_engineering_id(item), {})
-            return int(usage.get("used") or 0), index
+            return int(usage.get("used") or 0), str(usage.get("last_used_at") or ""), index
 
         return min(
             enumerate(candidates),
@@ -585,11 +691,7 @@ class IntakeService:
         return missing
 
     def _pending_staged(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
-        blocked = {
-            str(item.get("engineering_id") or "")
-            for item in plan.get("failed_claims") or []
-            if isinstance(item, dict)
-        }
+        blocked = _cooling_failures(plan)
         return [
             item
             for item in self.staging.list()
@@ -625,6 +727,7 @@ class IntakeService:
                     "engineering_id": engineering_id,
                     "code": exc.code,
                     "message": exc.message,
+                    "at": _now(),
                 }
             )
             plan["updated_at"] = _now()
@@ -684,6 +787,38 @@ class IntakeService:
             actor="intake",
         )
 
+    def _daily(self, plan: dict[str, Any]) -> dict[str, Any]:
+        raw = plan.get("daily")
+        daily: dict[str, Any] = raw if isinstance(raw, dict) else {}
+        if daily.get("date") != _today():
+            daily = {"date": _today(), "claimed": 0}
+            plan["daily"] = daily
+        return {**daily, "cap": int(plan.get("daily_cap") or 0)}
+
+    def _count_claim(self, plan: dict[str, Any]) -> None:
+        daily = self._daily(plan)
+        plan["daily"] = {"date": daily["date"], "claimed": int(daily["claimed"]) + 1}
+
+    def _empty_retry_due(self, plan: dict[str, Any]) -> bool:
+        retry_at = str(plan.get("empty_retry_at") or "")
+        if not retry_at:
+            return True
+        try:
+            return datetime.now().astimezone() >= datetime.fromisoformat(retry_at)
+        except ValueError:
+            return True
+
+    def _wait(self, plan: dict[str, Any], reason: str) -> None:
+        """Record why the plan is not claiming right now without pausing it."""
+        if str(plan.get("waiting_reason") or "") == reason:
+            return
+        if reason:
+            plan["waiting_reason"] = reason
+        else:
+            plan.pop("waiting_reason", None)
+        self._save()
+        self.bus.publish("intake.updated", {"status": plan.get("status"), "waiting_reason": reason})
+
     def _require_plan(self) -> dict[str, Any]:
         if not self.plan:
             raise ApiError(404, "INTAKE_NOT_FOUND", "当前没有生产计划")
@@ -705,7 +840,8 @@ class IntakeService:
             return
         plan = data.get("plan")
         if isinstance(plan, dict):
-            if plan.get("status") == "running":
+            # 持续生产重启后直接续跑；目标计划仍需人工确认。
+            if plan.get("status") == "running" and plan.get("mode") != "continuous":
                 plan["status"] = "paused"
                 plan["pause_reason"] = "后端重启，等待人工继续"
             self.plan = plan
@@ -724,6 +860,36 @@ def _int_or_none(value: Any) -> int | None:
         return int(value) if value not in {None, ""} else None
     except (TypeError, ValueError):
         return None
+
+
+def _cooling_failures(plan: dict[str, Any]) -> set[str]:
+    cutoff = datetime.now().astimezone() - FAILED_CLAIM_COOLDOWN
+    cooling: set[str] = set()
+    for item in plan.get("failed_claims") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("code") or "") in SYSTEM_CLAIM_CODES:
+            continue
+        try:
+            at = datetime.fromisoformat(str(item.get("at") or ""))
+        except ValueError:
+            continue
+        if at >= cutoff:
+            cooling.add(str(item.get("engineering_id") or ""))
+    return cooling
+
+
+def _today() -> str:
+    return datetime.now().astimezone().date().isoformat()
+
+
+def _clock(value: str) -> str:
+    try:
+        moment = datetime.fromisoformat(value).astimezone()
+    except ValueError:
+        return value
+    prefix = "" if moment.date() == datetime.now().astimezone().date() else "明天 "
+    return f"{prefix}{moment:%H:%M}"
 
 
 def _now() -> str:

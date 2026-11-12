@@ -127,6 +127,7 @@ class PromptTemplates:
         skill_root: Path,
         missing: list[str],
         previous: str = "",
+        history: list[str] | None = None,
     ) -> str:
         if stage not in STAGES:
             raise ApiError(400, "PROMPT_STAGE_INVALID", f"未知 Agent 阶段：{stage}")
@@ -149,6 +150,8 @@ class PromptTemplates:
             notes.extend(f"- {item}" for item in missing[:6])
         if previous and "未完成" in previous:
             notes.append(f"上一次尝试的结果：{previous}")
+        if history:
+            notes.extend(history)
         try:
             return template.format(
                 root=root,

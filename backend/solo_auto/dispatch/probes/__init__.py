@@ -152,7 +152,7 @@ class ProbeManager:
             if existing is None or existing.reason_code != "source.empty":
                 self.holds.release("source_guard", actor="probe")
             else:
-                return ProbeResult("source_guard", False, "题源可达，但当前筛选仍无候选", {})
+                return ProbeResult("source_guard", False, "题源可达；暂无候选，生产计划按退避自动重查", {})
             return ProbeResult("source_guard", True, message or "题源可用", {})
         self._source_failures += 1
         intervals = [60, 120, 300, 600, 1800]

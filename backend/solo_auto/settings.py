@@ -90,6 +90,8 @@ class BreakerSettings(BaseModel):
     same_kind_failures: int = Field(default=3, ge=1, le=50)
     audit_reject_rate: float = Field(default=0.2, ge=0, le=1)
     audit_reject_window: int = Field(default=10, ge=1, le=100)
+    # 熔断后多久自动试恢复一次（鉴权失败和抽检打回除外），每次连续自动恢复翻倍，最长 4 小时；0 表示只能人工恢复。
+    auto_reset_minutes: int = Field(default=30, ge=0, le=1440)
 
 
 class AutopilotSettings(BaseModel):

@@ -12,6 +12,7 @@ from solo_auto.store.repo import Repository
 
 TERMINAL = {"done", "failed", "removed"}
 WAITABLE = {"queued", "launching", "active", "backoff", "interrupted", "quarantined"}
+IN_HAND = {"queued", "launching", "active", "backoff", "interrupted"}
 
 
 def _now() -> str:

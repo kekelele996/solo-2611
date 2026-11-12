@@ -24,6 +24,7 @@ from solo_auto.api.types import (
     ConfigPatchRequest,
     ConfigTestRequest,
     CreateTaskRequest,
+    EngineeringDisableRequest,
     PruneRequest,
     RestartRequest,
     SourceLoginRequest,
@@ -517,10 +518,29 @@ async def engineering(
             str(row["engineering_id"]): row
             for row in ctx.ledger.engineering_stats(project_id=project_id)
         }
+        disabled = ctx.repo.disabled_engineering(project_id)
+        mine: set[str] = set()
+        if scope == "all":
+            # 区分“自己的生产计划正在用”和“被别人占用”，题源页据此显示状态。
+            held = await ctx.source.list_engineering(project_id, scope="mine", page_size=200)
+            mine = {
+                str(item.get("engineering_id") or item.get("id") or "")
+                for item in held.get("items") or []
+                if isinstance(item, dict)
+            }
         for item in response.get("items") or []:
             if not isinstance(item, dict):
                 continue
             engineering_id = str(item.get("engineering_id") or item.get("id") or "")
+            off = disabled.get(engineering_id)
+            item["disabled"] = off is not None
+            item["disabled_reason"] = str(off.get("reason") or "") if off else ""
+            if scope == "mine" or engineering_id in mine:
+                item["holder"] = "mine"
+            elif scope == "all" and (item.get("claimed_by") or item.get("claim_id")):
+                item["holder"] = "other"
+            else:
+                item["holder"] = ""
             row = usage.get(engineering_id, {})
             item["usage"] = {
                 "used": int(row.get("used") or 0),
@@ -536,6 +556,36 @@ async def engineering(
         raise ApiError(401, "SOURCE_AUTH_REQUIRED", str(exc)) from exc
     except SourceOfflineError as exc:
         raise ApiError(503, "SOURCE_OFFLINE", str(exc)) from exc
+
+
+@router.get("/source/projects/{project_id}/disabled")
+async def disabled_engineering(project_id: str, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    items = list(ctx.repo.disabled_engineering(project_id).values())
+    return {"items": items, "total": len(items)}
+
+
+@router.put("/source/projects/{project_id}/engineering/{engineering_id}/disabled")
+async def set_engineering_disabled(
+    project_id: str,
+    engineering_id: str,
+    payload: EngineeringDisableRequest,
+    ctx: AppContext = Depends(context),
+) -> dict[str, Any]:
+    ctx.repo.set_engineering_disabled(
+        project_id=project_id,
+        engineering_id=engineering_id,
+        disabled=payload.disabled,
+        name=payload.name,
+        reason=payload.reason,
+    )
+    label = payload.name or engineering_id
+    ctx.repo.add_event(
+        "source.engineering_disabled" if payload.disabled else "source.engineering_enabled",
+        f"已禁用工程 {label}，生产计划不再领取" if payload.disabled else f"已重新启用工程 {label}",
+        actor="user",
+        details={"project_id": project_id, "engineering_id": engineering_id, "reason": payload.reason},
+    )
+    return {"ok": True, "engineering_id": engineering_id, "disabled": payload.disabled}
 
 
 @router.get("/source/projects/{project_id}/engineering/{engineering_id}")

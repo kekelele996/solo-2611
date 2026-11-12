@@ -291,7 +291,7 @@ async def put_plan(payload: DispatchPlanRequest, ctx: AppContext = Depends(conte
     ctx.settings.dispatch.refill.engineering_usage_limit = payload.engineering_usage_limit
     ctx.save_settings()
     result: dict[str, Any] = {"ok": True, "plan": ctx.dispatcher.plan}
-    if len(payload.project_ids) == 1 and payload.mode == "target":
+    if len(payload.project_ids) == 1:
         report = await ctx.preflight.run()
         if not report.get("ok"):
             raise ApiError(409, "PREFLIGHT_FAILED", "生产目标预检未通过", detail=report)
@@ -301,6 +301,8 @@ async def put_plan(payload: DispatchPlanRequest, ctx: AppContext = Depends(conte
             filters=payload.filters,
             exclude_delivered=not payload.allow_reuse,
             max_uses=payload.engineering_usage_limit,
+            mode=payload.mode,
+            daily_cap=payload.daily_claim_cap,
         )
     return result
 

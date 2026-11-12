@@ -17,6 +17,12 @@ class ClaimRequest(BaseModel):
     engineering_id: str
 
 
+class EngineeringDisableRequest(BaseModel):
+    disabled: bool
+    name: str = ""
+    reason: str = Field(default="", max_length=200)
+
+
 class CreateTaskRequest(BaseModel):
     staging_id: str
     task_name: str | None = None
@@ -303,9 +309,13 @@ class DispatchPlanRequest(BaseModel):
 
 class IntakeCreateRequest(BaseModel):
     project_id: str
-    target: int = Field(ge=1, le=15)
+    mode: Literal["target", "continuous"] = "target"
+    # 目标模式 1–15 题；持续生产不设终点，只受每日领取上限约束。
+    target: int = Field(default=0, ge=0, le=15)
+    daily_cap: int = Field(default=30, ge=1, le=10000)
     filters: dict[str, Any] = Field(default_factory=dict)
-    exclude_delivered: bool = True
+    # 默认题源里的工程都可以用；不想用的工程在题源页单独禁用。
+    exclude_delivered: bool = False
     max_uses: int = Field(default=0, ge=0, le=100)
 
 
