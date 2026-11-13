@@ -29,3 +29,18 @@
 
 随后为已验证的调度终态修复执行了第二次热重启，最终版本为 `5406f89`；running 任务 ID
 仍与第一次重启后完全一致，两个容器保持同名且未重启。
+
+## 旧会话认领缺陷与修复
+
+第一次接入旧 print 会话时发现：旧 `state.json` 没有 `sessionRun`，却被送进新会话恢复逻辑，
+导致两个仍在运行的旧任务在数据库中短暂标成 `aborted`。容器、tmux、workspace 和轨迹均未受影响。
+
+修正内容：
+
+1. 无 `sessionRun` 的旧状态明确路由到 `resume_print`。
+2. 工作台启动时扫描 `job_status=running`、无 `sessionRun` 且容器仍存活的旧任务，并以
+   `resume --task-root` 后台认领。
+3. 恢复两个已知任务的数据库 running 状态和调度 active 状态后再次重启。
+4. 新事件 `run.legacy_adopted` 显示两个旧容器均由新进程认领，并分别启动独立 resume 子进程。
+
+对应技能热修标签：`v0.6.0-hotfix2`。
