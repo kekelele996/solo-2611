@@ -1,19 +1,28 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, Download, Search, Upload } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { ChevronRight, Copy, Download, Search, Upload, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../../api/client";
 import type { PromptLibraryItem } from "../../api/types";
-import { useToast } from "../toast-context";
-import { Badge, Button, EmptyState, ErrorPanel, LoadingLines, Panel } from "../ui";
 import { errorText } from "../../utils/display";
 import { formatDateTime } from "../../utils/time";
+import { useToast } from "../toast-context";
+import { Badge, Button, EmptyState, ErrorPanel, LoadingLines, Panel } from "../ui";
 
-const PAGE_SIZE = 24;
+const GROUP_PAGE_SIZE = 10;
+const EMPTY_ITEMS: PromptLibraryItem[] = [];
 const SOURCE_LABEL: Record<string, string> = {
   live: "任务",
   history: "历史",
   import: "导入",
+};
+
+type PromptEngineeringGroup = {
+  key: string;
+  engineeringId: string;
+  name: string;
+  latestAt: string;
+  items: PromptLibraryItem[];
 };
 
 export function PromptLibraryPanel({
@@ -26,25 +35,56 @@ export function PromptLibraryPanel({
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
+  const initializedProject = useRef("");
   const [search, setSearch] = useState("");
-  const [limit, setLimit] = useState(PAGE_SIZE);
+  const [groupLimit, setGroupLimit] = useState(GROUP_PAGE_SIZE);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const prompts = useQuery({
     queryKey: ["source-prompts", projectId],
     queryFn: () => api.promptLibrary(projectId),
     enabled: Boolean(projectId),
   });
-  const filtered = useMemo(() => {
+
+  const allItems = prompts.data?.items ?? EMPTY_ITEMS;
+  const allGroups = useMemo(() => groupPrompts(allItems), [allItems]);
+  const matchingItems = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    const items = prompts.data?.items ?? [];
-    if (!needle) return items;
-    return items.filter((item) =>
-      [item.text, item.taskName, item.subDirection, item.taskType]
+    if (!needle) return allItems;
+    return allItems.filter((item) =>
+      [
+        item.text,
+        item.engineeringName,
+        item.taskName,
+        item.subDirection,
+        item.taskType,
+      ]
         .join(" ")
         .toLowerCase()
         .includes(needle),
     );
-  }, [prompts.data?.items, search]);
-  const visible = filtered.slice(0, limit);
+  }, [allItems, search]);
+  const groups = useMemo(() => groupPrompts(matchingItems), [matchingItems]);
+  const visibleGroups = groups.slice(0, groupLimit);
+  const importedCount = allItems.filter((item) => item.source === "import").length;
+
+  useEffect(() => {
+    setSearch("");
+    setGroupLimit(GROUP_PAGE_SIZE);
+    setExpandedGroups(new Set());
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!prompts.data || initializedProject.current === projectId) return;
+    initializedProject.current = projectId;
+    const latest = allGroups[0];
+    if (latest) setExpandedGroups(new Set([latest.key]));
+  }, [allGroups, projectId, prompts.data]);
+
+  useEffect(() => {
+    if (search.trim() && groups.length) {
+      setExpandedGroups(new Set(groups.map((group) => group.key)));
+    }
+  }, [groups, search]);
 
   const importFile = useMutation({
     mutationFn: async (file: File) => {
@@ -74,7 +114,22 @@ export function PromptLibraryPanel({
     onError: (error) => toast(errorText(error), "error"),
   });
 
+  function toggleGroup(key: string): void {
+    setExpandedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  function setAllGroups(open: boolean): void {
+    setExpandedGroups(open ? new Set(groups.map((group) => group.key)) : new Set());
+  }
+
   if (!projectId) return null;
+
+  const allExpanded = groups.length > 0 && groups.every((group) => expandedGroups.has(group.key));
 
   return (
     <Panel
@@ -117,42 +172,86 @@ export function PromptLibraryPanel({
         </div>
       }
     >
+      <div className="prompt-library-overview">
+        <div>
+          <p>按工程归档。展开一个工程，查看它实际使用过的全部题面。</p>
+          <div className="prompt-library-stats" aria-label="提示词库概况">
+            <span>
+              <strong>{allItems.length}</strong> 条提示词
+            </span>
+            <span>
+              <strong>{allGroups.length}</strong> 个工程
+            </span>
+            <span>
+              <strong>{importedCount}</strong> 条导入
+            </span>
+          </div>
+        </div>
+        <span className="prompt-library-project">{projectName || "当前项目"}</span>
+      </div>
+
       <div className="prompt-library-toolbar">
-        <label className="search-box">
+        <label className="search-box prompt-library-search">
           <Search size={14} />
           <input
             value={search}
             onChange={(event) => {
               setSearch(event.target.value);
-              setLimit(PAGE_SIZE);
+              setGroupLimit(GROUP_PAGE_SIZE);
             }}
-            placeholder="搜索题面、任务名、子方向"
+            placeholder="搜索工程、任务或提示词"
           />
+          {search ? (
+            <button
+              type="button"
+              aria-label="清除提示词搜索"
+              onClick={() => {
+                setSearch("");
+                setGroupLimit(GROUP_PAGE_SIZE);
+              }}
+            >
+              <X size={13} />
+            </button>
+          ) : null}
         </label>
-        <span>
-          {projectName || "当前项目"} · 显示 {visible.length}/{filtered.length}
-          {filtered.length !== (prompts.data?.items.length ?? 0)
-            ? ` · 共 ${prompts.data?.items.length ?? 0}`
-            : ""}
-        </span>
+        <div className="prompt-library-view-actions">
+          <span>
+            {search ? `匹配 ${groups.length} 个工程` : `显示 ${visibleGroups.length}/${groups.length} 个工程`}
+          </span>
+          {groups.length ? (
+            <Button
+              size="small"
+              variant="ghost"
+              onClick={() => setAllGroups(!allExpanded)}
+            >
+              {allExpanded ? "全部收起" : "全部展开"}
+            </Button>
+          ) : null}
+        </div>
       </div>
 
-      {prompts.isPending ? <LoadingLines rows={4} /> : null}
+      {prompts.isPending ? <LoadingLines rows={5} /> : null}
       {prompts.isError ? (
         <ErrorPanel error={prompts.error} onRetry={() => void prompts.refetch()} />
       ) : null}
-      {!prompts.isPending && !prompts.isError && !filtered.length ? (
+      {!prompts.isPending && !prompts.isError && !groups.length ? (
         <EmptyState
-          title={search ? "没有匹配的提示词。" : "这个项目还没有用过的提示词，可导入已有 JSON/JSONL。"}
+          title={
+            search
+              ? "没有匹配的工程或提示词。"
+              : "这个项目还没有用过的提示词，可导入已有 JSON/JSONL。未关联工程的记录会单独归组。"
+          }
         />
       ) : null}
 
-      <div className="prompt-library-grid">
-        {visible.map((item) => (
-          <PromptCard
-            key={item.recordId}
-            item={item}
-            onCopy={() => {
+      <div className="prompt-engineering-list">
+        {visibleGroups.map((group) => (
+          <PromptEngineeringSection
+            key={group.key}
+            group={group}
+            expanded={expandedGroups.has(group.key)}
+            onToggle={() => toggleGroup(group.key)}
+            onCopy={(item) => {
               void navigator.clipboard
                 .writeText(item.text)
                 .then(() => toast("提示词已复制", "ok"))
@@ -162,10 +261,14 @@ export function PromptLibraryPanel({
         ))}
       </div>
 
-      {visible.length < filtered.length ? (
+      {visibleGroups.length < groups.length ? (
         <div className="prompt-library-more">
-          <Button size="small" variant="ghost" onClick={() => setLimit((value) => value + PAGE_SIZE)}>
-            再显示 {Math.min(PAGE_SIZE, filtered.length - visible.length)} 条
+          <Button
+            size="small"
+            variant="ghost"
+            onClick={() => setGroupLimit((value) => value + GROUP_PAGE_SIZE)}
+          >
+            再显示 {Math.min(GROUP_PAGE_SIZE, groups.length - visibleGroups.length)} 个工程
           </Button>
         </div>
       ) : null}
@@ -173,31 +276,109 @@ export function PromptLibraryPanel({
   );
 }
 
-function PromptCard({ item, onCopy }: { item: PromptLibraryItem; onCopy: () => void }) {
+function PromptEngineeringSection({
+  group,
+  expanded,
+  onToggle,
+  onCopy,
+}: {
+  group: PromptEngineeringGroup;
+  expanded: boolean;
+  onToggle: () => void;
+  onCopy: (item: PromptLibraryItem) => void;
+}) {
+  const panelId = `prompt-group-${group.key.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
   return (
-    <article className="prompt-library-card">
-      <header>
-        <div>
-          <strong>{item.taskName || "导入的提示词"}</strong>
-          <span>
-            {[item.subDirection, item.taskType].filter(Boolean).join(" · ") || "未标注分类"}
-          </span>
+    <section className={`prompt-engineering-group ${expanded ? "is-open" : ""}`}>
+      <button
+        type="button"
+        className="prompt-engineering-head"
+        aria-expanded={expanded}
+        aria-controls={panelId}
+        onClick={onToggle}
+      >
+        <span className="prompt-engineering-caret" aria-hidden="true">
+          <ChevronRight size={16} />
+        </span>
+        <span className="prompt-engineering-name">
+          <strong>{group.name}</strong>
+          <small>{group.items.length} 条提示词</small>
+        </span>
+        <span className="prompt-engineering-time">
+          <small>最近使用</small>
+          <time dateTime={group.latestAt || undefined}>
+            {group.latestAt ? formatDateTime(group.latestAt) : "时间未知"}
+          </time>
+        </span>
+      </button>
+      {expanded ? (
+        <div id={panelId} className="prompt-engineering-body">
+          {group.items.map((item, index) => {
+            const recordTitle =
+              item.taskName && item.taskName !== group.name
+                ? item.taskName
+                : item.source === "import"
+                  ? "手动导入"
+                  : "工程题面";
+            return (
+              <article key={item.recordId} className="prompt-record">
+                <span className="prompt-record-index" aria-hidden="true">
+                  {String(index + 1).padStart(2, "0")}
+                </span>
+                <div className="prompt-record-main">
+                  <header>
+                    <strong>{recordTitle}</strong>
+                    <span className={`prompt-record-source is-${item.source}`}>
+                      {SOURCE_LABEL[item.source] ?? item.source}
+                    </span>
+                    <time dateTime={item.usedAt || undefined}>
+                      {item.usedAt ? formatDateTime(item.usedAt) : "时间未知"}
+                    </time>
+                  </header>
+                  <p>{item.text}</p>
+                  <footer>
+                    <span>
+                      {[item.subDirection, item.taskType].filter(Boolean).join(" · ") ||
+                        "未标注分类"}
+                    </span>
+                    <Button size="small" variant="ghost" onClick={() => onCopy(item)}>
+                      <Copy size={12} /> 复制
+                    </Button>
+                  </footer>
+                </div>
+              </article>
+            );
+          })}
         </div>
-        <Badge tone={item.source === "import" ? "warn" : "idle"}>
-          {SOURCE_LABEL[item.source] ?? item.source}
-        </Badge>
-      </header>
-      <p>{item.text}</p>
-      <footer>
-        <time dateTime={item.usedAt || undefined}>
-          {item.usedAt ? formatDateTime(item.usedAt) : "时间未知"}
-        </time>
-        <Button size="small" variant="ghost" onClick={onCopy}>
-          <Copy size={12} /> 复制
-        </Button>
-      </footer>
-    </article>
+      ) : null}
+    </section>
   );
+}
+
+function groupPrompts(items: PromptLibraryItem[]): PromptEngineeringGroup[] {
+  const byEngineering = new Map<string, PromptEngineeringGroup>();
+  for (const item of items) {
+    const key = item.engineeringId || "__unassigned__";
+    let group = byEngineering.get(key);
+    if (!group) {
+      group = {
+        key,
+        engineeringId: item.engineeringId,
+        name: item.engineeringName || item.taskName || "未关联工程",
+        latestAt: item.usedAt,
+        items: [],
+      };
+      byEngineering.set(key, group);
+    }
+    group.items.push(item);
+    if ((item.usedAt || "") > group.latestAt) group.latestAt = item.usedAt;
+  }
+  return [...byEngineering.values()]
+    .map((group) => ({
+      ...group,
+      items: group.items.sort((left, right) => (right.usedAt || "").localeCompare(left.usedAt || "")),
+    }))
+    .sort((left, right) => (right.latestAt || "").localeCompare(left.latestAt || ""));
 }
 
 function parsePromptFile(text: string): Array<Record<string, unknown>> {

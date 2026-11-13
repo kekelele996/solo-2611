@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, FolderInput, LogIn, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { api, ApiError } from "../api/client";
 import type { EngineeringRow, ProjectRow, StagingRow } from "../api/types";
@@ -14,14 +14,22 @@ import {
   LoadingLines,
   Modal,
   Panel,
+  TabBar,
 } from "../components/ui";
 import { useToast } from "../components/toast-context";
 import { PromptLibraryPanel } from "../components/source/PromptLibraryPanel";
 import { errorText, formatNames } from "../utils/display";
 import { formatDateTime } from "../utils/time";
 
+type SourceTab = "engineering" | "prompts";
+const SOURCE_TABS: ReadonlyArray<readonly [SourceTab, string]> = [
+  ["engineering", "工程列表"],
+  ["prompts", "提示词库"],
+];
+
 export function SourcePage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const projects = useQuery({ queryKey: ["projects"], queryFn: () => api.projects() });
@@ -39,6 +47,14 @@ export function SourcePage() {
   const [password, setPassword] = useState("");
   const [unusedOnly, setUnusedOnly] = useState(false);
   const [sortBy, setSortBy] = useState<"used" | "delivered" | "submitted" | "">("");
+  const activeTab: SourceTab = searchParams.get("tab") === "prompts" ? "prompts" : "engineering";
+
+  function selectTab(tab: SourceTab): void {
+    const next = new URLSearchParams(searchParams);
+    if (tab === "engineering") next.delete("tab");
+    else next.set("tab", tab);
+    setSearchParams(next, { replace: true });
+  }
 
   useEffect(() => {
     if (projectId) localStorage.setItem("solo-auto-project", projectId);
@@ -173,8 +189,21 @@ export function SourcePage() {
         </div>
       </Panel>
 
-      <PromptLibraryPanel projectId={projectId} projectName={selected?.name ?? ""} />
+      <div className="source-tabs">
+        <TabBar tabs={SOURCE_TABS} value={activeTab} onChange={selectTab} label="题源内容" />
+      </div>
 
+      {activeTab === "prompts" ? (
+        projectId ? (
+          <PromptLibraryPanel projectId={projectId} projectName={selected?.name ?? ""} />
+        ) : (
+          <EmptyState
+            icon={<FolderInput size={30} />}
+            title="请先选择项目。项目提示词会按具体工程归档展示。"
+          />
+        )
+      ) : (
+        <>
       {authError ? (
         <EmptyState
           icon={<LogIn size={28} />}
@@ -334,6 +363,8 @@ export function SourcePage() {
           <EmptyState title="没有已领取未建任务的工程。" />
         )}
       </Panel>
+        </>
+      )}
 
       <Modal
         open={Boolean(claimTarget)}

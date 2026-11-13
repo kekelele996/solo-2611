@@ -2,14 +2,17 @@
   "ok": true,
   "base": "http://127.0.0.1:18109",
   "source": "http://127.0.0.1:18108",
-  "startedAt": "2026-11-13T12:39:27.746978+00:00",
+  "startedAt": "2026-11-13T13:00:29.001600+00:00",
   "projectSelected": true,
+  "tabs": true,
   "seedRendered": true,
+  "engineeringGroups": 2,
   "search": true,
   "uiImport": true,
   "deduplicate": true,
   "exportItems": 3,
   "exportFilename": "prompt-library-提示词库验收项目-20261113.json",
   "roundTripDeduplicate": true,
-  "finishedAt": "2026-11-13T12:39:40.996462+00:00"
+  "collapse": true,
+  "finishedAt": "2026-11-13T13:00:47.412493+00:00"
 }

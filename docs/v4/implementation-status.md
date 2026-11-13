@@ -37,7 +37,7 @@
 | 四结局调度 | 自动化覆盖正常接受、429 后继续 1 次、继续用尽、人工终止 | `backend/tests/test_session_v4.py` |
 | 短时资源采样 | 单监督器 3 分钟平均 CPU 0.53%，最大 3.1% | `docs/v4/evidence/short-soak.md` |
 | UI 渲染 | 任务页显示第 1 轮/继续 0/2/已接受；调度页显示等待继续与会话质量；设置页无旧“尝试次数”输入 | `docs/v4/evidence/ui-check.json` 与三张 PNG |
-| 项目提示词库 | 题源页完成搜索、页面导入、重复跳过、3 条 JSON 导出及导出文件回导去重 | `docs/v4/evidence/prompt-library-check.json` 与 PNG |
+| 项目提示词库 | 题源独立页签按工程折叠归档；搜索、页面导入、重复跳过、JSON 导出及回导去重通过 | `docs/v4/evidence/prompt-library-check.json` 与 PNG |
 
 真实探针发现并修正了两个镜像行为差异：
 
@@ -67,7 +67,8 @@
 - 会话 API、继续率/终止原因统计、队列接回。
 - `SessionPanel`、容量分流、继续率卡和设置页 v4 项。
 - 启动失败独立计数；运行失败类别不再重试。
-- 题源页按项目汇总在用任务、历史记录和导入记录；支持搜索、复制、JSON/JSONL 导入与 JSON 导出。
+- 题源分为「工程列表 / 提示词库」页签；提示词库按具体工程折叠归档，支持搜索、复制、
+  JSON/JSONL 导入与 JSON 导出。
 
 ## 5. 保守降级
 

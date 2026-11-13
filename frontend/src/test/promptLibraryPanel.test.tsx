@@ -14,6 +14,7 @@ const LIBRARY: PromptLibraryResponse = {
       recordId: "task:1",
       projectId: "project-a",
       engineeringId: "eng-1",
+      engineeringName: "GB-544",
       taskId: "1",
       taskName: "订单对账",
       subDirection: "数仓与数据湖",
@@ -26,6 +27,7 @@ const LIBRARY: PromptLibraryResponse = {
       recordId: "task:2",
       projectId: "project-a",
       engineeringId: "eng-2",
+      engineeringName: "GB-501",
       taskId: "2",
       taskName: "旧任务",
       subDirection: "数据分析与数据应用",
@@ -62,14 +64,19 @@ describe("PromptLibraryPanel", () => {
       </QueryClientProvider>,
     );
 
-    expect(await screen.findByText("订单对账")).toBeTruthy();
-    expect(screen.getByText("旧任务留下的提示词。")).toBeTruthy();
-    expect(screen.getByText(/显示 2\/2/)).toBeTruthy();
+    expect(await screen.findByText("GB-544")).toBeTruthy();
+    expect(screen.getByText("订单对账")).toBeTruthy();
+    expect(screen.getByText("按来源时间合并订单，重复执行不能新增记录。")).toBeTruthy();
+    expect(screen.getByText(/2 个工程/)).toBeTruthy();
 
-    fireEvent.change(screen.getByPlaceholderText("搜索题面、任务名、子方向"), {
-      target: { value: "订单" },
+    fireEvent.click(screen.getByRole("button", { name: /GB-501/ }));
+    expect(screen.getByText("旧任务留下的提示词。")).toBeTruthy();
+
+    fireEvent.change(screen.getByPlaceholderText("搜索工程、任务或提示词"), {
+      target: { value: "旧任务" },
     });
-    expect(screen.queryByText("旧任务")).toBeNull();
+    expect(screen.getByText("旧任务留下的提示词。")).toBeTruthy();
+    expect(screen.queryByText("按来源时间合并订单，重复执行不能新增记录。")).toBeNull();
 
     const input = container.querySelector<HTMLInputElement>('input[type="file"]');
     if (!input) throw new Error("缺少导入文件输入");

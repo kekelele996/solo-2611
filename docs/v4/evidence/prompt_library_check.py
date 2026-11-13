@@ -167,9 +167,24 @@ def main() -> int:
                     "project_id": "project-ui",
                     "source_name": "seed.json",
                     "items": [
-                        {"text": "按来源时间合并订单，重复执行不能新增记录。"},
-                        {"text": "为对账结果补上可追溯的批次编号。"},
-                        {"text": "按来源时间合并订单，重复执行不能新增记录。"},
+                        {
+                            "text": "按来源时间合并订单，重复执行不能新增记录。",
+                            "engineeringId": "eng-gb-544",
+                            "engineeringName": "GB-544",
+                            "taskName": "订单对账",
+                        },
+                        {
+                            "text": "为对账结果补上可追溯的批次编号。",
+                            "engineeringId": "eng-gb-501",
+                            "engineeringName": "GB-501",
+                            "taskName": "批次追踪",
+                        },
+                        {
+                            "text": "按来源时间合并订单，重复执行不能新增记录。",
+                            "engineeringId": "eng-gb-544",
+                            "engineeringName": "GB-544",
+                            "taskName": "订单对账",
+                        },
                     ],
                 },
             )
@@ -178,7 +193,16 @@ def main() -> int:
 
             new_prompt = temp_path / "prompts.jsonl"
             new_prompt.write_text(
-                '{"text":"灰度批次失败时要保留原始输入并提示重试。"}\n',
+                json.dumps(
+                    {
+                        "text": "灰度批次失败时要保留原始输入并提示重试。",
+                        "engineeringId": "eng-gb-544",
+                        "engineeringName": "GB-544",
+                        "taskName": "灰度批次",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
                 encoding="utf-8",
             )
             duplicate = temp_path / "duplicate.json"
@@ -198,21 +222,32 @@ def main() -> int:
                 )
                 page = context.new_page()
                 page.goto(f"{base}/source", wait_until="domcontentloaded")
+                page.locator(".source-tabs").wait_for()
+                if page.locator(".prompt-library-title").count():
+                    raise AssertionError("提示词库仍在工程列表页签中直接显示")
+                page.get_by_role("tab", name="提示词库").click()
                 page.locator(".prompt-library-title").wait_for()
+                page.get_by_text("GB-544", exact=True).wait_for()
+                page.get_by_text("GB-501", exact=True).wait_for()
                 page.get_by_text("按来源时间合并订单，重复执行不能新增记录。", exact=True).wait_for()
                 result["projectSelected"] = True
+                result["tabs"] = True
                 result["seedRendered"] = True
+                result["engineeringGroups"] = 2
 
-                page.get_by_placeholder("搜索题面、任务名、子方向").fill("批次编号")
+                page.get_by_placeholder("搜索工程、任务或提示词").fill("批次编号")
                 page.get_by_text("为对账结果补上可追溯的批次编号。", exact=True).wait_for()
                 if page.get_by_text("按来源时间合并订单，重复执行不能新增记录。", exact=True).count():
                     raise AssertionError("搜索后仍显示不匹配的提示词")
-                page.get_by_placeholder("搜索题面、任务名、子方向").fill("")
+                page.get_by_placeholder("搜索工程、任务或提示词").fill("")
                 result["search"] = True
 
                 file_input = page.locator('input[type="file"]')
                 file_input.set_input_files(str(new_prompt))
                 page.get_by_text("导入 1 条，跳过重复或无效 0 条", exact=True).wait_for()
+                engineering_544 = page.get_by_role("button", name="GB-544", exact=False)
+                if engineering_544.get_attribute("aria-expanded") != "true":
+                    engineering_544.click()
                 page.get_by_text("灰度批次失败时要保留原始输入并提示重试。", exact=True).wait_for()
                 result["uiImport"] = True
 
@@ -237,6 +272,12 @@ def main() -> int:
                 page.get_by_text("导入 0 条，跳过重复或无效 3 条", exact=True).wait_for()
                 result["roundTripDeduplicate"] = True
 
+                collapse_all = page.get_by_role("button", name="全部收起", exact=True)
+                if collapse_all.count():
+                    collapse_all.click()
+                page.get_by_role("button", name="GB-544", exact=False).click()
+                page.wait_for_timeout(5000)
+                result["collapse"] = True
                 page.screenshot(path=str(EVIDENCE / "ui-source-prompt-library.png"), full_page=True)
                 context.close()
                 browser.close()

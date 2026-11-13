@@ -43,12 +43,42 @@ def _task(
     )
 
 
+def _usage(
+    repo: Repository,
+    project_id: str,
+    engineering_id: str,
+    engineering_name: str,
+    task_id: str,
+) -> None:
+    repo.execute(
+        """
+        INSERT INTO usage_ledger(
+          source, project_id, project_name, engineering_id, engineering_name,
+          task_id, task_name, claimed_at, task_created_at, outcome, backfilled
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', 0)
+        """,
+        (
+            "http://localhost:8088",
+            project_id,
+            "项目 A",
+            engineering_id,
+            engineering_name,
+            task_id,
+            engineering_name,
+            "2026-11-13T08:00:00+00:00",
+            "2026-11-13T08:00:00+00:00",
+        ),
+    )
+
+
 def test_project_prompt_library_and_import_deduplicate(tmp_path: Path) -> None:
     repo = Repository(tmp_path / "solo-auto.db")
     first = tmp_path / "tasks" / "first"
     other = tmp_path / "tasks" / "other"
     _task(repo, first, "first", "project-a", "eng-1", "把订单按来源时间合并，重复执行不能新增。")
     _task(repo, other, "other", "project-b", "eng-2", "另一个项目的提示词。")
+    _usage(repo, "project-a", "eng-1", "GB-544", "first")
+    _usage(repo, "project-a", "eng-old", "GB-501", "purged")
     history_path = tmp_path / "prompt-history.jsonl"
     history_path.write_text(
         "\n".join(
@@ -85,6 +115,7 @@ def test_project_prompt_library_and_import_deduplicate(tmp_path: Path) -> None:
     items = library.project_library("project-a")
     assert len(items) == 2
     assert {item["taskName"] for item in items} == {"任务-first", "已清理任务"}
+    assert {item["engineeringName"] for item in items} == {"GB-544", "GB-501"}
 
     result = library.import_library(
         "project-a",
@@ -102,6 +133,7 @@ def test_project_prompt_library_and_import_deduplicate(tmp_path: Path) -> None:
     assert len(items) == 3
     imported = next(item for item in items if item["source"] == "import")
     assert imported["projectId"] == "project-a"
+    assert imported["engineeringName"] == "未关联工程"
     assert "新导入" in imported["text"]
     repo.close()
 

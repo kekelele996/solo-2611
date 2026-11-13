@@ -159,18 +159,45 @@ class PromptHistory:
             return []
         with self._lock:
             items: dict[str, dict[str, Any]] = {}
+            engineering_names = {
+                str(row["engineering_id"]): str(row.get("engineering_name") or "")
+                for row in self.repo.query(
+                    """
+                    SELECT ledger.engineering_id, ledger.engineering_name
+                    FROM usage_ledger ledger
+                    JOIN (
+                        SELECT engineering_id, MAX(id) AS id
+                        FROM usage_ledger
+                        WHERE project_id = ?
+                        GROUP BY engineering_id
+                    ) latest ON latest.id = ledger.id
+                    """,
+                    (project_id,),
+                )
+            }
+
+            def engineering_name(engineering_id: str, fallback: str) -> str:
+                if not engineering_id:
+                    return "未关联工程"
+                return engineering_names.get(engineering_id) or fallback or engineering_id
+
             for record in self._records():
                 if self._record_project_id(record) != project_id:
                     continue
                 text = str(record.get("text") or "").strip()
                 if not text:
                     continue
+                engineering_id = str(record.get("engineering_id") or "")
                 task_id = str(record.get("task_id") or "")
                 key = f"task:{task_id}" if task_id else f"text:{_prompt_hash(project_id, text)}"
                 item = {
                     "recordId": key,
                     "projectId": project_id,
-                    "engineeringId": str(record.get("engineering_id") or ""),
+                    "engineeringId": engineering_id,
+                    "engineeringName": engineering_name(
+                        engineering_id,
+                        str(record.get("engineering_name") or record.get("task_name") or ""),
+                    ),
                     "taskId": task_id,
                     "taskName": str(record.get("task_name") or ""),
                     "subDirection": str(record.get("sub_direction") or ""),
@@ -200,12 +227,17 @@ class PromptHistory:
                 text = _read_prompt(Path(str(row["task_root"])))
                 if not text:
                     continue
+                engineering_id = str(row.get("engineering_id") or "")
                 task_id = str(row["id"])
                 key = f"task:{task_id}"
                 item = {
                     "recordId": key,
                     "projectId": project_id,
-                    "engineeringId": str(row.get("engineering_id") or ""),
+                    "engineeringId": engineering_id,
+                    "engineeringName": engineering_name(
+                        engineering_id,
+                        str(row.get("task_name") or ""),
+                    ),
                     "taskId": task_id,
                     "taskName": str(row.get("task_name") or ""),
                     "subDirection": str(row.get("sub_direction") or ""),
@@ -264,6 +296,7 @@ class PromptHistory:
                     "project_id": project_id,
                     "origin_project_id": str(raw.get("projectId") or ""),
                     "engineering_id": str(raw.get("engineeringId") or ""),
+                    "engineering_name": str(raw.get("engineeringName") or ""),
                     "task_id": str(raw.get("taskId") or ""),
                     "task_name": str(raw.get("taskName") or ""),
                     "sub_direction": str(raw.get("subDirection") or ""),

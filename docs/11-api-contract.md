@@ -51,7 +51,8 @@
 `userPrompt` 字段。同一项目内按忽略空白、标点和大小写的题面去重，重复或无效记录跳过，
 已有提示词不会被覆盖。导出结构为
 `{schema:"solo-auto/prompt-library/1", project:{id,name}, exportedAt, items:[...]}`，
-可直接重新导入。
+可直接重新导入。每条记录含 `engineeringId` 与 `engineeringName`；名称优先取使用台账，
+台账缺失时回退任务名，无工程关联的手工导入归入「未关联工程」。
 
 ## 4. 任务
 

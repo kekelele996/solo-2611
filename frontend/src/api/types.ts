@@ -487,6 +487,7 @@ export type PromptLibraryItem = {
   recordId: string;
   projectId: string;
   engineeringId: string;
+  engineeringName: string;
   taskId: string;
   taskName: string;
   subDirection: string;
