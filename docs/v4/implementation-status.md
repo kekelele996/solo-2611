@@ -15,7 +15,7 @@
 
 | 检查 | 结果 |
 |---|---|
-| 技能测试 | `94 passed` |
+| 技能测试 | `95 passed` |
 | 工作台后端 | `ruff`、`mypy --strict`、`pytest 141 passed` |
 | OpenAPI / TypeScript schema | `make check` contract 检查通过 |
 | 前端 | typecheck、ESLint、25 个 Vitest、生产构建全部通过 |
@@ -31,6 +31,7 @@
 | 受管正常会话 | `run` 立即返回；监督器完成题面、轮次判定、收尾、轨迹收集和接受 | `docs/v4/evidence/managed-session-smoke.md` |
 | SV1 监督器接回 | `kill -9` 后容器/tmux 保留，`resume` 起新 PID 接回；继续次数仍为 0，最终接受 | `docs/v4/evidence/supervisor-resume.md` |
 | Ctrl-C 脱离 | Python 进程退出后容器仍运行、workspace 不变；`resume` 等待原容器结束后接受 | `docs/v4/evidence/ctrl-c-resume.md` |
+| 自动继续 | 首轮命中 `PLAN_PROMISE`，自动发送 1 次“继续”后完成；最终 remark 正确 | `docs/v4/evidence/auto-continue.md` |
 | print 回退 | `run --mode print` 一次机会、继续预算 0/0，11.35 秒完成接受 | `docs/v4/evidence/print-fallback.md` |
 | 生产重启认领 | 工作台 0.3.0→0.4.0、技能 0.5.0→0.6.0；任务、容器、3 个桌面线程未变 | `docs/v4/evidence/production-cutover.md` |
 | 四结局调度 | 自动化覆盖正常接受、429 后继续 1 次、继续用尽、人工终止 | `backend/tests/test_session_v4.py` |
@@ -93,5 +94,5 @@
 
 - 技能已同步到 `~/.codex/skills/solo-2611`，`~/.claude/skills/solo-2611` 保持同一物理目录符号链接。
 - 工作台已部署到生产 `main` 并经 launchd 重启，版本 `0.4.0+5ea69dc55e62`。
-- 两侧 `main` 与 `v4-session-recovery` 已推送 GitHub；技能有 `v0.6.0` 与 hotfix1–3 标签。
+- 两侧 `main` 与 `v4-session-recovery` 已推送 GitHub；技能有 `v0.6.0` 与 hotfix1–4 标签。
 - 升级前技能、数据库、原设计稿与任务快照均已备份到 `~/solo-auto/backups/`。

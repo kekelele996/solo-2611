@@ -1,0 +1,15 @@
+{"at":"2026-11-13T11:47:51+00:00","event":"session.start","mode":"supervised","attemptNo":1,"maxContinues":2}
+{"at":"2026-11-13T11:47:53+00:00","event":"prompt.sent","chars":35,"sha256":"86f53629c91122aba4bce4edce7203a9f4e2de81b4b116361b82f3c10dbec457"}
+{"at":"2026-11-13T11:47:53+00:00","event":"round.start","round":1}
+{"at":"2026-11-13T11:48:19+00:00","event":"round.end","round":1,"kind":"incomplete","verdict":"continue","detail":"接下来我会继续。","waitSeconds":5}
+{"at":"2026-11-13T11:48:25+00:00","event":"continue.sent","no":1,"sentBy":"auto","reason":"incomplete","waitedMs":5000}
+{"at":"2026-11-13T11:48:25+00:00","event":"round.start","round":2}
+{"at":"2026-11-13T11:48:53+00:00","event":"supervisor.heartbeat","pid":52348}
+{"at":"2026-11-13T11:49:53+00:00","event":"supervisor.heartbeat","pid":52348}
+{"at":"2026-11-13T11:50:54+00:00","event":"supervisor.heartbeat","pid":52348}
+{"at":"2026-11-13T11:51:54+00:00","event":"supervisor.heartbeat","pid":52348}
+{"at":"2026-11-13T11:52:55+00:00","event":"supervisor.heartbeat","pid":52348}
+{"at":"2026-11-13T11:53:46+00:00","event":"round.end","round":2,"kind":"none","verdict":"complete","detail":"","waitSeconds":0}
+{"at":"2026-11-13T11:53:46+00:00","event":"session.closing"}
+{"at":"2026-11-13T11:53:52+00:00","event":"session.closing_fallback","reason":"tmux_eof"}
+{"at":"2026-11-13T11:53:54+00:00","event":"session.accepted","sessionId":"c784b203-c2a4-46c3-a016-66d9b2fdc511","promptId":"7b6c19f1-4992-4011-935a-8464aabb0370","continues":1}
