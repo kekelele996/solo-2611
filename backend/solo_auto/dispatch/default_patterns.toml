@@ -69,6 +69,36 @@ where = ["agent_verdict", "trace_tail"]
 regex = '''(?i)运行.*超时|run.*timeout|超过时限'''
 
 [[pattern]]
+kind = "run.continues_exhausted"
+where = ["skill_stderr", "trace_tail", "agent_verdict"]
+regex = '''(?i)继续.*(用尽|次数)|continues_exhausted'''
+
+[[pattern]]
+kind = "run.no_progress"
+where = ["skill_stderr", "trace_tail", "agent_verdict"]
+regex = '''(?i)无进展|no.?progress|长时间没有'''
+
+[[pattern]]
+kind = "run.hold_timeout"
+where = ["skill_stderr", "trace_tail", "agent_verdict"]
+regex = '''(?i)等待处理.*超时|hold_timeout'''
+
+[[pattern]]
+kind = "run.session_lost"
+where = ["skill_stderr", "trace_tail", "agent_verdict"]
+regex = '''(?i)会话丢失|session_lost|无法接回'''
+
+[[pattern]]
+kind = "run.unresponsive"
+where = ["skill_stderr", "trace_tail", "agent_verdict"]
+regex = '''(?i)继续.*无响应|unresponsive'''
+
+[[pattern]]
+kind = "run.start_failed"
+where = ["skill_stderr", "trace_tail", "agent_verdict"]
+regex = '''(?i)启动失败|start_failed|REPL.*未.*就绪'''
+
+[[pattern]]
 kind = "agent.timeout"
 where = ["agent_verdict", "trace_tail"]
 regex = '''(?i)agent.*超时|超过阶段预算'''

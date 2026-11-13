@@ -1,0 +1,126 @@
+{
+  "schema": "solo-2611/1",
+  "skillVersion": "0.6.0",
+  "taskName": "v4-interactive-probe",
+  "taskRoot": "/private/tmp/solo2611-accept/2026-11-13-v4-interactive-probe-ujhv",
+  "workspace": "/private/tmp/solo2611-accept/2026-11-13-v4-interactive-probe-ujhv/workspace",
+  "createdAt": "2026-11-13T11:01:53+00:00",
+  "createdDate": "2026-11-13",
+  "status": "snapshotted",
+  "source": {
+    "kind": "dir",
+    "path": "/Users/gaobo/repositories/gitlab/评审项目/solo-202611/solo-1111/solo-2611-new-device-kit-v0.5.0/skills/solo-2611"
+  },
+  "initialSha": "1db09df9f7b44248d4251ad0758552936d9933a2",
+  "fields": {
+    "所属领域": "数据工程",
+    "子方向": "数据分析与数据应用",
+    "Harness": "Claude Code",
+    "操作系统": "MacOS/Linux"
+  },
+  "attempts": [
+    {
+      "index": 1,
+      "container": "solo2611-v4-interactive-probe-01-4ccb",
+      "mode": "supervised",
+      "image": "adminfather/benzhi-claude-code2:20261110",
+      "startedAt": "2026-11-13T11:05:39+00:00",
+      "status": "accepted",
+      "dir": "/private/tmp/solo2611-accept/2026-11-13-v4-interactive-probe-ujhv/monitor/runs/attempt-01",
+      "streams": [],
+      "rounds": 1,
+      "continues": 0,
+      "startFailed": false,
+      "finishedAt": "2026-11-13T11:06:54+00:00",
+      "completion": {
+        "ok": true,
+        "errors": [],
+        "warnings": [],
+        "danglingToolUses": 0
+      },
+      "errors": []
+    }
+  ],
+  "updatedAt": "2026-11-13T11:06:54+00:00",
+  "promptPath": "/private/tmp/solo2611-accept/2026-11-13-v4-interactive-probe-ujhv/delivery/提示词.md",
+  "promptSha256": "303f7a754e53dd915b25f56eb87e14296e3cc512ba2e8ac2a0b87c390b25c970",
+  "sessionRun": {
+    "schema": "solo2611/session-run/1",
+    "mode": "supervised",
+    "attemptIndex": 1,
+    "container": "solo2611-v4-interactive-probe-01-4ccb",
+    "tmuxSession": "solo2611-v4-interactive-probe-01-d9cf",
+    "supervisor": {
+      "pid": 26755,
+      "pgid": 26755,
+      "startedAt": "2026-11-13T11:05:39+00:00",
+      "heartbeatAt": "2026-11-13T11:05:39+00:00"
+    },
+    "liveTraceDir": "/private/tmp/solo2611-accept/2026-11-13-v4-interactive-probe-ujhv/monitor/runs/attempt-01/live",
+    "status": "accepted",
+    "startedAt": "2026-11-13T11:05:39+00:00",
+    "lastActivityAt": "2026-11-13T11:06:11+00:00",
+    "deadline": {
+      "totalAt": "2026-11-13T14:05:39+00:00",
+      "noProgressAt": "2026-11-13T11:26:11+00:00",
+      "holdUntil": null
+    },
+    "nextActionAt": null,
+    "continues": {
+      "used": 0,
+      "max": 2,
+      "history": []
+    },
+    "rounds": [
+      {
+        "no": 1,
+        "startedAt": "2026-11-13T11:05:41+00:00",
+        "endedAt": "2026-11-13T11:06:21+00:00",
+        "stopReason": "end_turn",
+        "kind": "none",
+        "verdict": "complete",
+        "detail": "",
+        "toolUses": 0,
+        "finalChars": 10,
+        "continued": false
+      }
+    ],
+    "interrupts": [],
+    "blocked": null,
+    "abort": null,
+    "outcome": {
+      "acceptedAt": "2026-11-13T11:06:54+00:00",
+      "remark": ""
+    },
+    "startAttempts": {
+      "used": 1,
+      "max": 2
+    },
+    "promptSent": true,
+    "lastRoundStartedAt": "2026-11-13T11:05:41+00:00"
+  },
+  "session": {
+    "sessionId": "d9d5073d-38bf-4dc3-8733-ddce9a3c3b17",
+    "promptId": "ee71f932-3d13-4d65-a9aa-3a40cc1e1278",
+    "harnessVersion": "2.1.319",
+    "entrypoint": "cli",
+    "models": [
+      "auto_model/urm"
+    ],
+    "trace": "/private/tmp/solo2611-accept/2026-11-13-v4-interactive-probe-ujhv/traces/-workspace/d9d5073d-38bf-4dc3-8733-ddce9a3c3b17.jsonl",
+    "tracesDir": "/private/tmp/solo2611-accept/2026-11-13-v4-interactive-probe-ujhv/traces",
+    "subagentFiles": 0,
+    "toolUses": 0,
+    "warnings": [],
+    "mode": "supervised"
+  },
+  "artifact": {
+    "sha": "1db09df9f7b44248d4251ad0758552936d9933a2",
+    "modelCommits": [],
+    "shortStat": "",
+    "stat": "",
+    "largeBinaries": [],
+    "createdAt": "2026-11-13T11:06:54+00:00",
+    "warning": "模型没有留下任何文件改动，产物快照等于初始快照"
+  }
+}

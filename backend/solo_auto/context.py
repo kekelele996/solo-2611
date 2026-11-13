@@ -86,7 +86,12 @@ class AppContext:
         self.ledger = UsageLedger(self.repo, self.settings.source.base_url)
         self.notifier = Notifier(self.settings.notify)
         self.instance_lock = InstanceLock(self.paths.instance_lock, self.paths.pid)
-        self.reconciler = Reconciler(self.repo, self.paths, self.settings.tasks_dir)
+        self.reconciler = Reconciler(
+            self.repo,
+            self.paths,
+            self.settings.tasks_dir,
+            gateway=self.gateway,
+        )
         self.staging = StagingManager(self.paths)
         self.source = ProjectHubClient(self.settings.source, self.secrets)
         self.solo2 = Solo2Client(self.settings.solo2, self.secrets)
@@ -99,6 +104,7 @@ class AppContext:
             bus=self.bus,
             dispatcher=self.dispatcher,
             attempt_total=self.settings.execution.attempts,
+            run_mode=self.settings.execution.run_mode,
         )
         self.tasks = TaskService(
             self.settings,
@@ -212,6 +218,7 @@ class AppContext:
             bus=self.bus,
             notifier=self.notifier,
         )
+        self.scheduler.attach_recovery(intake=self.intake, ledger=self.ledger)
         self.dispatcher.attach_runtime(
             autopilot=self.autopilot,
             preflight=self.preflight,

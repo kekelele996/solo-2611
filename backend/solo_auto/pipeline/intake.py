@@ -320,6 +320,37 @@ class IntakeService:
         )
         return self.snapshot()
 
+    async def terminal_session(self, task_id: str, *, reason: str) -> dict[str, Any]:
+        """Release and cool down the engineering behind a terminal session."""
+        task = self.repo.get_task(task_id)
+        if task is None:
+            return {"released": False, "reason": "task_missing"}
+        root = str(task.get("task_root") or "")
+        for meta in self.staging.list():
+            if str(meta.get("taskRoot") or "") != root:
+                continue
+            plan = self.plan or {}
+            engineering_id = _engineering_id(meta)
+            failed = plan.setdefault("failed_claims", [])
+            if isinstance(failed, list):
+                failed.append(
+                    {
+                        "engineering_id": engineering_id,
+                        "code": f"run.{reason}",
+                        "message": f"会话终止：{reason}",
+                        "at": _now(),
+                    }
+                )
+                plan["updated_at"] = _now()
+                self._save()
+            await self._release_staged_claim(
+                meta,
+                f"会话终止（{reason}），工程已冷却并归还",
+            )
+            await self.tick()
+            return {"released": True, "engineering_id": engineering_id}
+        return {"released": False, "reason": "staging_not_found"}
+
     async def tick(self) -> None:
         async with self._lock:
             plan = self.plan

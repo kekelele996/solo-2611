@@ -1,6 +1,6 @@
 # 13 · 技能 CLI 契约（已核对源码）
 
-> 本文档由逐行阅读 `~/.codex/skills/solo-2611/scripts/*.py`（v0.2.2）得出，**不是**从
+> 本文档已按 v0.6.0 受管交互实现更新；旧版 print 行为只保留在回退说明中，**不是**从
 > `SKILL.md` 推演。凡与 `SKILL.md` 措辞不同处，以本文档为准。
 >
 > 开发时必须按本文档实现网关，不要凭命令名猜参数 —— 猜错会导致「命令跑了但结果不对」，
@@ -10,29 +10,19 @@
 
 这三条直接改变控制台的设计，写在最前面。
 
-### F1 · `run` 的进度在 **stderr**，结果在 **stdout**，容器日志在**文件**
-
-```python
-stdout = open(attempt_dir / "stdout.jsonl", "wb")   # docker 的 stdout → 文件
-stderr = open(attempt_dir / "stderr.log", "wb")     # docker 的 stderr → 文件
-proc = subprocess.Popen(cmd, stdin=…, stdout=stdout, stderr=stderr, …)
-...
-print(f"[attempt {idx}] 容器 {name} 运行中（超时 {int(timeout)} 秒）", file=sys.stderr)
-...
-emit({"ok": True, "attempt": idx, "sessionId": …})   # 成功时唯一的 stdout，且只在最后输出一次
-```
+### F1 · 受管 `run` 返回启动凭据，后续进度来自 `run-status` 与事件日志
 
 即：
 
 | 流 | 内容 | 控制台怎么用 |
 |---|---|---|
-| 技能进程 stdout | **只有最后一次 `emit()` 的 JSON**（失败时可能为空） | 结束后解析一次 |
-| 技能进程 stderr | 阶段行（`[attempt 1] 容器 … 运行中`、`容器已达上限 4，等待名额…`、`[attempt 2] 不可用：…`） | 逐行读，用于显示 phase |
-| `monitor/runs/attempt-NN/stdout.jsonl` | 容器内 Claude Code 的 stream-json | 尾部 200 行展示「它在干什么」 |
-| `monitor/runs/attempt-NN/stderr.log` | 容器 stderr + `docker pull` 输出 | 出错时展示 |
+| 首次 `run` stdout | 启动 JSON，含 attempt/container/tmux/supervisor | 立即解析，之后不再保持长连接 |
+| `run-status --json` | 状态、轮次、继续、截止时间、最近事件 | 每 2–5 秒轮询，写工作台影子状态 |
+| `supervisor.log` | 一行一个事件，只增不改 | 实时日志、轮次时间线、SSE 事件来源 |
+| `monitor/runs/attempt-NN/live/` | 实时 Claude projects 目录 | 监督器的唯一语义判定来源 |
 
-**所以**：`runner.py` 必须同时 `await` 两个管道并 `tail -f` 两个文件。
-只读 stdout 会得到「长时间没有任何输出，然后突然结束」。
+**所以**：工作台不 `await` 一个可能运行数小时的子进程。后端重启只重新轮询状态；调用方脚本退出、
+Agent 超时或 SSH 断开都不影响监督器和容器。
 
 ### F2 · 技能自己已经实现了容器上限，会**静默阻塞**
 
@@ -161,36 +151,48 @@ repo --task-root ROOT [--name PREFIX] [--private]
 ### 2.6 `run`
 
 ```
-run --task-root ROOT [--attempts N] [--timeout SEC] [--force] [--skip-repo]
+run --task-root ROOT [--mode supervised|print] [--follow]
+    [--timeout SEC] [--skip-repo] [--hard-stop]
 ```
 
-前置校验（任一不满足即抛错，退出码 1）：
+v0.6.0 默认 `claude.runMode=supervised`。受管模式调用官方镜像的 `interactive` 入口，
+在后台 tmux 中运行，监督器独立于调用方进程。`run` 只负责创建 attempt、启动 tmux/容器和监督器，
+默认立即返回：
 
-| 校验 | 错误文案（原文，控制台可直接展示） |
-|---|---|
-| `promptPath` 存在 | 先运行 prompt |
-| 无已接受会话 | 这道题已有被接受的会话；一个 session 只算一条数据 |
-| 题面未被改动 | `delivery/提示词.md` 在 prompt 之后被改动过 |
-| 初始快照已推送 | 规范要求首轮前把初始快照 push 到远端 |
-| workspace HEAD == 初始快照且干净 | workspace 不干净，初始环境与快照不一致 |
+```json
+{"ok":true,"supervised":true,"attempt":1,"container":"…","tmux":"…","supervisor":12345,"next":"run-status"}
+```
 
-执行细节：
+- 一题只有一次会话机会；不存在“恢复初始快照后重跑”。
+- 会话成立后，429、5xx、截断、空回复、许诺下一步或向用户提问都在原会话发送字面 `继续`，最多 2 次。
+- 401、额度不足、模型名不匹配原地保留，最多等待处理 30 分钟；超时终止。
+- 总时长默认 10800 秒；无进展/静默默认 1200 秒；到达任一上限即终止。
+- 监督器、Agent、工作台后端断开不算会话中断；`resume` 接回不消耗继续次数。
+- `--follow` 持续读取状态直到终态。`--mode print` 是保守回退，仍然只有一次机会、无继续。
+- `--hard-stop` 只改变 Ctrl-C 行为：立刻停容器并恢复工作区；默认 Ctrl-C 是脱离，不终止会话。
 
-- `attempts` 默认取 config（3），`timeout` 默认 7200 秒。
-- 每次 attempt：新容器名 `solo2611-<slug>-<NN>-<4hex>`，`docker run -i --init --restart=no
-  --cap-drop ALL --security-opt no-new-privileges --mount type=bind,src=<ws>,dst=/workspace
-  -e apikey -e ANTHROPIC_BASE_URL <image> print`。
-- 接受条件：轨迹恰好 1 个主会话文件、真人 prompt 恰好 1 条、`promptId` 存在、
-  轨迹 prompt 与 `提示词.md` 一致、最终 `stop_reason == end_turn`。
-- 接受后**自动**执行：`_snapshot` → `_digest` → `_auto_push`（若已建仓且 `autoPush`）。
-  即控制台**不需要**在 run 之后再调 `snapshot`/`digest`。
-- 被拒 → 恢复 workspace 到初始快照 → 指数退避（30s, 60s, 120s…，上限 300s）→ 下一 attempt。
-- **401 熔断**：任何 attempt 的错误里含 `401` 或 `authenticat`，立即 `status=run_failed` 并抛出，
-  不再重试。控制台应据此**清空整个队列**（FR-RUN-07）。
-- 全部 attempt 失败 → `Could not … 3 次尝试都没有得到完整单轮（持续中断/报错时规范要求换题）`，
-  退出码 1，`status=run_failed`。
-- `interactive` 模式中断（Ctrl+C）→ 恢复 workspace，`status` 回退到 `prompt_ready`，
-  轨迹保留在 `monitor/runs/attempt-NN/`。
+对应查询与控制命令：
+
+```
+run-status --task-root ROOT [--json] [--lines N]
+resume --task-root ROOT [--follow]
+continue --task-root ROOT [--note TEXT]
+abort --task-root ROOT --reason TEXT [--by human|auto]
+resume-all [--tasks-dir DIR] [--dry-run]
+doctor baseline [--tasks-dir DIR] [--out FILE]
+doctor --fix-stale [--tasks-dir DIR]
+supervise --task-root ROOT --attempt N [--attach]
+```
+
+- `run-status --json` 是工作台的唯一轮询入口，返回状态、轮次、继续 x/2、最近活动、下次动作、
+  剩余时间、监督器/容器存活与事件尾。
+- `resume` 幂等；监督器活着时只查询，不重复启动监督器。
+- `continue --note` 中的人类备注只写事件日志，发给模型的文本严格只有两个字 `继续`。
+- `abort` 是唯一会停止并删除受管会话容器的入口；终止后写 `delivery/终止说明.md` 并保留现场。
+- `start_failed` 不消耗会话机会，最多重新启动 2 次；仍失败则任务可重新排队，不计工程冷却。
+
+`run` 的全局前置校验与旧版相同：题面未改、初始快照已推送、workspace 干净、尚未接受或终止。
+会话接受后仍自动执行 `_snapshot → _digest → _auto_push`，控制台不需要再重复手工快照。
 
 ### 2.7 `interactive` / `collect`
 

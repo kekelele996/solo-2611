@@ -79,15 +79,16 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/api/tasks/{id}/run` | 入队；返回 `{state: "queued"\|"running", queue_position}`；已有实例 → `409 {code:"ALREADY_RUNNING"}` |
-| POST | `/api/tasks/{id}/run/stop` | 停止（先 SIGTERM，10s 后 SIGKILL）；`{force:false}` |
-| GET | `/api/tasks/{id}/run` | `{state, attempt_seq, attempt_total, phase, started_at, elapsed_s, log_tail}` |
+| POST | `/api/tasks/{id}/run/stop` | v4 调技能 `abort` 保留证据；不再直接杀本地轮询协程 |
+| GET | `/api/tasks/{id}/run` | `{state, attempt_seq, attempt_total, phase, round, continues, session_state, next_action_at, log_tail}` |
 | GET | `/api/tasks/{id}/run/log?lines=200` | 纯文本（`text/plain`），脱敏后 |
 | POST | `/api/tasks/{id}/run/interactive` | 生成启动命令（脱敏），返回 `{command, container_hint}` |
 | POST | `/api/tasks/{id}/run/collect` | `interactive` 结束后执行 `collect` |
 | POST | `/api/tasks/{id}/reset` | `reset --yes` 前预览；`{confirm: "<task_name>"}` 才执行 |
 | GET | `/api/queue` | `{limit, used, slots:[{task_id,pid,container,started_at}], waiting:[...]}` |
 
-执行体的状态（`phase`）值域：`pulling | starting | running | collecting | snapshotting | verifying | done | failed`。
+执行体的状态（`phase`）值域：`pulling | starting | running | waiting | blocked | collecting |
+snapshotting | verifying | done | failed`。终态只由技能的 `run-status` 产生。
 
 ## 7. 证据
 
@@ -151,7 +152,25 @@
 `status` 改为 `exported`），控制台只有在用户显式勾选「预览不完整表（不交付）」时才允许调用，
 且生成的表必须打在 `exports/preview/` 下并在文件名里带 `-incomplete`。
 
-## 11. 实时通道（SSE）
+## 11. v4 受管会话
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/tasks/{id}/run/resume` | 幂等接回监督器；返回技能 `resume` 与最新 `run-status` |
+| POST | `/api/tasks/{id}/run/continue` | 人工发送一次字面“继续”；`{note}` 只写事件日志 |
+| POST | `/api/tasks/{id}/run/abort` | 终止会话、保留证据并标记任务 `aborted` |
+| GET | `/api/tasks/{id}/run/session` | 轮次、继续、中断、截止时间、监督器状态与 `session_rounds` |
+| GET | `/api/dispatch/session-stats` | 继续率、终止原因分布、每容器小时产出 |
+| POST | `/api/dispatch/queue/{task_id}/resume` | 从队列侧接回指定任务 |
+
+`GET /api/tasks/{id}/run` 扩展字段 `round`、`continues`、`next_action_at`、`session_state`、
+`last_kind`，旧字段保留。继续次数用尽时继续接口返回 `409 SESSION_CONTINUE_REJECTED`。
+工作台只轮询技能状态，不自行生成轮次或终止会话。
+
+SSE 新增 `session.round_end`、`session.continue_sent`、`session.held`、`session.aborted`、
+`session.accepted`。这些事件只是变化通知，真实数据仍以技能 `state.json` 与 `run-status` 为准。
+
+## 12. 实时通道（SSE）
 
 `GET /api/events/stream`（`text/event-stream`）
 
@@ -177,13 +196,13 @@ data: {"docker_ok":true,"disk_free_gb":42,"source_online":true,"offline":false}
 - **SSE 只用于「通知变化」，不作为数据源** —— 收到事件后前端用 TanStack Query 重新拉对应接口。
   这样即使 SSE 丢事件，界面也能自愈。
 
-## 12. 静态资源
+## 13. 静态资源
 
 - `GET /` 及所有非 `/api` 路径 → `frontend/dist/index.html`（SPA fallback）
 - `GET /assets/*` → 静态文件，带 `Cache-Control: public, max-age=31536000, immutable`
 - 开发期由 Vite 5173 代理 `/api` 到 8099
 
-## 13. 状态码约定
+## 14. 状态码约定
 
 | 码 | 含义 | 前端行为 |
 |---|---|---|
@@ -197,7 +216,7 @@ data: {"docker_ok":true,"disk_free_gb":42,"source_online":true,"offline":false}
 | 500 | 未预期错误 | 展示 `message` + 「查看日志」 |
 | 503 | 离线模式 / Docker 不可用 | 禁用新建类操作 |
 
-## 14. 兼容与演进
+## 15. 兼容与演进
 
 - 接口不做版本前缀（单机单前端，同时发布）。若后续需要，加 `/api/v2` 并保留 `/api` 三个月。
 - 字段只加不删；删除字段先标记 `deprecated` 并在前端停止使用一个版本。

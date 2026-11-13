@@ -339,10 +339,71 @@ export type RunStatus = {
   attempt_seq: number;
   attempt_total: number;
   phase: string;
+  round?: number;
+  continues?: { used: number; max: number; history?: ContinueRecord[] };
+  next_action_at?: string;
+  session_state?: string;
+  last_kind?: string;
   started_at: string;
   elapsed_s: number;
   queue_position?: number;
   log_tail: string;
+};
+
+export type ContinueRecord = {
+  no: number;
+  at: string;
+  sentBy: "auto" | "human";
+  reason: string;
+  round: number;
+  waitedMs: number;
+};
+
+export type SessionRound = {
+  no: number;
+  startedAt: string;
+  endedAt?: string;
+  stopReason?: string;
+  kind: string;
+  verdict: string;
+  detail?: string;
+  toolUses?: number;
+  finalChars?: number;
+  continued?: boolean | number;
+};
+
+export type SessionStatus = {
+  status: string;
+  startedAt: string;
+  sessionState: string;
+  round: number;
+  rounds: SessionRound[];
+  continues: { used: number; max: number; history: ContinueRecord[] };
+  lastKind: string;
+  lastActivityAt: string;
+  nextActionAt: string | null;
+  remainingSeconds: number;
+  supervisorAlive: boolean;
+  container: string;
+  containerRunning: boolean;
+  tmuxSession: string;
+  tmuxAlive: boolean;
+  sessionId: string;
+  promptId: string;
+  blocked: { kind: string; since: string; until: string } | null;
+  abort: { reason: string; detail: string; at: string; by: string } | null;
+  outcome: { acceptedAt: string; remark: string } | null;
+  logTail: Array<Record<string, unknown>>;
+  attempt: number;
+  mode: string;
+};
+
+export type SessionStats = {
+  accepted: number;
+  acceptedWithContinue: number;
+  continueRate: number;
+  abortReasons: Array<{ kind: string; count: number }>;
+  sessionsPerContainerHour: number;
 };
 
 export type EventRow = {
@@ -576,6 +637,10 @@ export type DispatchQueueItem = {
   plan_id: string;
   project_id: string;
   engineering_id: string;
+  session_state?: string;
+  continue_used?: number;
+  next_action_at?: string;
+  container_seconds?: number;
   updated_at: string;
   active: boolean;
   queue_position: number | null;
@@ -635,6 +700,7 @@ export type DispatchSnapshot = {
     synced: boolean;
   };
   pools: Record<string, DispatchPool>;
+  session_capacity?: { running: number; waiting: number; label: string };
   holds: DispatchHold[];
   hold_history: Array<DispatchHold & { released_at: string; released_by: string; duration_seconds: number }>;
   counts: { active: number; waiting: number; needs_action: number; finished: number; all: number };
@@ -650,7 +716,10 @@ export type DispatchSnapshot = {
     medians_seconds: Record<string, number>;
     container_utilization: number;
   };
-  capacity: { items: Array<Record<string, unknown>> };
+  capacity: {
+    items: Array<Record<string, unknown>>;
+    latest?: { occupied: number; running: number; waiting: number; label: string };
+  };
   plan: Record<string, unknown>;
   elastic: { enabled: boolean; effective: number; floor: number; ceiling: number };
   loops: Array<{ name: string; status: string; last_beat_at: number; errors: number }>;
@@ -687,7 +756,18 @@ export type ConfigResponse = {
     password: string;
     bearer_token: string;
   };
-  execution: { max_containers: number; run_timeout_seconds: number; attempts: number; stale_after_seconds: number };
+  execution: {
+    max_containers: number;
+    run_timeout_seconds: number;
+    attempts: number;
+    run_mode: "supervised" | "print";
+    continue_max: number;
+    start_attempts: number;
+    silent_seconds: number;
+    no_progress_seconds: number;
+    fatal_hold_minutes: number;
+    stale_after_seconds: number;
+  };
   storage: { disk_floor_gb: number; event_retention_days: number; skill_log_retention_days: number };
   recording: { max_seconds: number; chrome_url: string };
   submission: {

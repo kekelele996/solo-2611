@@ -696,6 +696,11 @@ class Dispatcher:
         holds = [asdict(hold) for hold in self.holds.active()]
         guards = [hit.view() for hit in self.guards.scan()]
         effective = self._effective_state(items)
+        waiting_sessions = [
+            item
+            for item in items
+            if item.session_state in {"waiting_continue", "holding", "manual_input"}
+        ]
         return {
             "engine": self.config.engine,
             "enabled": self.config.enabled,
@@ -717,6 +722,14 @@ class Dispatcher:
                 "synced": self.limit_synced,
             },
             "pools": self.pools_book.snapshot(),
+            "session_capacity": {
+                "waiting": len(waiting_sessions),
+                "running": max(0, len(active) - len(waiting_sessions)),
+                "label": (
+                    f"占用 {len(active)}（运行 {max(0, len(active) - len(waiting_sessions))}"
+                    f" / 等待 {len(waiting_sessions)}）"
+                ),
+            },
             "holds": holds,
             "hold_history": self.holds.history[-20:],
             "counts": {
@@ -858,6 +871,13 @@ class Dispatcher:
             f"会话 {sessions['used']}/{sessions['limit']}",
             f"在手 {in_hand}/{self.effective_in_hand}",
         ]
+        waiting = sum(
+            1
+            for item in self.queue.all_items(include_terminal=False)
+            if item.session_state in {"waiting_continue", "holding", "manual_input"}
+        )
+        if waiting:
+            parts.append(f"等待继续 {waiting}")
         hold = self.holds.active()[0] if self.holds.active() else None
         if hold:
             if hold.next_at:
@@ -1179,6 +1199,11 @@ class Dispatcher:
             in_hand=self.in_hand_count(),
             sessions=int(pool["sessions"]["used"]),
             held=[hold.source for hold in self.holds.active()],
+            waiting=sum(
+                1
+                for item in self.queue.all_items(include_terminal=False)
+                if item.session_state in {"waiting_continue", "holding", "manual_input"}
+            ),
         )
 
     def _check_clock(self) -> None:
@@ -1271,7 +1296,7 @@ class Dispatcher:
                 "started_at": self._start_id,
                 "clean_exit": False,
                 "pid": os.getpid(),
-                "version": "0.3.0",
+                "version": "0.4.0",
             }
         )
         write_json(self.starts_file, starts[-20:])

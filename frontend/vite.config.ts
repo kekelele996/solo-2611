@@ -8,9 +8,9 @@ function buildId(): string {
       encoding: "utf8",
       cwd: new URL(".", import.meta.url),
     }).trim();
-    return `0.3.0+${sha || "unknown"}`;
+    return `0.4.0+${sha || "unknown"}`;
   } catch {
-    return "0.3.0+unknown";
+    return "0.4.0+unknown";
   }
 }
 

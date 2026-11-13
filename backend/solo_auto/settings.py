@@ -56,9 +56,51 @@ class ExecutionSettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     max_containers: int = Field(default=4, ge=1, le=8)
-    run_timeout_seconds: int = Field(default=7200, ge=60)
-    attempts: int = Field(default=3, ge=1, le=10)
+    run_timeout_seconds: int = Field(default=10800, ge=60)
+    attempts: int = Field(default=1, ge=1, le=10)
+    run_mode: Literal["supervised", "print"] = "supervised"
+    continue_max: int = Field(default=2, ge=0, le=2)
+    start_attempts: int = Field(default=2, ge=1, le=2)
+    silent_seconds: int = Field(default=1200, ge=60)
+    no_progress_seconds: int = Field(default=1200, ge=60)
+    fatal_hold_minutes: int = Field(default=30, ge=1, le=1440)
     stale_after_seconds: int = Field(default=90 * 60, ge=60)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _clamp_v4_limits(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        for key in ("attempts", "continue_max", "start_attempts"):
+            if key in data:
+                try:
+                    data[key] = int(data[key])
+                except (TypeError, ValueError):
+                    continue
+        try:
+            attempts = int(data.get("attempts") or 1)
+        except (TypeError, ValueError):
+            attempts = 1
+        if attempts > 1:
+            LOGGER.warning("execution.attempts 已废弃；v4 固定为一次会话")
+            data["attempts"] = 1
+        try:
+            data["continue_max"] = min(2, max(0, int(data.get("continue_max", 2))))
+        except (TypeError, ValueError):
+            data["continue_max"] = 2
+        try:
+            data["start_attempts"] = min(2, max(1, int(data.get("start_attempts", 2))))
+        except (TypeError, ValueError):
+            data["start_attempts"] = 2
+        return data
+
+    @field_validator("attempts")
+    @classmethod
+    def _single_opportunity(cls, value: int) -> int:
+        if value > 1:
+            LOGGER.warning("execution.attempts=%s 已废弃；v4 固定为一次会话", value)
+        return 1
 
 
 class StorageSettings(BaseModel):
@@ -114,11 +156,18 @@ class AutopilotSettings(BaseModel):
     restricted: bool = False
     stage_timeout_seconds: int = Field(default=3600, ge=60)
     stage_attempts: int = Field(default=2, ge=1, le=10)
-    run_attempts: int = Field(default=2, ge=1, le=10)
+    run_attempts: int = Field(default=1, ge=1, le=10)
     parallel_authoring: int = Field(default=2, ge=1, le=8)
     parallel_delivering: int = Field(default=1, ge=1, le=8)
     stop_kills_containers: bool = True
     breaker: BreakerSettings = Field(default_factory=BreakerSettings)
+
+    @field_validator("run_attempts")
+    @classmethod
+    def _one_run_attempt(cls, value: int) -> int:
+        if value > 1:
+            LOGGER.warning("autopilot.run_attempts=%s 已废弃；v4 固定为 1", value)
+        return 1
 
 
 class AuditSettings(BaseModel):
@@ -358,6 +407,7 @@ class Paths(BaseModel):
     database: Path
     run: Path
     slots: Path
+    sessions: Path
     staging: Path
     drafts: Path
     exports: Path
@@ -377,6 +427,7 @@ class Paths(BaseModel):
             self.home,
             self.run,
             self.slots,
+            self.sessions,
             self.staging,
             self.drafts,
             self.exports,
@@ -400,6 +451,7 @@ def app_paths(home: Path | None = None) -> Paths:
         database=root / "solo-auto.db",
         run=root / "run",
         slots=root / "run" / "slots",
+        sessions=root / "run" / "sessions",
         staging=root / "staging",
         drafts=root / "drafts",
         exports=root / "exports",

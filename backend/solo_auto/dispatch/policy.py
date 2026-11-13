@@ -54,6 +54,18 @@ class RecoveryPolicy:
             return PolicyDecision("quarantine", "quarantined", detail=failure.detail)
         evidence_stage = str(failure.evidence.get("stage") or item.stage)
         stage_attempts = int(item.attempts.get(evidence_stage, 0))
+        if failure.kind == "run.start_failed":
+            start_failures = int(item.attempts.get("run.start_failed", 0))
+            if start_failures >= failure.max_retries:
+                return PolicyDecision(
+                    "quarantine",
+                    "quarantined",
+                    detail="启动失败次数已用尽，可人工重排（不计入工程冷却）",
+                )
+        if failure.kind == "run.session_lost":
+            lost_attempts = int(item.attempts.get("run.session_lost", 0))
+            if lost_attempts >= failure.max_retries:
+                return PolicyDecision("quarantine", "quarantined", detail=failure.detail)
         charged = stage_attempts + (1 if failure.charge else 0)
         if failure.kind == "agent.launch_lost" and item.total_attempts >= failure.max_retries:
             return PolicyDecision("quarantine", "quarantined", detail="会话拉起连续失败，已隔离")
@@ -94,6 +106,8 @@ class RecoveryPolicy:
         attempts = dict(item.attempts)
         if decision.charge:
             attempts[stage] = int(attempts.get(stage, 0)) + 1
+        if failure.kind in {"run.start_failed", "run.session_lost"}:
+            attempts[failure.kind] = int(attempts.get(failure.kind, 0)) + 1
         updates: dict[str, Any] = {
             "status": decision.status,
             "stage": stage,

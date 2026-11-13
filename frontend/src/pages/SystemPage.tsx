@@ -317,8 +317,25 @@ export function SystemPage() {
         <Panel title="执行">
           <div className="form-note">
             容器并发、会话并发、在手上限、启动间隔与失败策略已移到 <a className="text-link" href="/dispatch">调度页</a>。
-            这里只保留技能本身的运行超时与尝试次数。
+            v4 起一题只有一次会话机会，中断时在同一会话发送“继续”，不再整题重跑。
           </div>
+          <Field label="运行模式">
+            <select
+              value={form.execution.run_mode}
+              onChange={(event) =>
+                update({
+                  ...form,
+                  execution: {
+                    ...form.execution,
+                    run_mode: event.target.value as "supervised" | "print",
+                  },
+                })
+              }
+            >
+              <option value="supervised">受管交互（推荐）</option>
+              <option value="print">无头回退</option>
+            </select>
+          </Field>
           <Field label="超时秒数">
             <input
               type="number"
@@ -331,20 +348,73 @@ export function SystemPage() {
               }
             />
           </Field>
-          <Field label="尝试次数">
+          <Field label="继续上限" hint="最多 2 次，0 表示关闭继续">
             <input
               type="number"
-              min={1}
-              max={10}
-              value={form.execution.attempts}
+              min={0}
+              max={2}
+              value={form.execution.continue_max}
               onChange={(event) =>
                 update({
                   ...form,
-                  execution: { ...form.execution, attempts: Number(event.target.value) },
+                  execution: {
+                    ...form.execution,
+                    continue_max: Math.max(0, Math.min(2, Number(event.target.value))),
+                  },
                 })
               }
             />
           </Field>
+          <Field label="等待处理时限（分钟）">
+            <input
+              type="number"
+              min={1}
+              max={1440}
+              value={form.execution.fatal_hold_minutes}
+              onChange={(event) =>
+                update({
+                  ...form,
+                  execution: {
+                    ...form.execution,
+                    fatal_hold_minutes: Number(event.target.value),
+                  },
+                })
+              }
+            />
+          </Field>
+          <Field label="无进展时限（秒）">
+            <input
+              type="number"
+              min={60}
+              value={form.execution.no_progress_seconds}
+              onChange={(event) =>
+                update({
+                  ...form,
+                  execution: {
+                    ...form.execution,
+                    no_progress_seconds: Number(event.target.value),
+                  },
+                })
+              }
+            />
+          </Field>
+          <Field label="静默超时（秒）">
+            <input
+              type="number"
+              min={60}
+              value={form.execution.silent_seconds}
+              onChange={(event) =>
+                update({
+                  ...form,
+                  execution: {
+                    ...form.execution,
+                    silent_seconds: Number(event.target.value),
+                  },
+                })
+              }
+            />
+          </Field>
+          <p className="form-note">旧配置中的尝试次数已弃用：v4 起固定一次会话。</p>
           <Field label="任务目录">
             <input value={form.tasks_dir} onChange={(event) => update({ ...form, tasks_dir: event.target.value })} />
           </Field>
@@ -478,12 +548,6 @@ export function SystemPage() {
               <input type="number" min={1} max={10} value={form.autopilot.stage_attempts} onChange={(event) => update({
                 ...form,
                 autopilot: { ...form.autopilot, stage_attempts: Number(event.target.value) },
-              })} />
-            </Field>
-            <Field label="运行重试">
-              <input type="number" min={1} max={10} value={form.autopilot.run_attempts} onChange={(event) => update({
-                ...form,
-                autopilot: { ...form.autopilot, run_attempts: Number(event.target.value) },
               })} />
             </Field>
             <Field label="同类失败熔断阈值">

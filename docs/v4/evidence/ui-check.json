@@ -1,0 +1,9 @@
+{
+  "ok": true,
+  "base": "http://127.0.0.1:18099",
+  "taskId": "f94ac910-75eb-5611-984c-6f947563e887",
+  "taskSessionPanel": true,
+  "dispatchSessionCapacity": true,
+  "legacyAttemptInputCount": 0,
+  "systemSessionSettings": true
+}

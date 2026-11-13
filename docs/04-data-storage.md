@@ -195,15 +195,19 @@ CREATE TABLE claims (
 | `prepared` | — | `authored` | 「待出题」 |
 | `prompt_ready` | 无 `remote.initialPushed` | `prompt_ok` | 「待推送快照」 |
 | `prompt_ready` | 有 `remote.initialPushed` | `ready` | 「可运行」 |
-| `running` | 有存活进程 | `running` | 「运行中 00:34:12」 |
-| `running` | 无存活进程 | `blocked` | 「疑似中断，需确认」 |
+| `running` | 监督器、容器或 tmux 任一存活 | `running` | 「运行中 · 第 2 轮 · 继续 1/2」 |
+| `running` | `sessionRun.status=holding` | `blocked` | 「等待人工处理：鉴权」+ 倒计时 |
+| `running` | `sessionRun.status=manual_input` | `blocked` | 「需要人工输入」 |
+| `running` | 容器与 tmux 都不存在且接回失败 | `blocked` | 「会话丢失」 |
 | `ran` / `snapshotted` | 录屏缺失 | `ran` | 「待录屏」 |
 | `recorded` | feedback check 未过 | `recorded` | 「待写 Feedback」 |
 | `recorded` | feedback ok 且未确认复核 | `recorded` | 「待复核确认」 |
 | `recorded` | 已确认 | `reviewed` | 「待导出」 |
 | `exported` | — | `exported` | 「已导出」 |
+| `session_aborted` | `continues_exhausted` | `aborted` | 「继续用尽，需换题」 |
+| `session_aborted` | 其他终止原因 | `aborted` | 终止原因原文；工程冷却 |
 | `run_failed` | error_kind=auth | `blocked` | 「Key 失效，全队暂停」 |
-| `run_failed` | 其他 | `ready` | 「运行失败，可重跑」 |
+| `run_failed` | print 回退的结构失败 | `aborted` | 「一次机会已用，换题」 |
 | 任意 | 人工放弃 | `aborted` | 「已放弃」 |
 
 控制台的 `queued` 只在内存队列里存在，不写库；重启后按上表重算，不会「卡在排队」。

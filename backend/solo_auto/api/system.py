@@ -46,7 +46,7 @@ async def health(ctx: AppContext = Depends(context)) -> dict[str, Any]:
     return {
         "ok": ctx.dispatcher.health.ok if ctx.dispatcher.v3_enabled else True,
         "uptime_s": round((datetime.now().astimezone() - ctx.started_at).total_seconds(), 1),
-        "version": "0.3.0",
+        "version": "0.4.0",
         "build_id": build_id(),
         "loops": loops,
         "dispatch": {
@@ -65,7 +65,7 @@ async def version(ctx: AppContext = Depends(context)) -> dict[str, Any]:
     raw_claude = skill_config.get("claude")
     claude = cast(dict[str, Any], raw_claude) if isinstance(raw_claude, dict) else {}
     return {
-        "app": "0.3.0",
+        "app": "0.4.0",
         "git_sha": ctx.git_sha(),
         "build_id": build_id(),
         "skill_version": ctx.skill_version,
@@ -123,7 +123,7 @@ async def diagnostics(ctx: AppContext = Depends(context)) -> dict[str, Any]:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     target = ctx.paths.backups / f"diagnostics-{stamp}.zip"
     info = {
-        "version": "0.3.0",
+        "version": "0.4.0",
         "build_id": build_id(),
         "git_sha": ctx.git_sha(),
         "skill_version": ctx.skill_version,
@@ -353,11 +353,26 @@ async def patch_config(payload: ConfigPatchRequest, ctx: AppContext = Depends(co
             pairs.append(f"claude.timeoutSeconds={execution['run_timeout_seconds']}")
         if "attempts" in execution:
             pairs.append(f"claude.attempts={execution['attempts']}")
+        if "run_mode" in execution:
+            pairs.append(f"claude.runMode={execution['run_mode']}")
+        if "continue_max" in execution:
+            pairs.append(f"claude.continueMax={execution['continue_max']}")
+        if "start_attempts" in execution:
+            pairs.append(f"claude.startAttempts={execution['start_attempts']}")
+        if "silent_seconds" in execution:
+            pairs.append(f"claude.silentSeconds={execution['silent_seconds']}")
+        if "no_progress_seconds" in execution:
+            pairs.append(f"claude.noProgressSeconds={execution['no_progress_seconds']}")
+        if "fatal_hold_minutes" in execution:
+            pairs.append(f"claude.fatalHoldMinutes={execution['fatal_hold_minutes']}")
         if pairs:
             result = await ctx.gateway.call(["config", "set", *pairs], timeout=60)
             if result.code != 0:
                 raise ApiError(500, "SKILL_CONFIG_UPDATE_FAILED", result.err.strip() or "技能配置更新失败")
             await ctx.scheduler.refresh_limit()
+        ctx.settings.execution.attempts = 1
+        ctx.scheduler.attempt_total = 1
+        ctx.scheduler.run_mode = ctx.settings.execution.run_mode
     ctx.repo.add_event("system.config_updated", "系统配置已更新", actor="user")
     return await get_config(ctx)
 

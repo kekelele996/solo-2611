@@ -25,6 +25,7 @@ from solo_auto.api import (
     intake,
     purge,
     recording,
+    session,
     system,
     tasks,
     trash,
@@ -79,7 +80,7 @@ def create_app(home: Path | None = None, *, auto_start: bool = True) -> FastAPI:
 
     app = FastAPI(
         title="solo-auto",
-        version="0.3.0",
+        version="0.4.0",
         docs_url="/api/docs",
         redoc_url=None,
         openapi_url="/api/openapi.json",
@@ -90,6 +91,7 @@ def create_app(home: Path | None = None, *, auto_start: bool = True) -> FastAPI:
 
     app.include_router(system.router)
     app.include_router(purge.router)
+    app.include_router(session.router)
     app.include_router(tasks.router)
     app.include_router(evidence.router)
     app.include_router(recording.router)

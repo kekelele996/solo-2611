@@ -59,19 +59,29 @@ class ThroughputLedger:
         in_hand: int,
         sessions: int,
         held: list[str],
+        waiting: int = 0,
     ) -> None:
         minute = datetime.now(UTC).replace(second=0, microsecond=0).isoformat()
         self.repo.execute(
             """
             INSERT INTO dispatch_capacity(
-              at, occupied, limit_effective, limit_floor, in_hand, sessions, held
-            ) VALUES(?, ?, ?, ?, ?, ?, ?)
+              at, occupied, limit_effective, limit_floor, in_hand, sessions, waiting, held
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(at) DO UPDATE SET
               occupied=excluded.occupied, limit_effective=excluded.limit_effective,
               limit_floor=excluded.limit_floor, in_hand=excluded.in_hand,
-              sessions=excluded.sessions, held=excluded.held
+              sessions=excluded.sessions, waiting=excluded.waiting, held=excluded.held
             """,
-            (minute, occupied, limit_effective, limit_floor, in_hand, sessions, json.dumps(held, ensure_ascii=False)),
+            (
+                minute,
+                occupied,
+                limit_effective,
+                limit_floor,
+                in_hand,
+                sessions,
+                waiting,
+                json.dumps(held, ensure_ascii=False),
+            ),
         )
         cutoff = (datetime.now(UTC) - timedelta(days=7)).isoformat()
         self.repo.execute("DELETE FROM dispatch_capacity WHERE at < ?", (cutoff,))
@@ -104,7 +114,18 @@ class ThroughputLedger:
     def capacity(self, hours: int = 24) -> dict[str, Any]:
         cutoff = (datetime.now(UTC) - timedelta(hours=max(1, hours))).isoformat()
         rows = self.repo.query("SELECT * FROM dispatch_capacity WHERE at >= ? ORDER BY at", (cutoff,))
-        return {"items": rows}
+        latest = rows[-1] if rows else {}
+        occupied = int(latest.get("occupied") or 0)
+        waiting = int(latest.get("waiting") or 0)
+        return {
+            "items": rows,
+            "latest": {
+                "occupied": occupied,
+                "running": max(0, occupied - waiting),
+                "waiting": waiting,
+                "label": f"占用 {occupied}（运行 {max(0, occupied - waiting)} / 等待 {waiting}）",
+            },
+        }
 
     def _utilization(self, hours: int) -> float:
         cutoff = (datetime.now(UTC) - timedelta(hours=max(1, hours))).isoformat()

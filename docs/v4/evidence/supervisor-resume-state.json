@@ -1,0 +1,126 @@
+{
+  "schema": "solo-2611/1",
+  "skillVersion": "0.6.0",
+  "taskName": "v4-supervisor-resume-probe",
+  "taskRoot": "/private/tmp/solo2611-accept/2026-11-13-v4-supervisor-resume-probe-6145",
+  "workspace": "/private/tmp/solo2611-accept/2026-11-13-v4-supervisor-resume-probe-6145/workspace",
+  "createdAt": "2026-11-13T11:10:53+00:00",
+  "createdDate": "2026-11-13",
+  "status": "snapshotted",
+  "source": {
+    "kind": "dir",
+    "path": "/Users/gaobo/repositories/gitlab/评审项目/solo-202611/solo-1111/solo-2611-new-device-kit-v0.5.0/skills/solo-2611"
+  },
+  "initialSha": "3e5dc15157015deb143a8046c3ccc5ac8bcf4e10",
+  "fields": {
+    "所属领域": "数据工程",
+    "子方向": "数据分析与数据应用",
+    "Harness": "Claude Code",
+    "操作系统": "MacOS/Linux"
+  },
+  "attempts": [
+    {
+      "index": 1,
+      "container": "solo2611-v4-supervisor-resume-pro-01-d689",
+      "mode": "supervised",
+      "image": "adminfather/benzhi-claude-code2:20261110",
+      "startedAt": "2026-11-13T11:10:58+00:00",
+      "status": "accepted",
+      "dir": "/private/tmp/solo2611-accept/2026-11-13-v4-supervisor-resume-probe-6145/monitor/runs/attempt-01",
+      "streams": [],
+      "rounds": 1,
+      "continues": 0,
+      "startFailed": false,
+      "finishedAt": "2026-11-13T11:13:08+00:00",
+      "completion": {
+        "ok": true,
+        "errors": [],
+        "warnings": [],
+        "danglingToolUses": 0
+      },
+      "errors": []
+    }
+  ],
+  "updatedAt": "2026-11-13T11:13:08+00:00",
+  "promptPath": "/private/tmp/solo2611-accept/2026-11-13-v4-supervisor-resume-probe-6145/delivery/提示词.md",
+  "promptSha256": "86de3d87686cfa96ac6741cea401c3310de63e0de88776b1e9625b3201b8bd53",
+  "sessionRun": {
+    "schema": "solo2611/session-run/1",
+    "mode": "supervised",
+    "attemptIndex": 1,
+    "container": "solo2611-v4-supervisor-resume-pro-01-d689",
+    "tmuxSession": "solo2611-v4-supervisor-resume-pro-01-c8f5",
+    "supervisor": {
+      "pid": 30463,
+      "pgid": 30463,
+      "startedAt": "2026-11-13T11:11:24+00:00",
+      "heartbeatAt": "2026-11-13T11:12:24+00:00"
+    },
+    "liveTraceDir": "/private/tmp/solo2611-accept/2026-11-13-v4-supervisor-resume-probe-6145/monitor/runs/attempt-01/live",
+    "status": "accepted",
+    "startedAt": "2026-11-13T11:10:58+00:00",
+    "lastActivityAt": "2026-11-13T11:12:50+00:00",
+    "deadline": {
+      "totalAt": "2026-11-13T14:10:58+00:00",
+      "noProgressAt": "2026-11-13T11:32:50+00:00",
+      "holdUntil": null
+    },
+    "nextActionAt": null,
+    "continues": {
+      "used": 0,
+      "max": 2,
+      "history": []
+    },
+    "rounds": [
+      {
+        "no": 1,
+        "startedAt": "2026-11-13T11:11:01+00:00",
+        "endedAt": "2026-11-13T11:13:00+00:00",
+        "stopReason": "end_turn",
+        "kind": "none",
+        "verdict": "complete",
+        "detail": "",
+        "toolUses": 5,
+        "finalChars": 10,
+        "continued": false
+      }
+    ],
+    "interrupts": [],
+    "blocked": null,
+    "abort": null,
+    "outcome": {
+      "acceptedAt": "2026-11-13T11:13:08+00:00",
+      "remark": ""
+    },
+    "startAttempts": {
+      "used": 1,
+      "max": 2
+    },
+    "promptSent": true,
+    "lastRoundStartedAt": "2026-11-13T11:11:01+00:00"
+  },
+  "session": {
+    "sessionId": "e5471ef2-c330-4865-8d3f-fa79a14c2a9f",
+    "promptId": "723fef8b-8b72-4a7b-bef7-7429162ca735",
+    "harnessVersion": "2.1.319",
+    "entrypoint": "cli",
+    "models": [
+      "auto_model/urm"
+    ],
+    "trace": "/private/tmp/solo2611-accept/2026-11-13-v4-supervisor-resume-probe-6145/traces/-workspace/e5471ef2-c330-4865-8d3f-fa79a14c2a9f.jsonl",
+    "tracesDir": "/private/tmp/solo2611-accept/2026-11-13-v4-supervisor-resume-probe-6145/traces",
+    "subagentFiles": 0,
+    "toolUses": 5,
+    "warnings": [],
+    "mode": "supervised"
+  },
+  "artifact": {
+    "sha": "3e5dc15157015deb143a8046c3ccc5ac8bcf4e10",
+    "modelCommits": [],
+    "shortStat": "",
+    "stat": "",
+    "largeBinaries": [],
+    "createdAt": "2026-11-13T11:13:08+00:00",
+    "warning": "模型没有留下任何文件改动，产物快照等于初始快照"
+  }
+}

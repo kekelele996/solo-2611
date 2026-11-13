@@ -1,0 +1,7 @@
+{"at":"2026-11-13T11:10:58+00:00","event":"session.start","mode":"supervised","attemptNo":1,"maxContinues":2}
+{"at":"2026-11-13T11:11:01+00:00","event":"prompt.sent","chars":51,"sha256":"86de3d87686cfa96ac6741cea401c3310de63e0de88776b1e9625b3201b8bd53"}
+{"at":"2026-11-13T11:12:24+00:00","event":"supervisor.heartbeat","pid":30463}
+{"at":"2026-11-13T11:13:00+00:00","event":"round.end","round":1,"kind":"none","verdict":"complete","detail":"","waitSeconds":0}
+{"at":"2026-11-13T11:13:00+00:00","event":"session.closing"}
+{"at":"2026-11-13T11:13:07+00:00","event":"session.closing_fallback","reason":"tmux_eof"}
+{"at":"2026-11-13T11:13:08+00:00","event":"session.accepted","sessionId":"e5471ef2-c330-4865-8d3f-fa79a14c2a9f","promptId":"723fef8b-8b72-4a7b-bef7-7429162ca735","continues":0}

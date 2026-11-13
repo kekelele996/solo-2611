@@ -263,7 +263,7 @@ async def test_dispatch_api_queue_and_explain(
     monkeypatch.setenv("SOLO_AUTO_DISPATCH__ENGINE", "v3")
 
     async def fake_version(self: SkillGateway) -> str:
-        return "0.3.0"
+        return "0.4.0"
 
     monkeypatch.setattr(SkillGateway, "version", fake_version)
     app = create_app(tmp_path / "app", auto_start=False)

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from solo_auto.dispatch.facts import docker_container_alive
+from solo_auto.gateway.skill import SkillGateway
 from solo_auto.pipeline.steps import derive_job_status, evaluate_steps
 from solo_auto.settings import Paths
 from solo_auto.store.repo import Repository
@@ -27,11 +28,13 @@ class Reconciler:
         tasks_dir: Path,
         *,
         container_probe: ContainerProbe | None = None,
+        gateway: SkillGateway | None = None,
     ) -> None:
         self.repo = repo
         self.paths = paths
         self.tasks_dir = tasks_dir
         self.container_probe = container_probe or _docker_container_alive
+        self.gateway = gateway
 
     async def run(self) -> int:
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
@@ -71,7 +74,40 @@ class Reconciler:
                 continue
             state = envelope.state
             task_id = self.repo.task_id_for_root(root)
-            container = _current_container(state)
+            session_status: dict[str, Any] = {}
+            session_lost = False
+            if (
+                self.gateway is not None
+                and state.status == "running"
+                and state.sessionRun is not None
+            ):
+                status_result = await self.gateway.run_status(root, task_id=task_id)
+                if status_result.code == 0 and status_result.data:
+                    session_status = status_result.data
+                    if session_status.get("supervisorAlive") is not True:
+                        resumed = await self.gateway.call(
+                            ["resume", "--task-root", str(root)],
+                            timeout=60,
+                            task_id=task_id,
+                        )
+                        if resumed.code == 0 and resumed.data:
+                            session_status = {
+                                **session_status,
+                                **resumed.data,
+                                "supervisorAlive": bool(resumed.data.get("supervised")),
+                            }
+                            self.repo.add_event(
+                                "reconcile.resumed",
+                                f"{state.taskName} 的会话监督器已接回",
+                                actor="reconcile",
+                                task_id=task_id,
+                                details=resumed.data,
+                            )
+                        else:
+                            session_lost = True
+                elif status_result.code != 0:
+                    session_lost = True
+            container = str(session_status.get("container") or _current_container(state))
             if state.status == "running" and container:
                 if container not in live_checks:
                     try:
@@ -81,6 +117,10 @@ class Reconciler:
                 live = live_checks[container]
             else:
                 live = False
+            if session_status.get("supervisorAlive") or session_status.get("tmuxAlive"):
+                live = True
+            if session_lost or session_status.get("status") == "session_lost":
+                live = False
             ack = _read_json(root / "monitor" / "review-ack.json")
             eval_result = evaluate_steps(root, duplicate_sessions=session_counts)
             job_status = derive_job_status(
@@ -88,9 +128,15 @@ class Reconciler:
                 container_live=live,
                 review_acked=bool(ack.get("acked")),
                 recording_ok=eval_result.steps[8].ok,
+                session_state=str(
+                    session_status.get("sessionState")
+                    or (state.sessionRun.status if state.sessionRun else "")
+                ),
             )
             if previous and previous.get("job_status") in {"aborted", "archived"}:
                 job_status = str(previous["job_status"])
+            if session_lost or session_status.get("status") == "session_lost":
+                job_status = "blocked"
             meta = _task_meta(self.paths, root)
             record = _record_for_state(task_id, root, state, job_status, meta, ack)
             if record.get("session_id") and session_counts.get(str(record["session_id"]), 0) > 1:
@@ -99,6 +145,12 @@ class Reconciler:
             notes = str(previous.get("notes") or "") if previous else None
             self.repo.upsert_task(record, notes=notes)
             self.repo.replace_steps(task_id, [step.as_dict() for step in eval_result.steps])
+            if state.sessionRun is not None and state.sessionRun.attemptIndex:
+                rounds = [
+                    item.model_dump(by_alias=True)
+                    for item in state.sessionRun.rounds
+                ]
+                self.repo.replace_session_rounds(task_id, state.sessionRun.attemptIndex, rounds)
             if previous and old_status != job_status:
                 corrected += 1
                 self.repo.add_event(

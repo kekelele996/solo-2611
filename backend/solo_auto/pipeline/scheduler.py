@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -57,6 +58,7 @@ class RunScheduler:
         bus: EventBus,
         dispatcher: Dispatcher | None = None,
         attempt_total: int = 3,
+        run_mode: str = "supervised",
     ) -> None:
         self.paths = paths
         self.gateway = gateway
@@ -65,6 +67,7 @@ class RunScheduler:
         self.bus = bus
         self.dispatcher = dispatcher
         self.attempt_total = max(1, attempt_total)
+        self.run_mode = run_mode
         self.queue: list[QueueEntry] = []
         self.active: dict[str, ActiveRun] = {}
         self.limit = 4
@@ -72,6 +75,14 @@ class RunScheduler:
         self._maintenance_task: asyncio.Task[None] | None = None
         self._stopping = False
         self._last_log_publish: dict[str, float] = {}
+        self._retry_tasks: set[asyncio.Task[None]] = set()
+        self._waiting_since: dict[str, float] = {}
+        self.intake: Any = None
+        self.ledger: Any = None
+
+    def attach_recovery(self, *, intake: Any = None, ledger: Any = None) -> None:
+        self.intake = intake
+        self.ledger = ledger
 
     async def start(self) -> None:
         if self.dispatcher is not None and self.dispatcher.v3_enabled:
@@ -86,8 +97,14 @@ class RunScheduler:
         for task in (self._tick_task, self._maintenance_task):
             if task:
                 task.cancel()
+        for task in self._retry_tasks:
+            task.cancel()
         await asyncio.gather(
-            *(task for task in (self._tick_task, self._maintenance_task) if task),
+            *(
+                task
+                for task in (self._tick_task, self._maintenance_task, *self._retry_tasks)
+                if task
+            ),
             return_exceptions=True,
         )
 
@@ -141,15 +158,26 @@ class RunScheduler:
         active = self.active.get(task_id)
         if not active:
             raise ApiError(404, "RUN_NOT_FOUND", "该任务没有排队或运行中的实例")
-        cancelled = await self.gateway.cancel(task_id)
-        if active.task and active.task.done() and not cancelled:
-            return {"state": "finished", "task_id": task_id}
-        if active.task and not force:
-            active.task.cancel()
-        elif active.task:
-            active.task.cancel()
-            if cancelled:
-                await self.gateway.cancel(task_id)
+        aborted = await self.gateway.call(
+            [
+                "abort",
+                "--task-root",
+                str(active.entry.task_root),
+                "--reason",
+                "用户停止" if force else "用户请求停止",
+                "--by",
+                "human",
+            ],
+            timeout=90,
+            task_id=task_id,
+        )
+        if aborted.code != 0:
+            raise ApiError(
+                500,
+                "SESSION_ABORT_FAILED",
+                aborted.err.strip() or "技能终止会话失败",
+                detail={"stdout": aborted.out, "stderr": aborted.err},
+            )
         return {"state": "stopping", "task_id": task_id}
 
     def queue_position(self, task_id: str) -> int | None:
@@ -187,11 +215,17 @@ class RunScheduler:
     def run_status(self, task_id: str, task_root: Path | None = None) -> dict[str, Any]:
         active = self.active.get(task_id)
         if active:
+            shadow = _read_json(self.paths.sessions / f"{task_id}.json")
             return {
                 "state": "running",
                 "attempt_seq": active.attempt,
                 "attempt_total": self.attempt_total,
                 "phase": active.phase,
+                "round": int(shadow.get("round") or 0),
+                "continues": shadow.get("continues") or {"used": 0, "max": 0},
+                "next_action_at": shadow.get("nextActionAt") or "",
+                "session_state": shadow.get("sessionState") or "",
+                "last_kind": shadow.get("lastKind") or "",
                 "started_at": datetime.fromtimestamp(active.started_at).astimezone().isoformat(),
                 "elapsed_s": round(time.monotonic() - active.started_at, 1),
                 "log_tail": "\n".join(active.log_lines[-200:]),
@@ -203,6 +237,11 @@ class RunScheduler:
                 "attempt_seq": 0,
                 "attempt_total": self.attempt_total,
                 "phase": "queued",
+                "round": 0,
+                "continues": {"used": 0, "max": 0},
+                "next_action_at": "",
+                "session_state": "queued",
+                "last_kind": "",
                 "started_at": "",
                 "elapsed_s": 0,
                 "queue_position": status,
@@ -214,11 +253,43 @@ class RunScheduler:
         started_at = ""
         elapsed = 0.0
         log_tail = ""
+        shadow = _read_json(self.paths.sessions / f"{task_id}.json")
+        round_count = int(shadow.get("round") or 0)
+        continues_value: dict[str, Any] = shadow.get("continues") or {"used": 0, "max": 0}
+        next_action_at = shadow.get("nextActionAt") or ""
+        session_state = shadow.get("sessionState") or ""
+        last_kind = shadow.get("lastKind") or ""
         if task_root is not None:
             envelope = load_state(task_root)
             if envelope.state is not None:
                 state = envelope.state
                 attempt_seq = len(state.attempts)
+                run_state = state.sessionRun
+                if run_state is not None:
+                    round_count = len(run_state.rounds)
+                    continues_value = {
+                        "used": run_state.continues.used,
+                        "max": run_state.continues.max,
+                        "history": [
+                            item.model_dump(by_alias=True)
+                            for item in run_state.continues.history
+                        ],
+                    }
+                    next_action_at = run_state.nextActionAt or ""
+                    session_state = {
+                        "running": "running",
+                        "continuing": "waiting_continue",
+                        "holding": "holding",
+                        "manual_input": "manual_input",
+                        "accepted": "accepted",
+                        "aborted": "aborted",
+                        "session_lost": "session_lost",
+                    }.get(run_state.status, run_state.status)
+                    last_kind = (
+                        run_state.rounds[-1].kind
+                        if run_state.rounds
+                        else ""
+                    )
                 if state.attempts:
                     last = state.attempts[-1]
                     started_at = last.startedAt
@@ -244,6 +315,11 @@ class RunScheduler:
             "attempt_seq": attempt_seq,
             "attempt_total": attempt_total,
             "phase": phase,
+            "round": round_count,
+            "continues": continues_value,
+            "next_action_at": next_action_at,
+            "session_state": session_state,
+            "last_kind": last_kind,
             "started_at": started_at,
             "elapsed_s": elapsed,
             "log_tail": log_tail,
@@ -287,7 +363,191 @@ class RunScheduler:
 
     async def _execute(self, run: ActiveRun) -> None:
         task_id = run.entry.task_id
-        last_phase = ""
+        if self.run_mode == "print":
+            await self._execute_print(run)
+            return
+        seen_events: set[str] = set()
+        poll_failures = 0
+        try:
+            started = await self.gateway.call(
+                ["run", "--task-root", str(run.entry.task_root)],
+                timeout=15,
+                task_id=task_id,
+            )
+            if started.code != 0 or not started.data:
+                raise RuntimeError(
+                    started.err.strip()
+                    or started.out.strip()
+                    or f"技能启动失败，exit={started.code}"
+                )
+            run.attempt = int(started.data.get("attempt") or 0)
+            run.phase = "running"
+            self.repo.add_event(
+                "run.started.managed",
+                f"{run.entry.task_name} 已发起受管会话",
+                actor="scheduler",
+                task_id=task_id,
+                details=started.data,
+            )
+            while True:
+                await asyncio.sleep(2)
+                result = await self.gateway.run_status(run.entry.task_root, task_id=task_id)
+                if result.code != 0 or result.data is None:
+                    poll_failures += 1
+                    if poll_failures == 3:
+                        resumed = await self.gateway.call(
+                            ["resume", "--task-root", str(run.entry.task_root)],
+                            timeout=60,
+                            task_id=task_id,
+                        )
+                        if resumed.code == 0:
+                            poll_failures = 0
+                            self.repo.add_event(
+                                "session.resumed",
+                                f"{run.entry.task_name} 的监督器已接回",
+                                actor="scheduler",
+                                task_id=task_id,
+                                details=resumed.data or {},
+                            )
+                            self.bus.publish(
+                                "session.resumed",
+                                {"task_id": task_id, "detail": resumed.data or {}},
+                            )
+                            continue
+                        self.repo.set_job_status(
+                            task_id, "blocked", notes="监督器丢失且无法接回"
+                        )
+                        run.phase = "blocked"
+                        return
+                    continue
+                poll_failures = 0
+                status = result.data
+                self._write_session_shadow(task_id, status)
+                self._sync_session_state(task_id, run, status, seen_events)
+                session_state = str(status.get("sessionState") or "")
+                if session_state == "waiting_continue":
+                    run.phase = "waiting"
+                    await self._account_waiting_continue(task_id, status)
+                elif session_state in {"holding", "manual_input"}:
+                    self._waiting_since.pop(task_id, None)
+                    run.phase = "blocked"
+                    if session_state == "holding" and str(status.get("lastKind") or "") == "auth":
+                        await self._trip_auth_breaker(task_id, "会话等待鉴权处理")
+                elif status.get("status") == "accepted":
+                    run.phase = "done"
+                    self.repo.add_event(
+                        "run.completed",
+                        f"{run.entry.task_name} 运行完成",
+                        actor="scheduler",
+                        task_id=task_id,
+                        details=status,
+                    )
+                    self.bus.publish(
+                        "toast",
+                        {
+                            "level": "info",
+                            "message": f"{run.entry.task_name} 运行结束",
+                            "task_id": task_id,
+                        },
+                    )
+                    return
+                elif status.get("status") in {"aborted", "session_lost"}:
+                    run.phase = "failed"
+                    reason = str(
+                        (status.get("abort") or {}).get("reason")
+                        or (
+                            "session_lost"
+                            if status.get("status") == "session_lost"
+                            else "session_aborted"
+                        )
+                    )
+                    detail = str(
+                        (status.get("abort") or {}).get("detail")
+                        or status.get("status")
+                        or reason
+                    )
+                    await self._record_run_failure(
+                        task_id,
+                        kind=_run_failure_kind(reason),
+                        detail=detail,
+                        status=status,
+                    )
+                    return
+                else:
+                    self._waiting_since.pop(task_id, None)
+                    run.phase = "running"
+        except asyncio.CancelledError:
+            self.repo.add_event(
+                "run.detached",
+                "工作台停止跟踪；技能监督器与容器继续运行",
+                level="warn",
+                actor="scheduler",
+                task_id=task_id,
+            )
+            raise
+        except Exception as exc:
+            run.phase = "failed"
+            LOGGER.exception("run task %s failed", task_id)
+            await self._record_run_failure(
+                task_id,
+                kind="run.start_failed",
+                detail=str(exc),
+                status={},
+            )
+            self.repo.add_event(
+                "run.failed",
+                str(exc),
+                level="error",
+                actor="gateway",
+                task_id=task_id,
+            )
+        finally:
+            self.active.pop(task_id, None)
+            self._waiting_since.pop(task_id, None)
+            (self.paths.slots / f"{task_id}.json").unlink(missing_ok=True)
+            if self.dispatcher is not None and self.dispatcher.v3_enabled:
+                if run.phase == "done":
+                    self.dispatcher.on_success(task_id, stage="running")
+                self.dispatcher.release_container(task_id, success=run.phase == "done")
+            try:
+                await self.reconciler.run()
+            except Exception:
+                LOGGER.exception("post-run reconcile failed")
+            self.bus.publish("queue.updated", self.queue_snapshot())
+            self.bus.publish("task.updated", {"task_id": task_id, "phase": run.phase})
+
+    async def _account_waiting_continue(
+        self,
+        task_id: str,
+        status: dict[str, Any],
+    ) -> None:
+        if self.dispatcher is None or not self.dispatcher.v3_enabled:
+            return
+        started = self._waiting_since.setdefault(task_id, time.monotonic())
+        stalled = time.monotonic() - started
+        if stalled < 600:
+            return
+        pool = self.dispatcher.pools_book.snapshot()["containers"]
+        action = await self.dispatcher.elastic.adjust(
+            stall_seconds=stalled,
+            full=int(pool["used"]) >= int(pool["limit"]),
+            waiting=True,
+            severe=str(status.get("lastKind") or "") == "rate_limited",
+        )
+        if action:
+            self.dispatcher._configure_pools()
+            self.repo.add_event(
+                f"elastic.{action}",
+                f"等待继续持续 {int(stalled)} 秒，弹性容器上限调整为 "
+                f"{self.dispatcher.effective_container_limit}",
+                actor="scheduler",
+                task_id=task_id,
+                details={"kind": status.get("lastKind"), "stall": int(stalled)},
+            )
+
+    async def _execute_print(self, run: ActiveRun) -> None:
+        """Long-lived compatibility path for the explicit print rollback."""
+        task_id = run.entry.task_id
 
         async def on_event(event: StreamEvent) -> None:
             run.log_lines.append(event.line)
@@ -295,13 +555,7 @@ class RunScheduler:
             phase = _phase_from_line(event.line)
             if phase:
                 run.phase = phase
-                if phase == "running":
-                    attempt = _attempt_from_line(event.line)
-                    if attempt:
-                        run.attempt = attempt
-            now = time.monotonic()
-            if now - self._last_log_publish.get(task_id, 0) >= 0.2:
-                self._last_log_publish[task_id] = now
+            if event.kind == "stderr":
                 self.bus.publish(
                     "run.log",
                     {"task_id": task_id, "line": event.line, "kind": event.kind, "batch": True},
@@ -309,7 +563,7 @@ class RunScheduler:
 
         try:
             streamed = await self.gateway.stream(
-                ["run", "--task-root", str(run.entry.task_root)],
+                ["run", "--task-root", str(run.entry.task_root), "--mode", "print"],
                 task_root=run.entry.task_root,
                 on_event=on_event,
                 timeout=None,
@@ -326,52 +580,25 @@ class RunScheduler:
                     task_id=task_id,
                     details=result.data,
                 )
-                self.bus.publish(
-                    "toast", {"level": "info", "message": f"{run.entry.task_name} 运行结束", "task_id": task_id}
-                )
             else:
                 run.phase = "failed"
                 detail = result.err.strip() or result.out.strip() or f"exit={result.code}"
-                error_kind = _classify_failure(detail)
-                self.repo.add_event(
-                    "run.failed",
-                    detail,
-                    level="error",
-                    actor="scheduler",
-                    task_id=task_id,
-                    details={"kind": error_kind, "exit_code": result.code},
-                )
-                if error_kind == "auth":
-                    await self._trip_auth_breaker(task_id, detail)
-                if self.dispatcher is not None and self.dispatcher.v3_enabled:
-                    await self.dispatcher.on_failure(
-                        task_id,
-                        Evidence(
-                            stage="running",
-                            exit_code=result.code,
-                            skill_json=result.data if isinstance(result.data, dict) else {},
-                            skill_stderr=detail,
-                            trace_tail=result.out[-8000:] if result.out else "",
-                        ),
-                        actor="scheduler",
-                    )
-                self.bus.publish(
-                    "toast",
-                    {"level": "error", "message": detail[:500], "task_id": task_id},
+                await self._record_run_failure(
+                    task_id,
+                    kind="run.incomplete",
+                    detail=detail,
+                    status={},
                 )
         except asyncio.CancelledError:
             run.phase = "failed"
-            self.repo.add_event("run.stopped", "运行已由用户停止", level="warn", actor="user", task_id=task_id)
             raise
         except Exception as exc:
             run.phase = "failed"
-            LOGGER.exception("run task %s failed", task_id)
-            self.repo.add_event(
-                "run.failed",
-                str(exc),
-                level="error",
-                actor="gateway",
-                task_id=task_id,
+            await self._record_run_failure(
+                task_id,
+                kind="run.start_failed",
+                detail=str(exc),
+                status={},
             )
         finally:
             self.active.pop(task_id, None)
@@ -386,8 +613,210 @@ class RunScheduler:
                 LOGGER.exception("post-run reconcile failed")
             self.bus.publish("queue.updated", self.queue_snapshot())
             self.bus.publish("task.updated", {"task_id": task_id, "phase": run.phase})
-            if last_phase != run.phase:
-                self._last_log_publish.pop(task_id, None)
+
+    def _write_session_shadow(self, task_id: str, status: dict[str, Any]) -> None:
+        self.paths.sessions.mkdir(parents=True, exist_ok=True)
+        path = self.paths.sessions / f"{task_id}.json"
+        payload = {
+            "taskId": task_id,
+            "updatedAt": datetime.now().astimezone().replace(microsecond=0).isoformat(),
+            **status,
+        }
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+
+    def _sync_session_state(
+        self,
+        task_id: str,
+        run: ActiveRun,
+        status: dict[str, Any],
+        seen_events: set[str],
+    ) -> None:
+        raw_rounds = status.get("rounds")
+        rounds: list[dict[str, Any]] = (
+            [item for item in raw_rounds if isinstance(item, dict)]
+            if isinstance(raw_rounds, list)
+            else []
+        )
+        attempt = int(status.get("attempt") or run.attempt or 0)
+        if attempt:
+            self.repo.replace_session_rounds(task_id, attempt, rounds)
+            final_status = str(status.get("status") or "")
+            outcome = (
+                "accepted"
+                if final_status == "accepted"
+                else "aborted"
+                if final_status in {"aborted", "session_lost"}
+                else "running"
+            )
+            last_kind = str(status.get("lastKind") or "")
+            abort_reason = str((status.get("abort") or {}).get("reason") or "")
+            self.repo.execute(
+                """
+                INSERT INTO attempts(
+                  task_id, seq, mode, container, started_at, finished_at, exit_code,
+                  outcome, error_kind, detail, session_run_status, rounds, continues,
+                  start_failed, interrupt_kind, last_activity_at
+                ) VALUES(?, ?, 'supervised', ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                ON CONFLICT(task_id, seq) DO UPDATE SET
+                  container=excluded.container, finished_at=excluded.finished_at,
+                  outcome=excluded.outcome, error_kind=excluded.error_kind,
+                  detail=excluded.detail, session_run_status=excluded.session_run_status,
+                  rounds=excluded.rounds, continues=excluded.continues,
+                  interrupt_kind=excluded.interrupt_kind,
+                  last_activity_at=excluded.last_activity_at
+                """,
+                (
+                    task_id,
+                    attempt,
+                    str(status.get("container") or ""),
+                    str(status.get("startedAt") or started_iso(run)),
+                    str(status.get("lastActivityAt") or "") if outcome != "running" else None,
+                    outcome,
+                    (abort_reason or last_kind) if outcome == "aborted" else None,
+                    str((status.get("abort") or {}).get("detail") or ""),
+                    final_status,
+                    len(rounds),
+                    int((status.get("continues") or {}).get("used") or 0),
+                    last_kind,
+                    str(status.get("lastActivityAt") or ""),
+                ),
+            )
+        if self.dispatcher is not None:
+            self.dispatcher.queue.update(
+                task_id,
+                stage="running",
+                session_state=str(status.get("sessionState") or ""),
+                continue_used=int((status.get("continues") or {}).get("used") or 0),
+                next_action_at=str(status.get("nextActionAt") or ""),
+                container_seconds=max(0, int(run.started_at and time.time() - run.started_at)),
+            )
+            self.dispatcher._publish()
+        for event in status.get("logTail") or []:
+            if not isinstance(event, dict):
+                continue
+            key = f"{event.get('at')}:{event.get('event')}:{event.get('round')}:{event.get('no')}"
+            if key in seen_events:
+                continue
+            seen_events.add(key)
+            line = json.dumps(event, ensure_ascii=False)
+            run.log_lines.append(line)
+            run.log_lines = run.log_lines[-500:]
+            self.bus.publish(
+                "run.log",
+                {"task_id": task_id, "line": line, "kind": "supervisor", "batch": True},
+            )
+            action = str(event.get("event") or "")
+            mapping = {
+                "round.end": "session.round_end",
+                "continue.sent": "session.continue_sent",
+                "hold.start": "session.held",
+                "session.aborted": "session.aborted",
+                "session.accepted": "session.accepted",
+            }
+            if action in mapping:
+                self.bus.publish(
+                    mapping[action],
+                    {
+                        "task_id": task_id,
+                        "round": event.get("round"),
+                        "kind": event.get("kind") or event.get("reason"),
+                        "continue": event.get("no"),
+                        "detail": event,
+                    },
+                )
+
+    async def _record_run_failure(
+        self,
+        task_id: str,
+        *,
+        kind: str,
+        detail: str,
+        status: dict[str, Any],
+    ) -> None:
+        self.repo.add_event(
+            "run.failed",
+            detail,
+            level="error",
+            actor="scheduler",
+            task_id=task_id,
+            details={"kind": kind, "session": status},
+        )
+        if self.dispatcher is not None and self.dispatcher.v3_enabled:
+            _, decision, _ = await self.dispatcher.on_failure(
+                task_id,
+                Evidence(
+                    stage="running",
+                    exit_code=2,
+                    skill_json={"failure_kind": kind, **status},
+                    skill_stderr=detail,
+                    trace_tail="",
+                ),
+                actor="scheduler",
+            )
+            if kind == "run.start_failed" and decision.action == "quarantine":
+                self.repo.set_job_status(
+                    task_id,
+                    "start_failed",
+                    notes="启动失败次数已用尽；可人工重新排队，不计入工程冷却",
+                )
+            elif kind == "run.start_failed" and decision.action == "retry":
+                retry = asyncio.create_task(
+                    self._retry_start_failed(task_id, max(30, decision.delay_seconds))
+                )
+                self._retry_tasks.add(retry)
+                retry.add_done_callback(self._retry_tasks.discard)
+        terminal = kind in {
+            "run.continues_exhausted",
+            "run.timeout",
+            "run.no_progress",
+            "run.hold_timeout",
+            "run.unresponsive",
+            "run.incomplete",
+            "run.session_lost",
+        }
+        if terminal:
+            reason = kind.removeprefix("run.")
+            self.repo.set_job_status(task_id, "aborted", notes=detail)
+            if self.ledger is not None:
+                self.ledger.mark_outcome(task_id, "void")
+            if self.intake is not None:
+                try:
+                    await self.intake.terminal_session(task_id, reason=reason)
+                except Exception:
+                    LOGGER.exception("terminal session release failed: %s", task_id)
+        self.bus.publish(
+            "toast",
+            {"level": "error", "message": detail[:500], "task_id": task_id},
+        )
+
+    async def _retry_start_failed(self, task_id: str, delay: int) -> None:
+        await asyncio.sleep(delay)
+        if self._stopping or task_id in self.active:
+            return
+        task = self.repo.get_task(task_id)
+        if task is None:
+            return
+        envelope = load_state(Path(str(task["task_root"])))
+        if envelope.state is None or envelope.state.status not in {"prompt_ready", "run_failed"}:
+            return
+        try:
+            await self.enqueue(task_id)
+            self.repo.add_event(
+                "run.start_retry",
+                "启动失败未消耗会话机会，已重新排队",
+                actor="scheduler",
+                task_id=task_id,
+            )
+        except ApiError as exc:
+            self.repo.add_event(
+                "run.start_retry_skipped",
+                exc.message,
+                level="warn",
+                actor="scheduler",
+                task_id=task_id,
+            )
 
     async def _trip_auth_breaker(self, failed_task_id: str, detail: str) -> None:
         if self.dispatcher is not None and self.dispatcher.v3_enabled:
@@ -507,6 +936,21 @@ def _classify_failure(detail: str) -> str:
     return "unknown"
 
 
+def _run_failure_kind(reason: str) -> str:
+    mapping = {
+        "continues_exhausted": "run.continues_exhausted",
+        "run_timeout": "run.timeout",
+        "no_progress": "run.no_progress",
+        "hold_timeout": "run.hold_timeout",
+        "manual_timeout": "run.hold_timeout",
+        "session_lost": "run.session_lost",
+        "unresponsive": "run.unresponsive",
+        "validation_failed": "run.incomplete",
+        "print_validation_failed": "run.incomplete",
+    }
+    return mapping.get(str(reason), f"run.{reason}")
+
+
 def _elapsed(started: str, finished: str) -> float:
     if not started:
         return 0
@@ -516,6 +960,10 @@ def _elapsed(started: str, finished: str) -> float:
         return round(max(0, (end - start).total_seconds()), 1)
     except ValueError:
         return 0
+
+
+def started_iso(run: ActiveRun) -> str:
+    return datetime.fromtimestamp(run.started_at).astimezone().replace(microsecond=0).isoformat()
 
 
 def _tail_lines(path: Path, limit: int) -> list[str]:
@@ -528,6 +976,14 @@ def _tail_lines(path: Path, limit: int) -> list[str]:
     except OSError:
         return []
     return data.decode("utf-8", errors="replace").splitlines()[-limit:]
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 async def _running_containers() -> set[str]:

@@ -218,6 +218,7 @@ def derive_job_status(
     container_live: bool = False,
     review_acked: bool = False,
     recording_ok: bool = False,
+    session_state: str = "",
 ) -> str:
     status = state.status
     if status == "prepared":
@@ -225,6 +226,8 @@ def derive_job_status(
     if status == "prompt_ready":
         return "ready" if state.remote.initialPushed else "prompt_ok"
     if status == "running":
+        if session_state in {"holding", "manual_input", "session_lost"}:
+            return "blocked"
         return "running" if container_live else "blocked"
     if status in {"ran", "snapshotted"}:
         return "ran"
@@ -237,4 +240,6 @@ def derive_job_status(
         return "exported"
     if status == "run_failed":
         return "blocked"
+    if status == "session_aborted":
+        return "aborted"
     return "blocked"

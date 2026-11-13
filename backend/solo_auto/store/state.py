@@ -37,6 +37,10 @@ class AttemptState(BaseModel):
     errors: list[str] = Field(default_factory=list)
     result: dict[str, Any] = Field(default_factory=dict)
     timeout: bool = False
+    rounds: int = 0
+    continues: int = 0
+    startFailed: bool = False
+    lastActivityAt: str = ""
 
 
 class RemoteState(BaseModel):
@@ -68,6 +72,106 @@ class SessionState(BaseModel):
     toolUses: int = 0
     warnings: list[str] = Field(default_factory=list)
     mode: str = ""
+
+
+class SessionRoundState(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    no: int = 0
+    startedAt: str = ""
+    endedAt: str = ""
+    stopReason: str = ""
+    kind: str = ""
+    verdict: str = ""
+    detail: str = ""
+    toolUses: int = 0
+    finalChars: int = 0
+    continued: bool = False
+
+
+class ContinueHistoryState(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    no: int = 0
+    at: str = ""
+    sentBy: str = ""
+    reason: str = ""
+    round: int = 0
+    waitedMs: int = 0
+
+
+class ContinuesState(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    used: int = 0
+    max: int = 2
+    history: list[ContinueHistoryState] = Field(default_factory=list)
+
+
+class SupervisorState(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    pid: int = 0
+    pgid: int = 0
+    startedAt: str = ""
+    heartbeatAt: str = ""
+
+
+class SessionDeadlineState(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    totalAt: str = ""
+    noProgressAt: str = ""
+    holdUntil: str | None = None
+
+
+class SessionBlockedState(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    kind: str = ""
+    since: str = ""
+    until: str = ""
+
+
+class SessionAbortState(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    reason: str = ""
+    detail: str = ""
+    at: str = ""
+    by: str = ""
+
+
+class SessionOutcomeState(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    acceptedAt: str = ""
+    remark: str = ""
+
+
+class SessionRunState(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    schema_name: Literal["solo2611/session-run/1"] = Field(
+        default="solo2611/session-run/1", alias="schema"
+    )
+    mode: str = "supervised"
+    attemptIndex: int = 0
+    container: str = ""
+    tmuxSession: str = ""
+    supervisor: SupervisorState = Field(default_factory=SupervisorState)
+    liveTraceDir: str = ""
+    status: str = ""
+    startedAt: str = ""
+    lastActivityAt: str = ""
+    deadline: SessionDeadlineState = Field(default_factory=SessionDeadlineState)
+    nextActionAt: str | None = None
+    continues: ContinuesState = Field(default_factory=ContinuesState)
+    rounds: list[SessionRoundState] = Field(default_factory=list)
+    interrupts: list[dict[str, Any]] = Field(default_factory=list)
+    blocked: SessionBlockedState | None = None
+    abort: SessionAbortState | None = None
+    outcome: SessionOutcomeState | None = None
 
 
 class ArtifactState(BaseModel):
@@ -137,6 +241,7 @@ class SoloState(BaseModel):
     initialSha: str = ""
     fields: dict[str, Any] = Field(default_factory=dict)
     attempts: list[AttemptState] = Field(default_factory=list)
+    sessionRun: SessionRunState | None = None
     updatedAt: str = ""
     promptPath: str = ""
     promptSha256: str = ""

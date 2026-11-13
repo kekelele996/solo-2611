@@ -1,0 +1,18 @@
+{
+  "ok": true,
+  "checkedAt": "2026-11-13T11:05:04+00:00",
+  "launched": {
+    "container": "solo2611-v4-interactive-probe-99-a5cd",
+    "tmux": "solo2611-v4-interactive-probe-99-2a78",
+    "env": "/private/tmp/solo2611-accept/2026-11-13-v4-interactive-probe-ujhv/monitor/runs/probe-interactive/env.sh",
+    "launch": "/private/tmp/solo2611-accept/2026-11-13-v4-interactive-probe-ujhv/monitor/runs/probe-interactive/launch.sh"
+  },
+  "checks": {
+    "replReady": true,
+    "literalInput": true,
+    "screenEvidence": "▐▛███▛█   Claude Code v2.1.319\n▝▜██████▀  auto_model/urm · API Usage Billing\n ▝▝   ▝▝   /workspace\n\n⚠ Safe mode: all customizations are disabled (CLAUDE.md, skills, plugins, hooks,\n  MCP, agents, and more)\n  Restart without --safe-mode to re-enable\n\n────────────────────────────────────────────────────────────────────────────────\n❯ 评测探针-中文标点，引号“测试” 1794567899558715000\n────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)               ● high · /effort",
+    "liveMount": true,
+    "liveTrace": "/private/tmp/solo2611-accept/2026-11-13-v4-interactive-probe-ujhv/monitor/runs/probe-interactive/live/-workspace/90666d15-0be5-413b-ad98-527c977fc6bd.jsonl",
+    "continueAccepted": true
+  }
+}

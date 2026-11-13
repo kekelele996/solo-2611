@@ -60,6 +60,14 @@ class RunStopRequest(BaseModel):
     force: bool = False
 
 
+class SessionContinueRequest(BaseModel):
+    note: str = ""
+
+
+class SessionAbortRequest(BaseModel):
+    reason: str
+
+
 class CollectRequest(BaseModel):
     container: str | None = None
 
@@ -134,6 +142,12 @@ class ExecutionConfigPatch(BaseModel):
     max_containers: int | None = None
     run_timeout_seconds: int | None = None
     attempts: int | None = None
+    run_mode: Literal["supervised", "print"] | None = None
+    continue_max: int | None = Field(default=None, ge=0, le=2)
+    start_attempts: int | None = Field(default=None, ge=1, le=2)
+    silent_seconds: int | None = Field(default=None, ge=60)
+    no_progress_seconds: int | None = Field(default=None, ge=60)
+    fatal_hold_minutes: int | None = Field(default=None, ge=1, le=1440)
     stale_after_seconds: int | None = None
 
 

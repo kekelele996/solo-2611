@@ -24,6 +24,7 @@ import {
   RecordingTab,
   TimelineTab,
 } from "../components/task/TaskTabs";
+import { SessionPanel } from "../components/task/SessionPanel";
 import {
   Badge,
   Button,
@@ -92,7 +93,6 @@ export function TaskDetailPage() {
     mutationFn: async () => {
       if (!task.data) throw new Error("任务尚未加载");
       await api.abortTask(task.data.id, abandonReason.trim());
-      if (task.data.claim_id) await api.releaseClaim(task.data.claim_id);
     },
     onSuccess: () => {
       toast("任务已放弃，容器已清理并归还工程", "warn");
@@ -208,7 +208,12 @@ export function TaskDetailPage() {
       ) : null}
       <TabBar tabs={tabs} value={tab} onChange={setTab} label="任务详情标签页" />
       <div className="task-tab-content">
-        {tab === "overview" ? <OverviewTab task={detail} onRun={() => run.mutate()} running={run.isPending} /> : null}
+        {tab === "overview" ? (
+          <>
+            <SessionPanel task={detail} onAbort={() => setAbandonOpen(true)} />
+            <OverviewTab task={detail} onRun={() => run.mutate()} running={run.isPending} />
+          </>
+        ) : null}
         {tab === "prompt" ? <PromptTab task={detail} /> : null}
         {tab === "timeline" ? <TimelineTab task={detail} /> : null}
         {tab === "artifact" ? <ArtifactsTab task={detail} /> : null}

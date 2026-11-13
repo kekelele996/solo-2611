@@ -71,8 +71,32 @@ CREATE TABLE IF NOT EXISTS attempts (
   outcome TEXT NOT NULL,
   error_kind TEXT,
   detail TEXT,
+  session_run_status TEXT,
+  rounds INTEGER DEFAULT 0,
+  continues INTEGER DEFAULT 0,
+  start_failed INTEGER DEFAULT 0,
+  interrupt_kind TEXT,
+  last_activity_at TEXT,
   UNIQUE (task_id, seq)
 );
+CREATE TABLE IF NOT EXISTS session_rounds (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  attempt_seq INTEGER NOT NULL,
+  round_no INTEGER NOT NULL,
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  stop_reason TEXT,
+  kind TEXT NOT NULL,
+  verdict TEXT NOT NULL,
+  detail TEXT,
+  tool_uses INTEGER DEFAULT 0,
+  final_chars INTEGER DEFAULT 0,
+  continued INTEGER DEFAULT 0,
+  UNIQUE (task_id, attempt_seq, round_no)
+);
+CREATE INDEX IF NOT EXISTS idx_session_rounds_task
+  ON session_rounds(task_id, attempt_seq, round_no);
 CREATE TABLE IF NOT EXISTS artifacts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -180,6 +204,10 @@ CREATE TABLE IF NOT EXISTS dispatch_items (
   plan_id TEXT,
   project_id TEXT,
   engineering_id TEXT,
+  session_state TEXT,
+  continue_used INTEGER DEFAULT 0,
+  next_action_at TEXT,
+  container_seconds INTEGER DEFAULT 0,
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_dispatch_items_order
@@ -219,6 +247,7 @@ CREATE TABLE IF NOT EXISTS dispatch_capacity (
   limit_floor INTEGER NOT NULL,
   in_hand INTEGER NOT NULL,
   sessions INTEGER NOT NULL,
+  waiting INTEGER DEFAULT 0,
   held TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS engineering_cooldown (
@@ -267,18 +296,74 @@ class Repository:
                 "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(3, ?)",
                 (now(),),
             )
+            self._connection.execute(
+                "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(4, ?)",
+                (now(),),
+            )
 
     def close(self) -> None:
         with self._lock:
             self._connection.close()
 
     def _migrate(self) -> None:
+        prior_version = int(
+            (self._connection.execute("PRAGMA user_version").fetchone() or [0])[0] or 0
+        )
         columns = {str(row[1]) for row in self._connection.execute("PRAGMA table_info(tasks)").fetchall()}
         if "ack_by" not in columns:
             self._connection.execute("ALTER TABLE tasks ADD COLUMN ack_by TEXT")
         if "presence" not in columns:
             self._connection.execute("ALTER TABLE tasks ADD COLUMN presence TEXT NOT NULL DEFAULT 'present'")
-        self._connection.execute("PRAGMA user_version=3")
+        attempt_columns = {
+            "session_run_status": "TEXT",
+            "rounds": "INTEGER DEFAULT 0",
+            "continues": "INTEGER DEFAULT 0",
+            "start_failed": "INTEGER DEFAULT 0",
+            "interrupt_kind": "TEXT",
+            "last_activity_at": "TEXT",
+        }
+        existing_attempt_columns = {
+            str(row[1])
+            for row in self._connection.execute("PRAGMA table_info(attempts)").fetchall()
+        }
+        recovered = (
+            prior_version < 4
+            and bool(existing_attempt_columns & set(attempt_columns))
+            and not set(attempt_columns) <= existing_attempt_columns
+        )
+        self._ensure_columns("attempts", attempt_columns)
+        self._ensure_columns(
+            "dispatch_items",
+            {
+                "session_state": "TEXT",
+                "continue_used": "INTEGER DEFAULT 0",
+                "next_action_at": "TEXT",
+                "container_seconds": "INTEGER DEFAULT 0",
+            },
+        )
+        self._ensure_columns("dispatch_capacity", {"waiting": "INTEGER DEFAULT 0"})
+        self._connection.execute("PRAGMA user_version=4")
+        if recovered:
+            self._connection.execute(
+                """
+                INSERT INTO events(at, level, actor, action, message, details)
+                VALUES(?, 'warn', 'system', 'migration.recovered', ?, ?)
+                """,
+                (
+                    now(),
+                    "v4 数据库迁移从中断处恢复完成",
+                    json.dumps({"priorVersion": prior_version}, ensure_ascii=False),
+                ),
+            )
+
+    def _ensure_columns(self, table: str, columns: dict[str, str]) -> None:
+        existing = {
+            str(row[1])
+            for row in self._connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        for name, sql_type in columns.items():
+            if name not in existing:
+                self._connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -481,6 +566,84 @@ class Repository:
             "SELECT session_id, COUNT(*) AS n FROM tasks WHERE session_id IS NOT NULL GROUP BY session_id"
         )
         return {str(row["session_id"]): int(row["n"]) for row in rows}
+
+    def replace_session_rounds(self, task_id: str, attempt_seq: int, rounds: list[dict[str, Any]]) -> None:
+        """Replace one attempt's rounds from the skill's authoritative state."""
+        with self.transaction() as conn:
+            conn.execute(
+                "DELETE FROM session_rounds WHERE task_id = ? AND attempt_seq = ?",
+                (task_id, attempt_seq),
+            )
+            conn.executemany(
+                """
+                INSERT INTO session_rounds(
+                  task_id, attempt_seq, round_no, started_at, ended_at, stop_reason,
+                  kind, verdict, detail, tool_uses, final_chars, continued
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        task_id,
+                        attempt_seq,
+                        int(item.get("no") or index),
+                        str(item.get("startedAt") or ""),
+                        str(item.get("endedAt") or "") or None,
+                        str(item.get("stopReason") or ""),
+                        str(item.get("kind") or "none"),
+                        str(item.get("verdict") or "complete"),
+                        str(item.get("detail") or ""),
+                        int(item.get("toolUses") or 0),
+                        int(item.get("finalChars") or 0),
+                        1 if item.get("continued") else 0,
+                    )
+                    for index, item in enumerate(rounds, 1)
+                ],
+            )
+
+    def session_rounds(self, task_id: str) -> list[dict[str, Any]]:
+        return self.query(
+            """
+            SELECT * FROM session_rounds
+            WHERE task_id = ? ORDER BY attempt_seq, round_no
+            """,
+            (task_id,),
+        )
+
+    def session_stats(self) -> dict[str, Any]:
+        summary = self.query_one(
+            """
+            SELECT
+              SUM(CASE WHEN session_id IS NOT NULL THEN 1 ELSE 0 END) AS accepted,
+              SUM(CASE WHEN session_id IS NOT NULL
+                        AND COALESCE(
+                          (SELECT SUM(continues) FROM attempts a WHERE a.task_id=t.id), 0
+                        ) > 0 THEN 1 ELSE 0 END) AS accepted_with_continue
+            FROM tasks t
+            """
+        ) or {}
+        reasons = self.query(
+            """
+            SELECT error_kind AS kind, COUNT(*) AS count
+            FROM attempts
+            WHERE outcome = 'aborted' AND error_kind IS NOT NULL AND error_kind != ''
+            GROUP BY error_kind ORDER BY count DESC
+            """
+        )
+        accepted = int(summary.get("accepted") or 0)
+        continued = int(summary.get("accepted_with_continue") or 0)
+        container = self.query_one(
+            "SELECT COALESCE(SUM(container_seconds), 0) AS value FROM dispatch_items"
+        ) or {}
+        total_seconds = float(container.get("value") or 0)
+        return {
+            "accepted": accepted,
+            "acceptedWithContinue": continued,
+            "continueRate": round(continued / accepted, 4) if accepted else 0.0,
+            "abortReasons": reasons,
+            "sessionsPerContainerHour": round(accepted / (total_seconds / 3600), 4)
+            if total_seconds
+            else 0.0,
+        }
 
     def upsert_claim(self, claim: dict[str, Any]) -> None:
         with self.transaction() as conn:

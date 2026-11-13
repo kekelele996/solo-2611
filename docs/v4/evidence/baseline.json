@@ -1,0 +1,43 @@
+{
+  "schema": "solo2611/baseline/1",
+  "generatedAt": "2026-11-13T11:01:20+00:00",
+  "tasksDir": "/Users/gaobo/claude-runs/solo-2611",
+  "tasks": 120,
+  "attempts": 259,
+  "attemptStatus": {
+    "accepted": 73,
+    "cancelled": 6,
+    "cancelled-before-container": 2,
+    "cancelled_before_start": 1,
+    "failed": 1,
+    "infrastructure_failed": 1,
+    "queued_timeout_before_container": 1,
+    "rejected": 94,
+    "rejected_environment": 1,
+    "running": 79
+  },
+  "attemptsPerTask": {
+    "0": 2,
+    "1": 39,
+    "2": 38,
+    "3": 29,
+    "4": 6,
+    "5": 3,
+    "6": 3
+  },
+  "failureReasons": {
+    "unknown": 82,
+    "truncated": 33,
+    "rate_limited": 32,
+    "other": 18,
+    "container": 13,
+    "gateway": 8
+  },
+  "containerSeconds": 723037.0,
+  "containerHours": 200.844,
+  "accepted": 73,
+  "acceptedContainerSeconds": 284669.0,
+  "unproductiveContainerSeconds": 438368.0,
+  "unproductiveContainerShare": 0.6063,
+  "sessionsPerContainerHour": 0.3635
+}

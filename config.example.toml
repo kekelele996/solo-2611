@@ -11,8 +11,14 @@ timeout_seconds = 20.0
 
 [execution]
 max_containers = 4
-run_timeout_seconds = 7200
-attempts = 3
+run_timeout_seconds = 10800
+attempts = 1
+run_mode = "supervised"
+continue_max = 2
+start_attempts = 2
+silent_seconds = 1200
+no_progress_seconds = 1200
+fatal_hold_minutes = 30
 stale_after_seconds = 5400
 
 [storage]

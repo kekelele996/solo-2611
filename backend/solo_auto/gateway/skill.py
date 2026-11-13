@@ -30,6 +30,13 @@ COMMANDS = {
     "init",
     "prompt",
     "run",
+    "run-status",
+    "resume",
+    "continue",
+    "abort",
+    "resume-all",
+    "doctor",
+    "supervise",
     "interactive",
     "collect",
     "reset",
@@ -365,6 +372,21 @@ class SkillGateway:
                 except json.JSONDecodeError:
                     return None
             return None
+
+    @staticmethod
+    def classify_result(result: SkillResult) -> str:
+        if result.code == 0:
+            return "ok"
+        if result.code == 2:
+            return "gate"
+        return "business"
+
+    async def run_status(self, task_root: Path, *, task_id: str | None = None) -> SkillResult:
+        return await self.call(
+            ["run-status", "--task-root", str(task_root), "--json", "--lines", "40"],
+            timeout=15,
+            task_id=task_id,
+        )
 
     def _write_log(
         self,

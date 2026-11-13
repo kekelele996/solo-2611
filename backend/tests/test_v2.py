@@ -458,7 +458,7 @@ async def test_version_exposes_build_id(
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/version")
         assert response.status_code == 200
-        assert response.json()["build_id"].startswith("0.3.0+")
+        assert response.json()["build_id"].startswith("0.4.0+")
     finally:
         await ctx.shutdown()
 

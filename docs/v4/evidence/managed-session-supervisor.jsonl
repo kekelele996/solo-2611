@@ -1,0 +1,6 @@
+{"at":"2026-11-13T11:05:28+00:00","event":"session.start","mode":"supervised","attemptNo":1,"maxContinues":2}
+{"at":"2026-11-13T11:05:39+00:00","event":"session.start","mode":"supervised","attemptNo":1,"maxContinues":2}
+{"at":"2026-11-13T11:05:41+00:00","event":"prompt.sent","chars":28,"sha256":"303f7a754e53dd915b25f56eb87e14296e3cc512ba2e8ac2a0b87c390b25c970"}
+{"at":"2026-11-13T11:06:21+00:00","event":"round.end","round":1,"kind":"none","verdict":"complete","detail":"","waitSeconds":0}
+{"at":"2026-11-13T11:06:21+00:00","event":"session.closing"}
+{"at":"2026-11-13T11:06:54+00:00","event":"session.accepted","sessionId":"d9d5073d-38bf-4dc3-8733-ddce9a3c3b17","promptId":"ee71f932-3d13-4d65-a9aa-3a40cc1e1278","continues":0}

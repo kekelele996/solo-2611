@@ -50,7 +50,7 @@ context          当时的挂起表、最近探测结果、是否处于睡眠唤
    （例如运行失败时网关探测也失败 → `gateway.unreachable`）。
 3. 结构化信号：技能 JSON 的错误码、容器 `OOMKilled`、容器退出码、HTTP 状态码字段。
 4. `patterns.toml` 特征表（正则匹配 stderr / 轨迹错误文本 / Agent 结论）。
-5. 阶段兜底：运行阶段结束但会话结构不完整 → `run.incomplete`；Agent 自报失败 → `agent.reported`。
+5. 阶段兜底：受管会话终止 → 读取 `sessionRun.abort.reason`；Agent 自报失败 → `agent.reported`。
 6. 以上都不中 → `unknown.<stage>`。
 
 每次分类结果都带 `matched_by`（命中的是哪一步、哪条规则），写进事件，界面在隔离卡片上原样展示。
@@ -104,9 +104,14 @@ regex   = '''(?i)pull access denied|manifest unknown|no such image|error pulling
 | `container.image` | 否 | 否 | 0 | — | `skill_guard` 挂起 containers（L4：镜像问题对所有题一样） | — |
 | `container.oom` | 否 | 是 | 1 | ×3 | 该工程进冷却；1 小时内 ≥ 2 次 → 弹性下调 1 并告警 | 隔离 |
 | `container.exited` | 是 | 是 | 2 | ×1 | — | 隔离 |
-| `run.timeout` | 否 | 是 | 1 | ×1 | — | 隔离；工程进冷却 |
-| `run.no_progress` | 是 | 是 | 1 | ×1 | — | 隔离 |
-| `run.incomplete` | 否 | 是 | 2 | ×1 | — | 隔离（建议换题）；工程进冷却 |
+| `run.timeout` | 否 | 否 | 0 | — | 技能总时长到点终止 | 隔离；工程进冷却 |
+| `run.no_progress` | 否 | 否 | 0 | — | 技能无进展计时到点终止 | 隔离；工程进冷却 |
+| `run.incomplete` | 否 | 否 | 0 | — | 会话结构或收尾校验失败 | 隔离；工程进冷却 |
+| `run.continues_exhausted` | 否 | 否 | 0 | — | 已发 2 次“继续”后仍中断 | 隔离；工程进冷却 |
+| `run.hold_timeout` | 否 | 否 | 0 | — | 鉴权/额度等待超过处理时限 | 隔离；工程进冷却 |
+| `run.start_failed` | 是 | 否 | 2（独立计数） | 30/60 秒 | 不消耗会话机会 | 可人工重排，不进工程冷却 |
+| `run.session_lost` | 否 | 否 | 1 | — | 先 `resume`，接不回 | 隔离 |
+| `run.unresponsive` | 否 | 否 | 0 | — | 发送“继续”后 3 分钟无新输入 | 转人工；超时隔离 |
 | `run.interrupted` | 是 | 否 | — | 无 | — | 重新排队 |
 | `agent.missing` | 否 | 否 | 0 | — | `session_guard` 挂起 sessions | — |
 | `agent.launch_lost` | 是 | 否 | 2（独立计数） | ×0.5 | 连续 3 题 → `session_guard` | 隔离 |
@@ -204,14 +209,14 @@ regex   = '''(?i)pull access denied|manifest unknown|no such image|error pulling
 | C2 | 镜像拉不到 / 不存在 | 特征表命中 `container.image` | L4 | `skill_guard` 挂起 containers（对所有题都一样，重试无意义） | 人工 | 立即 |
 | C3 | 容器被 OOM 杀掉 | `docker inspect` 的 `OOMKilled` 或退出码 137 | L1 | 该题重试 1 次并拉长退避；该工程进冷却；1 小时内 ≥ 2 次 → 弹性 / 容器数建议下调并告警 | — | 1 小时内 ≥ 3 次 |
 | C4 | 容器提前退出 | 容器非零退出，会话结构不完整 | L1 | `container.exited` 退避重试 | — | 隔离后在「需处理」 |
-| C5 | 运行超时 | 运行时长 > `run_timeout_seconds × 1.25`（扣除睡眠） | L1 | 守护命中：仅观察 → 标记；自动处置 → 技能 `cleanup`，`run.timeout` | — | 隔离 |
-| C6 | 运行无进展 | 持有名额期间 30 分钟内所有进展信号都没写入 | L1 | 同 C5，类别 `run.no_progress` | — | 隔离 |
-| C7 | 运行结束但会话不完整 | 1–8 步门禁未过 | L1 | `run.incomplete`，最多重试 2 次 | — | 隔离，建议换题；工程进冷却 |
+| C5 | 运行超时 | 技能 `sessionRun.deadline.totalAt` 已过 | L1 | 工作台只告警；技能终止会话并给出 `run.timeout` | — | 隔离换题；工程冷却 |
+| C6 | 运行无进展 | `deadline.noProgressAt` 已过且不是等待继续/人工态 | L1 | 工作台不终止；技能生成 `run.no_progress` | — | 隔离换题 |
+| C7 | 运行结束但会话不完整 | 收尾结构校验未过 | L1 | `run.incomplete`；不再整题重跑 | — | 隔离换题；工程冷却 |
 | C8 | 僵尸容器 | 任务在平台与 `state.json` 中**都**是终态，容器仍在运行超过 5 分钟 | L0 | 守护：技能 `cleanup` | — | 不升级 |
 | C9 | 孤儿容器 | 带 `solo2611` 标签、不属于任何已知任务、存活 > 30 分钟 | L0 | 计入占用（防超发）；守护列出；自动处置模式下清理 | — | 仅观察模式下进「兜底策略」面板 |
-| C10 | 技能进程死了但容器还活着 | 认领表：进程死 × 容器活 | L0 | 保留占用；容器结束后 `collect --container` 收尾 | 收尾成功即正常进入下一阶段 | `collect` 失败 → `run.interrupted` 重新排队 |
-| C11 | 后端重启时运行正在进行 | 认领表：进程活 × 容器活 | L0 | 认领并跟随日志，不重启不计次数 | — | — |
-| C12 | `state.json` 停在 `running`，现场全无 | 认领表：进程死 × 容器无 | L0 | 技能 `collect`；失败 → `run.interrupted`，不计次数重新排队 | — | 总尝试用尽才隔离 |
+| C10 | 技能监督器死了但 tmux/容器还活着 | `run-status.supervisorAlive=false`，容器活着 | L0 | 调技能 `resume`，新监督器接回；继续次数不变 | 心跳恢复 | 接不回 → `run.session_lost` |
+| C11 | 后端重启时运行正在进行 | `state.status=running` | L0 | 只轮询 `run-status`；必要时 `resume`，不重启容器 | 60 秒内恢复显示 | — |
+| C12 | `state.json` 停在 `running`，现场全无 | 容器、tmux、监督器都不在 | L0 | 标记 `run.session_lost`；`doctor --fix-stale` 只修历史悬空 | — | 隔离并换题 |
 | C13 | 用户绕过平台手动跑了 `run` | 容器属于已知任务但不是平台启动的 | L0 | 计入占用；该题标「外部运行中」，平台不重复启动；结束后按磁盘事实续跑 | — | — |
 | C14 | 上限被外部改动 | 技能配置的 `maxContainers` ≠ 平台写入值 | L0 | 写回并回读；记 `limit.drift`；暂停启动 20 秒 | 自动 | 1 小时内 ≥ 3 次（有别的东西在改） |
 

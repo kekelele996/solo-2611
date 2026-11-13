@@ -1,7 +1,10 @@
 # solo-auto · 2611 作业台
 
-本地单机版 26.11 单轮 pointwise 作业控制台。当前为 **v0.3.0 调度中心**，围绕已有的 `solo-2611` v0.3.2 CLI
+本地单机版 26.11 pointwise 作业控制台。当前为 **v0.4.0 受管会话版**，围绕 `solo-2611` v0.6.0 CLI
 完成题源领取、建题、题面门禁、容器调度、证据阅读、窗口录屏、Feedback 复核和 19 列 Excel 导出。
+
+受管会话采用“发起 + 轮询”：后端只负责启动技能监督器并读取 `run-status`，不再依赖一条会因重启而断开的
+子进程连接。任务页显示轮次、继续次数、等待原因和倒计时；中断后在同一容器内继续，继续用尽或超时才终止并换题。
 
 v3 把生产线升级为一处统一调度：
 
@@ -108,4 +111,4 @@ docs/                    需求、架构、契约与验收文档
 config.example.toml      配置模板
 ```
 
-完整设计与验收口径见 `PROMPT.md`、`docs/v3/` 和 `docs/v3/implementation-status.md`。
+完整设计与验收口径见 `PROMPT.md`、`docs/v3/`、`docs/v4/` 和 `docs/v4/implementation-status.md`。

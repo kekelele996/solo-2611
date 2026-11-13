@@ -40,6 +40,10 @@ class DispatchItem:
     plan_id: str = ""
     project_id: str = ""
     engineering_id: str = ""
+    session_state: str = ""
+    continue_used: int = 0
+    next_action_at: str = ""
+    container_seconds: int = 0
     updated_at: str = field(default_factory=_now)
 
     @property
@@ -74,11 +78,13 @@ class DispatchQueue:
             INSERT INTO dispatch_items(
               task_id, status, stage, priority, position, enqueued_at, not_before,
               wait_code, wait_text, wait_until, attempts, total_attempts, last_failure,
-              repeat_signature, guard_flags, keep, plan_id, project_id, engineering_id, updated_at
+              repeat_signature, guard_flags, keep, plan_id, project_id, engineering_id,
+              session_state, continue_used, next_action_at, container_seconds, updated_at
             ) VALUES(
               :task_id, :status, :stage, :priority, :position, :enqueued_at, :not_before,
               :wait_code, :wait_text, :wait_until, :attempts, :total_attempts, :last_failure,
-              :repeat_signature, :guard_flags, :keep, :plan_id, :project_id, :engineering_id, :updated_at
+              :repeat_signature, :guard_flags, :keep, :plan_id, :project_id, :engineering_id,
+              :session_state, :continue_used, :next_action_at, :container_seconds, :updated_at
             )
             ON CONFLICT(task_id) DO UPDATE SET
               status=excluded.status, stage=excluded.stage, priority=excluded.priority,
@@ -88,6 +94,8 @@ class DispatchQueue:
               last_failure=excluded.last_failure, repeat_signature=excluded.repeat_signature,
               guard_flags=excluded.guard_flags, keep=excluded.keep, plan_id=excluded.plan_id,
               project_id=excluded.project_id, engineering_id=excluded.engineering_id,
+              session_state=excluded.session_state, continue_used=excluded.continue_used,
+              next_action_at=excluded.next_action_at, container_seconds=excluded.container_seconds,
               updated_at=excluded.updated_at
             """,
             _params(item),
@@ -259,6 +267,10 @@ def _from_row(row: dict[str, Any]) -> DispatchItem:
         plan_id=str(row.get("plan_id") or ""),
         project_id=str(row.get("project_id") or ""),
         engineering_id=str(row.get("engineering_id") or ""),
+        session_state=str(row.get("session_state") or ""),
+        continue_used=int(row.get("continue_used") or 0),
+        next_action_at=str(row.get("next_action_at") or ""),
+        container_seconds=int(row.get("container_seconds") or 0),
         updated_at=str(row["updated_at"]),
     )
 

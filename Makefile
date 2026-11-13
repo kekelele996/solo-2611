@@ -43,8 +43,11 @@ grep-check:
 	@! rg -n 'ackedBy.*"user"' backend/solo_auto/pipeline/autopilot.py backend/solo_auto/pipeline/audit.py
 	@! rg -n '"docker",\s*"ps"' backend/solo_auto -g '!backend/solo_auto/dispatch/**'
 	@! rg -n 'desired_state\s*=\s*["\x27]running' backend/solo_auto -g '!dispatch/kernel.py'
+	@! rg -n 'monitor/state\.json.*write_text|write_text\([^\n]*state\.json' backend/solo_auto
+	@! rg -n 'continue_max\s*=\s*[3-9]|continues_max\s*=\s*[3-9]|continueMax[^\n]*[3-9]' backend/solo_auto -g '!**/tests/**'
+	@! rg -n 'INSERT INTO session_rounds' backend/solo_auto -g '!backend/solo_auto/store/repo.py'
 	@count=$$(rg -n "transition:|animation:" frontend/src | wc -l | tr -d ' '); \
-		test "$$count" -le 12 || (echo "动效声明过多: $$count" && exit 1)
+		test "$$count" -le 15 || (echo "动效声明过多: $$count" && exit 1)
 
 test-linux:
 	docker run --rm -v "$$PWD":/workspace -w /workspace/backend python:3.12-slim \

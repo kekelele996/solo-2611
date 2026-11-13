@@ -86,6 +86,11 @@ export function DispatchPage() {
     queryFn: () => api.dispatchUpcoming(NEXT_QUEUE_LIMIT),
     refetchInterval: 10_000,
   });
+  const sessionStats = useQuery({
+    queryKey: ["dispatch-session-stats"],
+    queryFn: api.sessionStats,
+    refetchInterval: 10_000,
+  });
 
   useEffect(() => {
     const snapshot = dispatch.data;
@@ -409,6 +414,27 @@ export function DispatchPage() {
             </div>
           </Panel>
 
+          <Panel title="会话质量">
+            <div className="panel-body dispatch-metrics">
+              <Metric
+                label="继续率"
+                value={`${Math.round((sessionStats.data?.continueRate ?? 0) * 100)}%`}
+              />
+              <Metric
+                label="每容器小时"
+                value={(sessionStats.data?.sessionsPerContainerHour ?? 0).toFixed(2)}
+              />
+              <Metric
+                label="接受 / 含继续"
+                value={`${sessionStats.data?.accepted ?? 0} / ${sessionStats.data?.acceptedWithContinue ?? 0}`}
+              />
+              <Metric
+                label="主要终止原因"
+                value={sessionStats.data?.abortReasons[0]?.kind ?? "—"}
+              />
+            </div>
+          </Panel>
+
           <IntakePanel />
         </aside>
       </div>
@@ -490,6 +516,7 @@ function CapacityStrip({ snapshot, inHand }: { snapshot: DispatchSnapshot; inHan
   const containers = pool("containers");
   const sessions = pool("sessions");
   const waiting = snapshot.queue.filter((item) => !item.active && !FINISHED.has(item.status)).length;
+  const waitingContinue = snapshot.session_capacity?.waiting ?? 0;
   const cells: Array<{ label: string; used: number; limit: number; note?: string; major?: boolean }> = [
     {
       label: "容器",
@@ -499,6 +526,12 @@ function CapacityStrip({ snapshot, inHand }: { snapshot: DispatchSnapshot; inHan
       note: snapshot.elastic.enabled ? `弹性 ${snapshot.elastic.floor}–${snapshot.elastic.ceiling} · 按需创建` : undefined,
     },
     { label: "会话", used: sessions.used, limit: sessions.limit, major: true },
+    {
+      label: "等待继续",
+      used: waitingContinue,
+      limit: containers.limit,
+      note: waitingContinue ? "容器仍占名额，到达时间后自动发送“继续”" : "当前没有等待项",
+    },
     { label: "在手", used: inHand, limit: snapshot.limits.in_hand, major: true },
     { label: "起草", used: pool("authoring").used, limit: pool("authoring").limit },
     { label: "交付", used: pool("delivering").used, limit: pool("delivering").limit },
@@ -524,6 +557,11 @@ function CapacityStrip({ snapshot, inHand }: { snapshot: DispatchSnapshot; inHan
       {containers.available > 0 && sessions.used >= sessions.limit ? (
         <p className="dispatch-capacity-notice" role="status">
           容器还有 {containers.available} 个空位；当前会话已满 {sessions.used}/{sessions.limit}，新任务会等待会话释放。
+        </p>
+      ) : null}
+      {waitingContinue ? (
+        <p className="dispatch-capacity-notice" role="status">
+          {snapshot.session_capacity?.label}；等待期间容器继续占用名额，不按卡死处理。
         </p>
       ) : null}
       {containers.available > 0 && waiting === 0 ? (
@@ -645,7 +683,14 @@ function QueueRow({
         </Link>
         {zone === "processing" ? (
           <span className="dispatch-queue-note">
-            已运行 <Elapsed since={item.updated_at} /> · {item.engineering_id || "工程信息同步中"}
+            已运行 <Elapsed since={item.updated_at} />
+            {item.session_state === "waiting_continue"
+              ? ` · 等待继续 · 已用 ${item.continue_used ?? 0}/2`
+              : item.session_state === "holding"
+                ? " · 等待人工处理"
+                : item.session_state === "manual_input"
+                  ? " · 需要人工输入"
+                  : ` · ${item.engineering_id || "工程信息同步中"}`}
           </span>
         ) : zone === "processed" ? (
           <span className="dispatch-queue-note" title={item.wait_code === "ignored" ? item.wait_text : undefined}>

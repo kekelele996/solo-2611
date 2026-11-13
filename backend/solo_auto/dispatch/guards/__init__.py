@@ -39,6 +39,11 @@ class GuardRunner:
         for item in self.queue.all_items(include_terminal=False):
             if item.keep:
                 continue
+            # The managed skill owns no-progress and deadline decisions.  A
+            # session waiting for a retry window or human action must not be
+            # counted as an idle or zombie task by the workbench.
+            if item.session_state in {"waiting_continue", "holding", "manual_input"}:
+                continue
             if item.total_attempts >= self.settings.guard.attempt_inflation:
                 self._hit(
                     item,

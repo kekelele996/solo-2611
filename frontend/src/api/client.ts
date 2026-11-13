@@ -31,6 +31,8 @@ import type {
   RecordingStatus,
   RecordingVerify,
   RunStatus,
+  SessionStats,
+  SessionStatus,
   StagingRow,
   SystemStatus,
   TaskDetail,
@@ -261,6 +263,22 @@ export const api = {
       body: JSON.stringify({ pinned }),
     }),
   runStatus: (id: string) => request<RunStatus>(`/api/tasks/${encodeURIComponent(id)}/run`),
+  session: (id: string) => request<SessionStatus>(`/api/tasks/${encodeURIComponent(id)}/run/session`),
+  resumeSession: (id: string) =>
+    request<{ ok: boolean; status: SessionStatus }>(`/api/tasks/${encodeURIComponent(id)}/run/resume`, {
+      method: "POST",
+    }),
+  continueSession: (id: string, note = "工作台人工继续") =>
+    request<{ ok: boolean; sent: boolean; status: SessionStatus }>(
+      `/api/tasks/${encodeURIComponent(id)}/run/continue`,
+      { method: "POST", body: JSON.stringify({ note }) },
+    ),
+  abortSession: (id: string, reason: string) =>
+    request<{ ok: boolean; job_status: string }>(`/api/tasks/${encodeURIComponent(id)}/run/abort`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
+  sessionStats: () => request<SessionStats>("/api/dispatch/session-stats"),
   stopRun: (id: string, force = false) =>
     request<{ state: string }>(`/api/tasks/${encodeURIComponent(id)}/run/stop`, {
       method: "POST",
