@@ -15,7 +15,7 @@
 
 | 检查 | 结果 |
 |---|---|
-| 技能测试 | `93 passed` |
+| 技能测试 | `94 passed` |
 | 工作台后端 | `ruff`、`mypy --strict`、`pytest 141 passed` |
 | OpenAPI / TypeScript schema | `make check` contract 检查通过 |
 | 前端 | typecheck、ESLint、25 个 Vitest、生产构建全部通过 |
