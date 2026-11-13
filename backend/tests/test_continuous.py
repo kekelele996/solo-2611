@@ -192,6 +192,61 @@ async def test_continuous_plan_keeps_claiming_within_the_daily_cap(
 
 
 @pytest.mark.asyncio
+async def test_blocked_history_does_not_hold_continuous_intake(
+    fixture_factory: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = await _continuous_app(tmp_path, monkeypatch, fixture_factory)
+    source = BankSource(["e1"])
+    ctx.intake.source = source
+    now = datetime.now().astimezone().isoformat()
+    for index in range(20):
+        ctx.repo.upsert_task(
+            {
+                "id": f"historical-blocked-{index}",
+                "task_root": str(tmp_path / f"historical-blocked-{index}"),
+                "task_name": f"历史阻断任务 {index}",
+                "source_kind": "claim",
+                "engineering_id": f"historical-{index}",
+                "project_id": "project-1",
+                "domain": "数据工程",
+                "sub_direction": "数仓与数据湖",
+                "job_status": "blocked",
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+    ctx.intake.plan = _continuous_plan(daily_cap=10)
+    try:
+        await ctx.intake.tick()
+        assert source.claimed == ["e1"]
+        assert "backpressure" not in ctx.dispatcher.holds.holds
+    finally:
+        await ctx.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_preview_queue_cycles_engineering_without_adjacent_duplicates(
+    fixture_factory: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = await _continuous_app(tmp_path, monkeypatch, fixture_factory)
+    ctx.intake.source = BankSource(["e1", "e2"])
+    ctx.intake.plan = _continuous_plan(daily_cap=10)
+    try:
+        preview = await ctx.intake.preview_candidates(7)
+        assert [item["engineering_id"] for item in preview] == ["e1", "e2", "e1", "e2", "e1", "e2", "e1"]
+        assert all(
+            preview[index]["engineering_id"] != preview[index - 1]["engineering_id"]
+            for index in range(1, len(preview))
+        )
+    finally:
+        await ctx.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_empty_source_backs_off_and_resumes_by_itself(
     fixture_factory: Any,
     tmp_path: Path,

@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from solo_auto.config_watch import ConfigWatcher
 from solo_auto.dispatch.facts import docker_info_ok
 from solo_auto.dispatch.kernel import Dispatcher
 from solo_auto.events.bus import EventBus
@@ -223,6 +224,7 @@ class AppContext:
         self._background: list[asyncio.Task[Any]] = []
         self._started = False
         self.watcher_started = False
+        self.config_watcher = ConfigWatcher(self)
 
     async def startup(self) -> None:
         if self._started:
@@ -246,6 +248,7 @@ class AppContext:
             await self.autopilot.start()
             await self.janitor.start()
             await self.intake.start()
+            self.config_watcher.start()
         self.repo.add_event(
             "system.started",
             f"solo-auto 启动，技能版本 {self.skill_version}",
@@ -256,6 +259,7 @@ class AppContext:
     async def shutdown(self) -> None:
         if not self._started:
             return
+        await self.config_watcher.stop()
         await self.autopilot.stop()
         await self.intake.shutdown()
         await self.janitor.stop()

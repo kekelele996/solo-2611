@@ -23,6 +23,7 @@ from solo_auto.api.types import (
 )
 from solo_auto.context import AppContext
 from solo_auto.errors import ApiError
+from solo_auto.pipeline.reaper import reap_and_record
 from solo_auto.pipeline.steps import evaluate_steps
 from solo_auto.store.state import load_state
 
@@ -111,6 +112,7 @@ async def abort_task(
     reason = payload.reason.strip()
     if not reason:
         raise ApiError(422, "ABORT_REASON_REQUIRED", "放弃任务必须填写原因")
+    await reap_and_record(ctx.repo, task["task_root"], task_id=task_id, actor="user")
     cleanup = await ctx.gateway.call(
         ["cleanup", "--task-root", str(task["task_root"])],
         timeout=120,

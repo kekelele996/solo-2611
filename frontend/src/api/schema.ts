@@ -2418,6 +2418,8 @@ export interface components {
             chatgpt_push_helper?: string | null;
             /** Chatgpt Timeout Seconds */
             chatgpt_timeout_seconds?: number | null;
+            /** Task Timeout Seconds */
+            task_timeout_seconds?: number | null;
             /** Restricted */
             restricted?: boolean | null;
             /** Stage Timeout Seconds */

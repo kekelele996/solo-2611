@@ -117,6 +117,7 @@ describe("dispatch page", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.spyOn(api, "dispatch").mockResolvedValue(SNAPSHOT);
+    vi.spyOn(api, "dispatchUpcoming").mockResolvedValue({ items: [] });
     vi.spyOn(api, "dispatchLimits").mockResolvedValue({
       snapshot: SNAPSHOT,
       changed: { containers: [4, 5] },
@@ -147,13 +148,37 @@ describe("dispatch page", () => {
 
   it("renders the state sentence, scoped hold and queue reason", async () => {
     renderPage();
-    expect(await screen.findByRole("heading", { name: "调度" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "任务队列" })).toBeInTheDocument();
     expect(screen.getByText(SNAPSHOT.sentence)).toBeInTheDocument();
     expect(screen.getByText("网关连续 2 次探测失败")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /待处理/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /正在处理/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /已处理/ })).toBeInTheDocument();
     expect(screen.getByText("门禁连续两次返回相同错误")).toBeInTheDocument();
     fireEvent.click(screen.getByText("门禁连续两次返回相同错误"));
     expect(screen.getByText("WHY NOT RUNNING")).toBeInTheDocument();
     expect(screen.getByText("G12")).toBeInTheDocument();
+  });
+
+  it("shows the next 20 queue with a rotation preview", async () => {
+    (api.dispatchUpcoming as ReturnType<typeof vi.fn>).mockResolvedValue({
+      items: [
+        {
+          task_id: "preview:eng-2:0",
+          task_name: "下一道候补工程",
+          engineering_id: "eng-2",
+          project_id: "project-1",
+          preview: true,
+          cycle: 0,
+          used: 0,
+          last_used_at: "",
+        },
+      ],
+    });
+    renderPage();
+    expect(await screen.findByText("下一道候补工程")).toBeInTheDocument();
+    expect(screen.getByText("QUEUE / NEXT 20")).toBeInTheDocument();
+    expect(screen.getByText(/工程不足时循环补位/)).toBeInTheDocument();
   });
 
   it("applies in-page limits and queue actions", async () => {

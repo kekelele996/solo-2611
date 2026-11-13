@@ -7,13 +7,32 @@ import os
 import re
 import shutil
 import subprocess
+import threading
+import time
 import urllib.parse
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
 from solo_auto.errors import ApiError
+
+MARKER_RE = re.compile(r"solo-auto-chatgpt:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):([0-9a-z]+)")
+TURN_EVENTS = frozenset({"task_started", "task_complete", "turn_aborted", "stream_error", "error"})
+TERMINAL_TURN_EVENTS = frozenset({"task_complete", "turn_aborted", "stream_error", "error"})
+TOOL_ITEMS = frozenset(
+    {
+        "function_call",
+        "function_call_output",
+        "custom_tool_call",
+        "custom_tool_call_output",
+        "local_shell_call",
+        "local_shell_call_output",
+    }
+)
+# 标识只认会话开头几条消息里的用户指令，避免把“提到了标识”的其他会话误算进来。
+MARKER_SCAN_LINES = 80
 
 DEFAULT_HELPERS = (
     Path.home() / "no_cloud" / "common" / "solo2-monitor" / "CodexQueuePush.app" / "Contents" / "MacOS" / "CodexQueuePush",
@@ -182,6 +201,180 @@ class ChatGPTDesktop:
             except OSError:
                 continue
         return None
+
+
+@dataclass(slots=True)
+class RolloutInfo:
+    """Incrementally parsed facts about one ChatGPT desktop rollout file."""
+
+    path: Path
+    offset: int = 0
+    lines: int = 0
+    marker: str = ""
+    task_id: str = ""
+    cwd: str = ""
+    turn_state: str = ""
+    error_text: str = ""
+    last_tool_at: float = 0.0
+    mtime: float = 0.0
+
+    @property
+    def terminal(self) -> bool:
+        return self.turn_state in TERMINAL_TURN_EVENTS
+
+
+class RolloutIndex:
+    """Tracks every rollout the platform launched, whether or not it still follows it.
+
+    ChatGPT desktop threads cannot be stopped from outside. A thread the
+    platform gave up on keeps running and consuming quota, so capacity must be
+    measured from the rollouts themselves rather than from bookkeeping. Each
+    file is read once and then only from its last complete line onwards.
+    """
+
+    def __init__(self, sessions_dir: Path) -> None:
+        self.sessions_dir = sessions_dir
+        self.items: dict[str, RolloutInfo] = {}
+        self._lock = threading.RLock()
+
+    def refresh(self, *, window_seconds: float, now: float | None = None) -> None:
+        current = time.time() if now is None else now
+        cutoff = current - window_seconds
+        seen: set[str] = set()
+        for path in self._recent_files(cutoff, current):
+            seen.add(str(path))
+            self.update(path)
+        # 仍被视为存活的会话也要重新确认一次，文件被删或改动时间回退都不能让它一直占名额。
+        for info in self.snapshot():
+            if info.marker and not info.terminal and str(info.path) not in seen:
+                self.update(info.path)
+        with self._lock:
+            for key in [key for key, info in self.items.items() if info.mtime < cutoff - 86400]:
+                self.items.pop(key, None)
+
+    def update(self, path: Path) -> RolloutInfo:
+        with self._lock:
+            return self._update(path)
+
+    def _update(self, path: Path) -> RolloutInfo:
+        key = str(path)
+        info = self.items.get(key)
+        if info is None:
+            info = RolloutInfo(path=path)
+            self.items[key] = info
+        try:
+            stat = path.stat()
+        except OSError:
+            info.mtime = 0.0
+            return info
+        info.mtime = stat.st_mtime
+        if stat.st_size < info.offset:
+            info.offset = 0
+            info.lines = 0
+            info.turn_state = ""
+            info.error_text = ""
+            info.last_tool_at = 0.0
+        if stat.st_size == info.offset:
+            return info
+        try:
+            with path.open("rb") as handle:
+                handle.seek(info.offset)
+                while True:
+                    raw = handle.readline()
+                    if not raw or not raw.endswith(b"\n"):
+                        break
+                    info.offset = handle.tell()
+                    info.lines += 1
+                    self._consume(info, raw)
+        except OSError:
+            return info
+        return info
+
+    def find(self, marker: str) -> RolloutInfo | None:
+        with self._lock:
+            matches = [info for info in self.items.values() if info.marker == marker]
+        return max(matches, key=lambda info: info.mtime) if matches else None
+
+    def snapshot(self) -> list[RolloutInfo]:
+        with self._lock:
+            return list(self.items.values())
+
+    def live(self, *, quiet_seconds: float, now: float | None = None) -> list[RolloutInfo]:
+        """Platform-launched rollouts that still wrote recently and whose turn has not ended."""
+        current = time.time() if now is None else now
+        return [
+            info
+            for info in self.snapshot()
+            if info.marker and not info.terminal and current - info.mtime <= quiet_seconds
+        ]
+
+    def _consume(self, info: RolloutInfo, raw: bytes) -> None:
+        needs_marker = not info.marker and info.lines <= MARKER_SCAN_LINES
+        if not needs_marker and b'"event_msg"' not in raw and not any(
+            item.encode() in raw for item in ("_call", "_call_output")
+        ):
+            return
+        try:
+            event = json.loads(raw.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            return
+        if not isinstance(event, dict):
+            return
+        kind = str(event.get("type") or "")
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            return
+        item_type = str(payload.get("type") or "")
+        if kind == "session_meta" and not info.cwd:
+            info.cwd = str(payload.get("cwd") or "")
+            return
+        if needs_marker and kind == "response_item" and item_type == "message" and payload.get("role") == "user":
+            match = MARKER_RE.search(json.dumps(payload.get("content"), ensure_ascii=False))
+            if match:
+                info.marker = match.group(0)
+                info.task_id = match.group(1)
+            return
+        if kind == "event_msg" and item_type in TURN_EVENTS:
+            info.turn_state = item_type
+            if item_type in {"stream_error", "error", "turn_aborted"}:
+                message = payload.get("message") or payload.get("reason") or payload
+                info.error_text = (message if isinstance(message, str) else json.dumps(message, ensure_ascii=False))[:2000]
+            elif item_type == "task_started":
+                info.error_text = ""
+            return
+        if kind == "response_item" and item_type in TOOL_ITEMS:
+            stamp = _event_epoch(event)
+            if stamp:
+                info.last_tool_at = max(info.last_tool_at, stamp)
+
+    def _recent_files(self, cutoff: float, now: float) -> list[Path]:
+        if not self.sessions_dir.is_dir():
+            return []
+        files: list[Path] = []
+        day = datetime.fromtimestamp(min(cutoff, now - 86400)).date()
+        last = datetime.fromtimestamp(now).date()
+        while day <= last:
+            directory = self.sessions_dir / f"{day:%Y}" / f"{day:%m}" / f"{day:%d}"
+            day += timedelta(days=1)
+            if not directory.is_dir():
+                continue
+            for path in directory.glob("rollout-*.jsonl"):
+                try:
+                    if path.stat().st_mtime >= cutoff:
+                        files.append(path)
+                except OSError:
+                    continue
+        return files
+
+
+def _event_epoch(event: dict[str, Any]) -> float:
+    value = str(event.get("timestamp") or "")
+    if not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
 
 
 def build_deep_link(*, workdir: Path, prompt: str, folder_id: str = "") -> str:

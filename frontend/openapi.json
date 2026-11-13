@@ -3737,7 +3737,7 @@
               "type": "integer",
               "maximum": 50,
               "minimum": 1,
-              "default": 10,
+              "default": 20,
               "title": "Limit"
             }
           }
@@ -6141,6 +6141,17 @@
               }
             ],
             "title": "Chatgpt Timeout Seconds"
+          },
+          "task_timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Timeout Seconds"
           },
           "restricted": {
             "anyOf": [

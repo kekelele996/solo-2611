@@ -12,8 +12,10 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import signal
+import time
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -28,11 +30,11 @@ from solo_auto.pipeline.agent_stream import AgentLogStreamer, read_log, usage
 from solo_auto.pipeline.breaker import Breaker
 from solo_auto.pipeline.desktop_chatgpt import (
     ChatGPTDesktop,
-    latest_activity,
+    RolloutIndex,
+    RolloutInfo,
     read_rollout,
     rollout_delta,
     rollout_last_assistant,
-    rollout_terminal,
     thread_id_from_rollout,
 )
 from solo_auto.pipeline.export_service import ExportService
@@ -40,6 +42,7 @@ from solo_auto.pipeline.feedback_service import FeedbackService
 from solo_auto.pipeline.notify import Notifier
 from solo_auto.pipeline.prompt_history import PromptHistory
 from solo_auto.pipeline.prompt_templates import PromptTemplates
+from solo_auto.pipeline.reaper import reap_and_record, reaped_note
 from solo_auto.pipeline.reconcile import Reconciler
 from solo_auto.pipeline.scheduler import RunScheduler
 from solo_auto.pipeline.steps import evaluate_steps
@@ -75,10 +78,77 @@ AGENT_FLAGS = (
 )
 VERDICT = "AUTOPILOT:"
 CHATGPT_LAUNCH_TIMEOUT_SECONDS = 5 * 60
+LIVE_REFRESH_SECONDS = 10.0
+USAGE_LIMIT_RE = re.compile(
+    r"(?i)usage limit|rate.?limit|too many requests|\b429\b|quota|用量(受限|上限)|额度(不足|用尽)|超限"
+)
+PROGRESS_SKIP_DIRS = {
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "build",
+    "coverage",
+    "dist",
+    "node_modules",
+    "target",
+}
 
 
 def _now() -> str:
     return datetime.now().astimezone().replace(microsecond=0).isoformat()
+
+
+def _meaningful_progress_at(root: Path) -> datetime | None:
+    """Return the latest result-bearing activity, excluding agent chatter.
+
+    Rollout files grow while the model emits reasoning tokens. They therefore
+    cannot prove that a task is making useful progress. Files and gate markers
+    under the task root can: source edits, state transitions, traces, delivery
+    artifacts, review evidence, and recordings are all durable outcomes.
+    """
+    latest = 0.0
+    exact_files = (
+        root / "monitor" / "state.json",
+        root / "monitor" / "feedback-check.json",
+        root / "monitor" / "feedback-evidence.json",
+        root / "monitor" / "runtime-verification.json",
+        root / "delivery" / "feedback.md",
+        root / "delivery" / "交付表.xlsx",
+    )
+    for path in exact_files:
+        with suppress(OSError):
+            latest = max(latest, path.stat().st_mtime)
+    scan_roots = (
+        root / "monitor" / "runs",
+        root / "monitor" / "verification",
+        root / "traces",
+        root / "delivery",
+        root / "recording",
+        root / "workspace",
+    )
+    for scan_root in scan_roots:
+        if not scan_root.exists():
+            continue
+        stack = [scan_root]
+        while stack:
+            directory = stack.pop()
+            try:
+                entries = list(os.scandir(directory))
+            except OSError:
+                continue
+            for entry in entries:
+                if entry.is_dir(follow_symlinks=False):
+                    if entry.name not in PROGRESS_SKIP_DIRS:
+                        stack.append(Path(entry.path))
+                    continue
+                try:
+                    latest = max(latest, entry.stat(follow_symlinks=False).st_mtime)
+                except OSError:
+                    continue
+    return datetime.fromtimestamp(latest).astimezone() if latest else None
 
 
 def default_agent_command() -> list[str]:
@@ -161,8 +231,9 @@ class Autopilot:
         self.gateway = gateway
         self.dispatcher = dispatcher
         self.settings = settings
-        self.desktop = ChatGPTDesktop(home=paths.home, helper=settings.chatgpt_push_helper)
-        self.breaker = Breaker(paths.home / "breaker.json", bus, settings)
+        self.usage_limited_until = 0.0
+        self.usage_limit_reason = ""
+        self.breaker =Breaker(paths.home / "breaker.json", bus, settings)
         self.prompt_templates = PromptTemplates(paths)
         self.prompt_history = PromptHistory(repo, paths.home / "prompt-history.jsonl")
         self.notifier: Notifier | None = None
@@ -188,7 +259,14 @@ class Autopilot:
         self.agent_timeout_seconds = settings.stage_timeout_seconds
         self.stage_attempts = settings.stage_attempts
         self.run_attempts = settings.run_attempts
-        self.desktop = ChatGPTDesktop(home=self.paths.home, helper=settings.chatgpt_push_helper)
+        desktop = getattr(self, "desktop", None)
+        if desktop is None or getattr(self, "_desktop_helper", None) != settings.chatgpt_push_helper:
+            self.desktop = ChatGPTDesktop(home=self.paths.home, helper=settings.chatgpt_push_helper)
+            self._desktop_helper = settings.chatgpt_push_helper
+        rollouts = getattr(self, "rollouts", None)
+        if rollouts is None or rollouts.sessions_dir != self.desktop.sessions_dir:
+            self.rollouts = RolloutIndex(self.desktop.sessions_dir)
+            self._rollouts_refreshed = 0.0
         self.parallel = {
             "authoring": settings.parallel_authoring,
             "delivering": settings.parallel_delivering,
@@ -223,6 +301,75 @@ class Autopilot:
         if self.dispatcher is not None and self.dispatcher.v3_enabled:
             return self.dispatcher.effective_session_limit
         return max(1, self.settings.parallel_authoring + self.settings.parallel_delivering)
+
+    # ---- live ChatGPT sessions -------------------------------------
+
+    async def refresh_live_sessions(self, *, force: bool = False) -> None:
+        """Re-read rollout files so capacity reflects threads that are really running."""
+        now = time.monotonic()
+        if not force and now - self._rollouts_refreshed < LIVE_REFRESH_SECONDS:
+            return
+        self._rollouts_refreshed = now
+        window = float(max(self.settings.orphan_quiet_seconds, CHATGPT_LAUNCH_TIMEOUT_SECONDS))
+        tracked = [
+            Path(job.desktop_rollout)
+            for job in self.jobs.values()
+            if job.desktop_running and job.desktop_rollout
+        ]
+
+        def work() -> None:
+            self.rollouts.refresh(window_seconds=window)
+            for path in tracked:
+                self.rollouts.update(path)
+
+        await asyncio.to_thread(work)
+        self._detect_usage_limit()
+
+    def orphan_sessions(self) -> list[RolloutInfo]:
+        """Threads the platform launched but no longer follows, which still consume quota."""
+        tracked = {job.desktop_marker for job in self.jobs.values() if job.desktop_running and job.desktop_marker}
+        return [
+            info
+            for info in self.rollouts.live(quiet_seconds=self.settings.orphan_quiet_seconds)
+            if info.marker not in tracked
+        ]
+
+    @property
+    def orphan_session_keys(self) -> set[str]:
+        return {f"orphan:{info.marker}" for info in self.orphan_sessions()}
+
+    def occupied_sessions(self) -> tuple[int, int]:
+        """Return (sessions really running, of which no longer followed by the platform)."""
+        tracked = sum(1 for job in self.jobs.values() if job.desktop_running)
+        orphans = len(self.orphan_sessions())
+        return tracked + orphans, orphans
+
+    def usage_limited(self) -> bool:
+        return time.time() < self.usage_limited_until
+
+    def _detect_usage_limit(self) -> None:
+        now = time.time()
+        cooldown = self.settings.usage_limit_cooldown_seconds
+        for info in self.rollouts.snapshot():
+            if not info.marker or not info.error_text or now - info.mtime > cooldown:
+                continue
+            if not USAGE_LIMIT_RE.search(info.error_text):
+                continue
+            until = info.mtime + cooldown
+            if until <= self.usage_limited_until:
+                continue
+            first = not self.usage_limited()
+            self.usage_limited_until = until
+            self.usage_limit_reason = info.error_text[:300]
+            if first:
+                self.repo.add_event(
+                    "autopilot.chatgpt.usage_limited",
+                    f"ChatGPT 会话触发用量限制，{cooldown // 60} 分钟内不再新开会话",
+                    level="warn",
+                    actor=ACTOR,
+                    task_id=info.task_id or None,
+                    details={"rollout": str(info.path), "error": info.error_text[:500]},
+                )
 
     # ---- lifecycle -------------------------------------------------
 
@@ -275,6 +422,7 @@ class Autopilot:
             "parallel_delivering": self.settings.parallel_delivering,
             "parallel_chatgpt": self.chatgpt_parallel,
             "stage_timeout_seconds": self.settings.stage_timeout_seconds,
+            "task_timeout_seconds": self.settings.task_timeout_seconds,
             "chatgpt_timeout_seconds": self.settings.chatgpt_timeout_seconds,
             "jobs": [self._job_view(job) for job in jobs],
         }
@@ -409,17 +557,23 @@ class Autopilot:
                     if task_id in self.scheduler.active or self.scheduler.queue_position(task_id) is not None:
                         with suppress(ApiError):
                             await self.scheduler.stop_task(task_id, force=True)
+                    # 先结束会话遗留的运行进程，否则它会在清理后重新拉起容器。
+                    reaped = await reap_and_record(self.repo, task["task_root"], task_id=task_id, actor=ACTOR)
                     cleanup = await self.gateway.call(
                         ["cleanup", "--task-root", str(task["task_root"]), "--force"],
                         timeout=120,
                         task_id=task_id,
                     )
-                    cleanup_detail = (
+                    cleanup_detail = reaped_note(reaped) + (
                         "；已中断容器"
                         if cleanup.code == 0
                         else f"；容器清理失败：{cleanup.err.strip() or cleanup.code}"
                     )
-            chatgpt_detail = "；平台已停止跟踪，但已打开的 ChatGPT 会话可能需要你手动停止" if desktop_stopped else ""
+            chatgpt_detail = (
+                "；平台已停止跟踪。ChatGPT 会话需要你在 ChatGPT 里手动停止，停止前它仍计入会话名额"
+                if desktop_stopped
+                else ""
+            )
             self._finish(job, "stopped", "已手动停止" + cleanup_detail + chatgpt_detail)
             stopped.append(task_id)
         self._changed()
@@ -562,18 +716,84 @@ class Autopilot:
                     level="warn",
                     actor=ACTOR,
                 )
+            if self.settings.agent_mode == "chatgpt":
+                try:
+                    await self.refresh_live_sessions()
+                except Exception:
+                    LOGGER.exception("refresh live ChatGPT sessions failed")
             if not self.settings.enabled or self.paused or self.breaker.tripped:
                 return
             for job in list(self.jobs.values()):
                 if not job.active:
                     continue
                 try:
+                    if await self._enforce_task_timeout(job):
+                        continue
                     await self._advance(job)
                 except ApiError as error:
                     self._finish(job, "failed", f"{error.code}: {error.message}")
                 except Exception as error:
                     LOGGER.exception("autopilot job failed: %s", job.task_id)
                     self._finish(job, "failed", f"{type(error).__name__}: {error}")
+
+    async def _enforce_task_timeout(self, job: Job) -> bool:
+        """Stop a job after its cumulative wall-clock budget expires.
+
+        Desktop no-progress checks see activity timestamps, so a model that keeps
+        emitting reasoning tokens can hold a container indefinitely. This check
+        uses the immutable job start time and ignores activity, so retries cannot
+        extend the total budget.
+        """
+        started = _parse_datetime(job.started_at)
+        if started is None:
+            return False
+        elapsed = (datetime.now().astimezone() - started).total_seconds()
+        if elapsed < self.settings.task_timeout_seconds:
+            return False
+
+        hours = self.settings.task_timeout_seconds / 3600
+        detail = f"任务累计运行超过 {hours:g} 小时仍未完成，已终止并释放容器"
+        await self._terminate_job(job, detail=detail, kind="agent.timeout")
+        return True
+
+    async def _terminate_job(self, job: Job, *, detail: str, kind: str) -> None:
+        """Terminate and quarantine a job, always releasing its container."""
+        await self._kill_agent(job.task_id)
+        desktop_was_running = job.desktop_running
+        if job.desktop_running or job.desktop_stage_id:
+            await self._finish_desktop_stage(
+                job,
+                outcome="failed",
+                kind=kind.replace(".", "_"),
+                detail=detail,
+            )
+        else:
+            await self._stop_desktop_follower(job.task_id)
+
+        cleanup_detail = ""
+        task = self.repo.get_task(job.task_id)
+        if task:
+            if job.task_id in self.scheduler.active or self.scheduler.queue_position(job.task_id) is not None:
+                with suppress(ApiError):
+                    await self.scheduler.stop_task(job.task_id, force=True)
+            reaped = await reap_and_record(self.repo, task["task_root"], task_id=job.task_id, actor=ACTOR)
+            cleanup = await self.gateway.call(
+                ["cleanup", "--task-root", str(task["task_root"]), "--force"],
+                timeout=120,
+                task_id=job.task_id,
+            )
+            cleanup_detail = reaped_note(reaped) + (
+                "；容器已释放"
+                if cleanup.code == 0
+                else f"；容器释放失败：{cleanup.err.strip() or cleanup.code}"
+            )
+        if desktop_was_running:
+            cleanup_detail += "；ChatGPT 会话无法由平台关闭，它停止写入之前仍计入会话名额，不会因此多开新会话"
+        job.failure_kind = kind
+        job.ignored = True
+        self._finish(job, "failed", detail + cleanup_detail)
+        if self.dispatcher is not None and self.dispatcher.v3_enabled:
+            self.dispatcher.on_job_finished(job.task_id, outcome="failed", detail=detail + cleanup_detail)
 
     async def _advance(self, job: Job) -> None:
         if job.task_id in self.agents:
@@ -708,16 +928,13 @@ class Autopilot:
             if not job.desktop_workdir:
                 job.desktop_workdir = str(root)
             self._ensure_desktop_follower(job)
-            progress_paths = [
-                root / "monitor" / "state.json",
-                root / "monitor" / "feedback-check.json",
-                root / "delivery" / "feedback.md",
-                root / "recording",
-                root / "delivery",
-            ]
-            if job.desktop_rollout:
-                progress_paths.append(Path(job.desktop_rollout))
-            progress = latest_activity(progress_paths)
+            info = self._tracked_rollout(job)
+            progress = _meaningful_progress_at(root)
+            if info is not None and info.last_tool_at:
+                # 工具调用和命令输出说明会话在真实干活（例如轮询数小时的容器运行），
+                # 只有纯推理、不调用工具的空转才算没有进展。
+                tool_at = datetime.fromtimestamp(info.last_tool_at).astimezone()
+                progress = max(progress, tool_at) if progress else tool_at
             if progress:
                 previous = _parse_datetime(job.desktop_last_progress_at)
                 if previous is None or progress > previous:
@@ -725,7 +942,7 @@ class Autopilot:
                     job.updated_at = _now()
                     self._changed()
             rollout = Path(job.desktop_rollout) if job.desktop_rollout else None
-            terminal = rollout_terminal(rollout) if rollout and rollout.is_file() else ""
+            terminal = info.turn_state if info is not None and info.terminal else ""
             if all(step.ok for step in facts.steps[:10]):
                 await self._finish_desktop_stage(job, outcome="ok", detail="ChatGPT 桌面会话完成前 10 项")
                 await self._export_chatgpt(job, task, root)
@@ -736,14 +953,19 @@ class Autopilot:
                     self._stage(job, "chatgpt", "ChatGPT 回合已结束，等待磁盘门禁稳定")
                     return
                 final_text = rollout_last_assistant(rollout) if rollout and rollout.is_file() else ""
+                error_text = info.error_text if info is not None and terminal != "task_complete" else ""
                 kind = (
                     "agent_blocked"
                     if state.status == "run_failed" or "AUTOPILOT: BLOCKED" in final_text
                     else "agent_reported"
                     if terminal == "task_complete"
-                    else self._failure_kind("chatgpt", final_text, 1)
+                    else "usage_limited"
+                    if USAGE_LIMIT_RE.search(error_text)
+                    else self._failure_kind("chatgpt", "\n".join(part for part in (error_text, final_text) if part), 1)
                 )
-                detail = final_text or f"ChatGPT 会话终止：{terminal}"
+                detail = (
+                    f"ChatGPT 会话报错：{error_text}" if kind == "usage_limited" else final_text or error_text
+                ) or f"ChatGPT 会话终止：{terminal}"
                 await self._finish_desktop_stage(job, outcome="failed", kind=kind, detail=detail)
                 self._finish(job, "failed", f"ChatGPT 会话未完成前 10 项：{detail[:300]}")
                 return
@@ -751,14 +973,13 @@ class Autopilot:
             last_progress = _parse_datetime(job.desktop_last_progress_at) or started
             now = datetime.now().astimezone()
             if last_progress and (now - last_progress).total_seconds() >= self.settings.chatgpt_timeout_seconds:
-                detail = f"ChatGPT 会话超过 {self.settings.chatgpt_timeout_seconds // 3600} 小时无进展"
-                await self._finish_desktop_stage(
+                minutes = max(1, self.settings.chatgpt_timeout_seconds // 60)
+                detail = f"任务连续 {minutes} 分钟没有有效进展，已终止并释放容器"
+                await self._terminate_job(
                     job,
-                    outcome="failed",
-                    kind="agent_timeout",
                     detail=detail,
+                    kind="agent.no_progress",
                 )
-                self._finish(job, "failed", detail + "；已打开的 ChatGPT 会话可能仍需手动停止")
                 return
             elapsed = int((now - started).total_seconds()) if started else 0
             self._stage(job, "chatgpt", f"ChatGPT 桌面会话运行中（{elapsed // 60} 分钟）")
@@ -769,25 +990,79 @@ class Autopilot:
         if all(step.ok for step in facts.steps[:10]):
             await self._export_chatgpt(job, task, root)
             return
-        running = sum(1 for item in self.jobs.values() if item.desktop_running)
-        if running >= self.chatgpt_parallel:
-            self._stage(
-                job,
-                "pending",
-                f"等待 ChatGPT 会话空位（{running}/{self.chatgpt_parallel}）",
-            )
-            return
+        await self._launch_chatgpt(job, root, facts.missing)
+
+    def _tracked_rollout(self, job: Job) -> RolloutInfo | None:
+        if job.desktop_rollout:
+            path = Path(job.desktop_rollout)
+            return self.rollouts.update(path) if path.is_file() else None
+        info = self.rollouts.find(job.desktop_marker) if job.desktop_marker else None
+        if info is not None:
+            job.desktop_rollout = str(info.path)
+            job.desktop_thread_id = thread_id_from_rollout(info.path)
+            job.log = str(info.path)
+            self._changed()
+        return info
+
+    async def _session_slot(self, job: Job) -> tuple[bool, str]:
+        """Decide whether one more desktop thread may start, counting threads that are really alive."""
+        if self.usage_limited():
+            minutes = max(1, int((self.usage_limited_until - time.time()) // 60) + 1)
+            return False, f"ChatGPT 触发用量限制，约 {minutes} 分钟后再新开会话"
+        occupied, orphans = self.occupied_sessions()
+        limit = self.chatgpt_parallel
+        if occupied >= limit:
+            extra = f"，其中 {orphans} 个已脱离平台跟踪但仍在运行" if orphans else ""
+            return False, f"等待 ChatGPT 会话空位（实际运行 {occupied}/{limit}{extra}）"
         if self.dispatcher is not None and self.dispatcher.v3_enabled:
             decision = await self.dispatcher.request_session(job.task_id, stage="chatgpt")
             if not decision.allowed:
-                self._stage(job, "pending", decision.text or "等待会话空位")
-                return
-        await self._launch_chatgpt(job, root, facts.missing)
+                return False, decision.text or "等待会话空位"
+        return True, ""
+
+    def _adopt_live_session(self, job: Job) -> bool:
+        """Re-attach a thread that is still running for this task instead of opening a second one."""
+        live = [info for info in self.orphan_sessions() if info.task_id == job.task_id]
+        if not live:
+            return False
+        info = max(live, key=lambda item: item.mtime)
+        now = _now()
+        job.desktop_stage_id = self.repo.start_autopilot_stage(
+            task_id=job.task_id,
+            stage="chatgpt",
+            attempt=max(1, job.attempts.get("chatgpt", 0)),
+            log_path=str(info.path),
+        )
+        job.desktop_running = True
+        job.desktop_marker = info.marker
+        job.desktop_rollout = str(info.path)
+        job.desktop_thread_id = thread_id_from_rollout(info.path)
+        job.desktop_workdir = info.cwd or job.desktop_workdir
+        job.desktop_started_at = now
+        job.desktop_last_progress_at = now
+        job.log = str(info.path)
+        self.desktop_terminal_seen.discard(job.task_id)
+        self._stage(job, "chatgpt", "已接管该任务仍在运行的 ChatGPT 会话，不再重复新开")
+        self.repo.add_event(
+            "autopilot.chatgpt.adopted",
+            "该任务已有 ChatGPT 会话仍在运行，已重新接管而不是新开会话",
+            actor=ACTOR,
+            task_id=job.task_id,
+            details={"rollout": str(info.path), "marker": info.marker},
+        )
+        self._ensure_desktop_follower(job)
+        return True
 
     async def _launch_chatgpt(self, job: Job, root: Path, missing: list[str]) -> None:
+        if self._adopt_live_session(job):
+            return
         used = job.attempts.get("chatgpt", 0)
         if used >= self.stage_attempts:
             self._finish(job, "failed", f"ChatGPT 桌面交付已尝试 {used} 次仍未通过")
+            return
+        allowed, wait_text = await self._session_slot(job)
+        if not allowed:
+            self._stage(job, "pending", wait_text)
             return
         job.attempts["chatgpt"] = used + 1
         prompt = self.prompt_templates.render(
@@ -858,13 +1133,9 @@ class Autopilot:
                     return
                 path = Path(job.desktop_rollout) if job.desktop_rollout else None
                 if path is None:
-                    workdir = Path(job.desktop_workdir) if job.desktop_workdir else Path()
-                    path = await asyncio.to_thread(
-                        self.desktop.find_rollout,
-                        marker,
-                        started_at=started,
-                        workdir=workdir,
-                    )
+                    await self.refresh_live_sessions()
+                    found = self.rollouts.find(marker)
+                    path = found.path if found is not None else None
                     if path is not None:
                         job.desktop_rollout = str(path)
                         job.desktop_thread_id = thread_id_from_rollout(path)
@@ -1321,6 +1592,12 @@ class Autopilot:
                 job.detail = "后端重启：已中止旧 Agent 进程，等待按磁盘事实续跑"
                 job.stage_started_at = _now()
                 job.updated_at = _now()
+            if job.desktop_running:
+                task = self.repo.get_task(job.task_id)
+                if task:
+                    meaningful = _meaningful_progress_at(Path(str(task["task_root"])))
+                    fallback = _parse_datetime(job.desktop_started_at) or datetime.now().astimezone()
+                    job.desktop_last_progress_at = (meaningful or fallback).replace(microsecond=0).isoformat()
 
 
 def _signal_group(process: asyncio.subprocess.Process, sig: int) -> None:
@@ -1331,6 +1608,7 @@ def _signal_group(process: asyncio.subprocess.Process, sig: int) -> None:
 def _dispatch_failure_kind(kind: str) -> str:
     return {
         "agent_launch_lost": "agent.launch_lost",
+        "usage_limited": "agent.usage_limited",
         "agent_timeout": "agent.timeout",
         "agent_blocked": "agent.blocked",
         "agent_reported": "agent.reported",

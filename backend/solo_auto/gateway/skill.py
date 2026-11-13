@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -68,12 +69,28 @@ class StreamResult:
 
 
 class SkillGateway:
-    def __init__(self, skill_root: Path, log_root: Path, *, python: str = "python3") -> None:
+    METADATA_CACHE_TTL_SECONDS = 30.0
+    CACHEABLE_CALLS = {
+        ("version",),
+        ("config", "show"),
+    }
+
+    def __init__(
+        self,
+        skill_root: Path,
+        log_root: Path,
+        *,
+        python: str = "python3",
+        metadata_cache_ttl_seconds: float = METADATA_CACHE_TTL_SECONDS,
+    ) -> None:
         self.skill_root = skill_root.expanduser().resolve()
         self.script = self.skill_root / "scripts" / "solo2611.py"
         self.log_root = log_root
         self.python = python
+        self.metadata_cache_ttl_seconds = max(0.0, metadata_cache_ttl_seconds)
         self._active_processes: dict[str, asyncio.subprocess.Process] = {}
+        self._metadata_cache: dict[tuple[str, ...], tuple[float, SkillResult]] = {}
+        self._metadata_locks: dict[tuple[str, ...], asyncio.Lock] = {}
         if not self.script.is_file():
             raise RuntimeError(f"solo-2611 技能脚本不存在: {self.script}")
         self.spec_path = self.skill_root / "scripts"
@@ -99,6 +116,50 @@ class SkillGateway:
         timeout: float = 300,
         task_id: str | None = None,
         cwd: Path | None = None,
+    ) -> SkillResult:
+        cache_key = tuple(argv)
+        if cache_key in self.CACHEABLE_CALLS and self.metadata_cache_ttl_seconds > 0:
+            cached = self._cached_metadata(cache_key)
+            if cached is not None:
+                return cached
+            lock = self._metadata_locks.setdefault(cache_key, asyncio.Lock())
+            async with lock:
+                cached = self._cached_metadata(cache_key)
+                if cached is not None:
+                    return cached
+                result = await self._call_uncached(argv, timeout=timeout, task_id=task_id, cwd=cwd)
+                if result.code == 0:
+                    self._metadata_cache[cache_key] = (time.monotonic(), result)
+                return result
+
+        result = await self._call_uncached(argv, timeout=timeout, task_id=task_id, cwd=cwd)
+        config_changed = len(argv) >= 2 and argv[0] == "config" and argv[1] in {"set", "init"}
+        if result.code == 0 and (config_changed or argv[:1] == ["init"]):
+            self.invalidate_metadata()
+        return result
+
+    def invalidate_metadata(self) -> None:
+        self._metadata_cache.clear()
+
+    def _cached_metadata(self, cache_key: tuple[str, ...]) -> SkillResult | None:
+        entry = self._metadata_cache.get(cache_key)
+        if entry is None:
+            return None
+        cached_at, result = entry
+        if time.monotonic() - cached_at >= self.metadata_cache_ttl_seconds:
+            self._metadata_cache.pop(cache_key, None)
+            return None
+        cloned = result.model_copy(deep=True)
+        cloned.data = copy.deepcopy(result.data)
+        return cloned
+
+    async def _call_uncached(
+        self,
+        argv: list[str],
+        *,
+        timeout: float,
+        task_id: str | None,
+        cwd: Path | None,
     ) -> SkillResult:
         command = self._cmd(argv)
         started = time.monotonic()

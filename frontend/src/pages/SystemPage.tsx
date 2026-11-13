@@ -424,7 +424,7 @@ export function SystemPage() {
                   })}
                 />
               </Field>
-              <Field label="无进展超时（秒）">
+              <Field label="有效进展超时（秒）" hint="仅源码、门禁、轨迹和交付产物变化算进展">
                 <input
                   type="number"
                   min={300}
@@ -457,6 +457,17 @@ export function SystemPage() {
             </>
           )}
           <div className="form-grid">
+            <Field label="任务总超时（秒）" hint="从任务启动累计；超时后强制释放容器">
+              <input
+                type="number"
+                min={300}
+                value={form.autopilot.task_timeout_seconds}
+                onChange={(event) => update({
+                  ...form,
+                  autopilot: { ...form.autopilot, task_timeout_seconds: Number(event.target.value) },
+                })}
+              />
+            </Field>
             <Field label="阶段超时（秒）" hint="下次阶段">
               <input type="number" min={60} value={form.autopilot.stage_timeout_seconds} onChange={(event) => update({
                 ...form,

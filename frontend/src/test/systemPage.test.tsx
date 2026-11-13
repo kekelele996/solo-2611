@@ -32,7 +32,8 @@ const CONFIG: ConfigResponse = {
     agent_args: [],
     chatgpt_folder_id: "",
     chatgpt_push_helper: "",
-    chatgpt_timeout_seconds: 43200,
+    chatgpt_timeout_seconds: 1800,
+    task_timeout_seconds: 7200,
     restricted: false,
     stage_timeout_seconds: 3600,
     stage_attempts: 2,
@@ -84,6 +85,7 @@ describe("settings page", () => {
     ["Chrome URL", "http://127.0.0.1:5000", (body: Record<string, { [key: string]: unknown }>) => body.recording.chrome_url],
     ["平台地址", "https://solo2.example/app", (body: Record<string, { [key: string]: unknown }>) => body.solo2.base_url],
     ["平台账号", "new-user", (body: Record<string, { [key: string]: unknown }>) => body.solo2.username],
+    ["任务总超时（秒）", "8100", (body: Record<string, { [key: string]: unknown }>) => body.autopilot.task_timeout_seconds],
   ])("saves an edit to %s", async (label, value, pick) => {
     const patch = vi.spyOn(api, "patchConfig").mockResolvedValue(CONFIG);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

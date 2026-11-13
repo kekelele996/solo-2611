@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -13,7 +14,14 @@ import sys
 from pathlib import Path
 cmd = sys.argv[1]
 if cmd == "version":
+    marker = Path(__file__).parent / "version-calls.txt"
+    marker.write_text((marker.read_text(encoding="utf-8") if marker.exists() else "") + "x\n", encoding="utf-8")
     print("9.9.9")
+elif cmd == "config":
+    if sys.argv[2] == "show":
+        marker = Path(__file__).parent / "config-calls.txt"
+        marker.write_text((marker.read_text(encoding="utf-8") if marker.exists() else "") + "x\n", encoding="utf-8")
+    print(json.dumps({"claude": {"maxContainers": 4}}))
 elif cmd == "prompt":
     print(json.dumps({"ok": False, "errors": ["题面超限"], "warnings": []}))
     raise SystemExit(2)
@@ -46,6 +54,29 @@ async def test_gateway_parses_zero_and_two(gateway: SkillGateway) -> None:
     result = await gateway.call(["prompt"], timeout=10)
     assert result.code == 2
     assert result.data == {"ok": False, "errors": ["题面超限"], "warnings": []}
+
+
+@pytest.mark.asyncio
+async def test_gateway_caches_and_single_flights_metadata(gateway: SkillGateway) -> None:
+    results = await asyncio.gather(
+        *[gateway.version() for _ in range(8)],
+        *[gateway.config() for _ in range(8)],
+    )
+    versions, configs = results[:8], results[8:]
+    assert set(versions) == {"9.9.9"}
+    assert all(item == {"claude": {"maxContainers": 4}} for item in configs)
+    scripts = gateway.script.parent
+    assert (scripts / "version-calls.txt").read_text(encoding="utf-8").count("x") == 1
+    assert (scripts / "config-calls.txt").read_text(encoding="utf-8").count("x") == 1
+
+    first = await gateway.config()
+    first["claude"]["maxContainers"] = 99
+    assert (await gateway.config())["claude"]["maxContainers"] == 4
+
+    result = await gateway.call(["config", "set", "claude.maxContainers=4"], timeout=10)
+    assert result.code == 0
+    await gateway.config()
+    assert (scripts / "config-calls.txt").read_text(encoding="utf-8").count("x") == 2
 
 
 @pytest.mark.asyncio

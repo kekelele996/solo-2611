@@ -15,6 +15,7 @@ from solo_auto.api.tasks import _task_meta
 from solo_auto.api.types import PurgeRequest
 from solo_auto.context import AppContext
 from solo_auto.errors import ApiError
+from solo_auto.pipeline.reaper import reap_and_record
 from solo_auto.store.state import load_state
 
 router = APIRouter(prefix="/api")
@@ -109,6 +110,7 @@ async def _execute(ctx: AppContext, plan: dict[str, Any], *, permanent: bool) ->
     root = Path(str(task["task_root"])).resolve()
     if plan["has_state"]:
         # 任务整个不要了，未 collect 的交互容器也一并丢弃
+        await reap_and_record(ctx.repo, root, task_id=task_id, actor="user")
         cleanup = await ctx.gateway.call(["cleanup", "--task-root", str(root), "--force"], timeout=120, task_id=task_id)
         if cleanup.code != 0:
             raise ApiError(500, "CLEANUP_FAILED", cleanup.err.strip() or "容器清理失败，任务未清理")

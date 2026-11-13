@@ -107,6 +107,19 @@ def test_holds_are_scoped_and_manual_pause_is_independent(tmp_path: Path) -> Non
     assert registry.history[-1]["released_by"] == "probe"
 
 
+def test_deprecated_backpressure_hold_is_dropped_on_reload(tmp_path: Path) -> None:
+    path = tmp_path / "holds.json"
+    registry = HoldRegistry(path)
+    registry.register(
+        source="backpressure",
+        scope=["intake"],
+        reason_code="backpressure",
+        reason="旧版积压阈值",
+    )
+    reloaded = HoldRegistry(path)
+    assert reloaded.holds == {}
+
+
 def test_docker_unknown_never_becomes_zero_capacity(tmp_path: Path) -> None:
     settings = DispatchSettings(containers=4, elastic={"ceiling": 6})
     item = DispatchItem(task_id="task-1")
@@ -329,5 +342,98 @@ async def test_finished_jobs_stop_counting_as_in_hand(
         kernel._sync_runtime_pools()
         kernel.on_job_finished("audit", outcome="done")
         assert len(kernel.repo.query("SELECT task_id FROM dispatch_outcomes")) == len(outcomes) == 2
+    finally:
+        await context.shutdown()
+
+
+async def _v3_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    monkeypatch.setenv("SOLO_AUTO_HOME", str(tmp_path / "app"))
+    monkeypatch.setenv("SOLO_AUTO_TASKS_DIR", str(tasks_dir))
+    monkeypatch.setenv("SOLO_AUTO_DISABLE_KEYCHAIN", "1")
+    monkeypatch.setenv("SOLO_AUTO_DISPATCH__ENGINE", "v3")
+
+    async def fake_version(self: SkillGateway) -> str:
+        return "0.2.3"
+
+    monkeypatch.setattr(SkillGateway, "version", fake_version)
+    app = create_app(tmp_path / "app", auto_start=False)
+    context = app.state.context
+    await context.startup()
+    return context
+
+
+@pytest.mark.asyncio
+async def test_session_limit_follows_containers_and_counts_untracked_sessions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = await _v3_context(tmp_path, monkeypatch)
+    try:
+        kernel = context.dispatcher
+        kernel.config.preset = "custom"
+        kernel.config.containers = 3
+        kernel.config.sessions = 0
+        kernel.config.in_hand = 0
+        context.autopilot.settings.agent_mode = "chatgpt"
+        assert kernel.effective_session_limit == 3
+        assert kernel.effective_in_hand == 4
+
+        monkeypatch.setattr(type(context.autopilot), "orphan_session_keys", property(lambda _self: {"orphan:x", "orphan:y"}))
+        kernel._configure_pools()
+        kernel._sync_runtime_pools()
+        sessions = kernel.pools_book.snapshot()["sessions"]
+        assert sessions["used"] == 2 and sessions["limit"] == 3
+    finally:
+        await context.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_config_file_edits_apply_without_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = await _v3_context(tmp_path, monkeypatch)
+    try:
+        synced: list[int] = []
+
+        async def fake_sync(*, sync: bool = True) -> dict[str, Any]:
+            synced.append(context.dispatcher.effective_container_limit)
+            return {"ok": True}
+
+        monkeypatch.setattr(context.dispatcher, "sync_skill_limit", fake_sync)
+        watcher = context.config_watcher
+        config = context.paths.config
+        text = config.read_text(encoding="utf-8")
+        assert await watcher.check() == {"applied": [], "restart_required": []}
+
+        edited = text.replace("\ncontainers = 4", "\ncontainers = 2").replace(
+            "task_timeout_seconds = 21600", "task_timeout_seconds = 18000"
+        )
+        assert edited != text
+        config.write_text(edited.replace("preset = \"balanced\"", "preset = \"custom\""), encoding="utf-8")
+        result = await watcher.check()
+        assert result["applied"] == ["dispatch", "autopilot"]
+        assert context.dispatcher.effective_container_limit == 2
+        assert context.dispatcher.effective_session_limit == 2
+        assert context.autopilot.settings.task_timeout_seconds == 18000
+        assert context.settings.dispatch.containers == 2
+        assert synced == [2]
+
+        # 写坏的 [dispatch] 不能把调度回退成默认值。
+        broken = config.read_text(encoding="utf-8").replace("\ncontainers = 2", "\ncontainers = 99")
+        config.write_text(broken, encoding="utf-8")
+        result = await watcher.check()
+        assert result["applied"] == []
+        assert context.dispatcher.effective_container_limit == 2
+
+        config.write_text(
+            broken.replace("\nport = ", "\nport = 1").replace("\ncontainers = 99", "\ncontainers = 2"), encoding="utf-8"
+        )
+        result = await watcher.check()
+        assert result["restart_required"] == ["port"]
+        actions = [event["action"] for event in context.repo.events(limit=50)]
+        assert "config.reloaded" in actions and "config.reload_failed" in actions and "config.restart_required" in actions
     finally:
         await context.shutdown()

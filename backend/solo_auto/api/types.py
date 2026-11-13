@@ -168,6 +168,7 @@ class AutopilotConfigPatch(BaseModel):
     chatgpt_folder_id: str | None = None
     chatgpt_push_helper: str | None = None
     chatgpt_timeout_seconds: int | None = None
+    task_timeout_seconds: int | None = None
     restricted: bool | None = None
     stage_timeout_seconds: int | None = None
     stage_attempts: int | None = None

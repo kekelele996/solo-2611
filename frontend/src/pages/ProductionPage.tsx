@@ -194,7 +194,7 @@ export function ProductionPage() {
       <div className="production-toolbar">
         <span className="mono">
           {snapshot.agent_mode === "chatgpt"
-            ? `ChatGPT 桌面 ${snapshot.chatgpt_available ? "可用" : "不可用"} · 并发 ${snapshot.parallel_chatgpt} · ${Math.round(snapshot.chatgpt_timeout_seconds / 60)} 分钟无进展超时`
+            ? `ChatGPT 桌面 ${snapshot.chatgpt_available ? "可用" : "不可用"} · 并发 ${snapshot.parallel_chatgpt} · 总时限 ${Math.round(snapshot.task_timeout_seconds / 60)} 分钟 · ${Math.round(snapshot.chatgpt_timeout_seconds / 60)} 分钟有效进展超时`
             : `CLI Agent ${snapshot.agent_available ? "可用" : "缺失"} · 起草并发 ${snapshot.parallel_authoring} · 交付并发 ${snapshot.parallel_delivering}`}
         </span>
         <label>

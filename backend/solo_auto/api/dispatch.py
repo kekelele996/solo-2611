@@ -86,8 +86,11 @@ async def explain(task_id: str = "", ctx: AppContext = Depends(context)) -> dict
 
 
 @router.get("/upcoming")
-async def upcoming(limit: int = Query(default=10, ge=1, le=50), ctx: AppContext = Depends(context)) -> dict[str, Any]:
-    return {"items": ctx.dispatcher.upcoming(limit)}
+async def upcoming(limit: int = Query(default=20, ge=1, le=50), ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    items = ctx.dispatcher.upcoming(limit)
+    if len(items) < limit and ctx.intake.plan:
+        items.extend(await ctx.intake.preview_candidates(limit - len(items)))
+    return {"items": items}
 
 
 @router.get("/throughput")

@@ -373,6 +373,61 @@ class Dispatcher:
         self._publish()
         return self.snapshot()
 
+    def _install_config(self, config: DispatchSettings) -> None:
+        """Validate and install a dispatch config into every component that reads it."""
+        if config.preset == "careful":
+            config.in_hand = 0
+            config.sessions = 0
+            config.launch_spacing_seconds = 90
+        elif config.preset == "throughput":
+            config.in_hand = 0
+            config.sessions = 0
+            config.launch_spacing_seconds = 30
+        elif config.preset == "balanced":
+            config.in_hand = 0
+            config.sessions = 0
+            config.launch_spacing_seconds = 45
+        self.preset = config.preset
+        # Re-run model validation and enforce cross-field constraints.
+        validated = DispatchSettings.model_validate(config.model_dump())
+        self.settings.dispatch = validated
+        self.config = validated
+        self.policy.settings = self.config.retry
+        self.guards.settings = self.config
+        self.elastic.settings = self.config
+        self.probes.settings = self.config
+        self.facts.timeout_seconds = self.config.docker_timeout_seconds
+        self.facts.stale_seconds = self.config.docker_stale_seconds
+        self._configure_pools()
+        self._save_state()
+
+    async def apply_config(self, config: DispatchSettings, *, actor: str = "config") -> dict[str, Any]:
+        """Hot-apply a dispatch config read from disk; running work is never interrupted.
+
+        Raising limits lets the next gate pass start more work at the usual
+        spacing. Lowering them only stops new launches, so the pool drains down
+        to the new limit as running tasks finish.
+        """
+        before = self.config.model_dump()
+        old_containers = self.effective_container_limit
+        self._install_config(config)
+        after = self.config.model_dump()
+        changed = _diff(before, after)
+        if not changed:
+            return {"changed": {}}
+        sync: dict[str, Any] = {}
+        if self.effective_container_limit != old_containers:
+            sync = await self.sync_skill_limit(sync=True)
+        self.repo.add_event(
+            "dispatch.limits_changed",
+            "调度配置已热更新：" + "，".join(f"{key} {old}→{new}" for key, (old, new) in list(changed.items())[:8]),
+            actor=actor,
+            details={"changed": changed, "sync": sync},
+        )
+        self.bus.publish("dispatch.limit", {"effective": self.effective_container_limit, "changed": changed})
+        self._publish()
+        return {"changed": changed, "sync": sync}
+
     async def update_limits(self, values: dict[str, Any], *, actor: str = "user") -> dict[str, Any]:
         allowed = {
             "preset",
@@ -401,31 +456,7 @@ class Dispatcher:
                     old = getattr(self.config.elastic, key)
                     setattr(self.config.elastic, key, elastic[key])
                     changed[f"elastic.{key}"] = [old, elastic[key]]
-        if self.config.preset == "careful":
-            self.config.in_hand = 0
-            self.config.sessions = 0
-            self.config.launch_spacing_seconds = 90
-        elif self.config.preset == "throughput":
-            self.config.in_hand = 0
-            self.config.sessions = 0
-            self.config.launch_spacing_seconds = 30
-        elif self.config.preset == "balanced":
-            self.config.in_hand = 0
-            self.config.sessions = 0
-            self.config.launch_spacing_seconds = 45
-        self.preset = self.config.preset
-        # Re-run model validation and enforce cross-field constraints.
-        validated = DispatchSettings.model_validate(self.config.model_dump())
-        self.settings.dispatch = validated
-        self.config = validated
-        self.policy.settings = self.config.retry
-        self.guards.settings = self.config
-        self.elastic.settings = self.config
-        self.probes.settings = self.config
-        self.facts.timeout_seconds = self.config.docker_timeout_seconds
-        self.facts.stale_seconds = self.config.docker_stale_seconds
-        self._configure_pools()
-        self._save_state()
+        self._install_config(self.config)
         save_settings(self.paths, self.settings)
         sync = await self.sync_skill_limit(sync=True)
         self.repo.add_event(
@@ -789,11 +820,20 @@ class Dispatcher:
 
     @property
     def effective_in_hand(self) -> int:
-        return self.config.in_hand or self._derived_in_hand()
+        if self.config.in_hand:
+            return self.config.in_hand
+        derived = self._derived_in_hand()
+        agent_mode = getattr(getattr(self.autopilot, "settings", None), "agent_mode", "")
+        if agent_mode == "chatgpt":
+            # 桌面模式下一个会话从出题跑到交付，领到手却开不了会话的题只会干等，
+            # 因此只多备一题，保证有会话结束时能立刻滚动补上。
+            derived = min(derived, self.effective_session_limit + 1)
+        return derived
 
     @property
     def effective_session_limit(self) -> int:
-        return min(8, self.config.sessions or self.effective_in_hand)
+        """ChatGPT 会话上限：未单独设置时等于容器并发，按配置滚动而不是按在手数扩散。"""
+        return min(8, self.config.sessions or self.effective_container_limit)
 
     def in_hand_count(self) -> int:
         """已领取、仍会继续推进的任务数；需人工处理和已结束的不占在手。"""
@@ -886,6 +926,8 @@ class Dispatcher:
         task = self.repo.get_task(item.task_id) or {}
         return {
             **item.view(queue_position=position),
+            "project_id": item.project_id or str(task.get("project_id") or ""),
+            "engineering_id": item.engineering_id or str(task.get("engineering_id") or ""),
             "task_name": str(task.get("task_name") or item.task_id),
             "job_status": str(task.get("job_status") or ""),
             "failure_label": str((item.last_failure or {}).get("kind") or ""),
@@ -970,6 +1012,10 @@ class Dispatcher:
                 elif item is not None and item.status in {"queued", "launching", "active"}:
                     # 作业已结束（待抽检/失败/停止）但队列项仍挂着：补记收尾，避免虚占在手。
                     self.on_job_finished(task_id, outcome=stage_name, detail=str(getattr(job, "detail", "")))
+        orphan_keys = getattr(self.autopilot, "orphan_session_keys", None)
+        if isinstance(orphan_keys, set):
+            # 平台已放弃跟踪、但在 ChatGPT 里仍在运行的会话照样消耗用量，必须占名额。
+            sessions |= orphan_keys
         self.pools_book.observe("sessions", sessions)
         self.pools_book.observe("authoring", authoring)
         self.pools_book.observe("delivering", delivering)
@@ -1153,6 +1199,9 @@ class Dispatcher:
             return {"ok": False, "message": "执行器尚未装配"}
         agent_mode = getattr(getattr(self.autopilot, "settings", None), "agent_mode", "chatgpt")
         if agent_mode == "chatgpt":
+            limited = getattr(self.autopilot, "usage_limited", None)
+            if callable(limited) and limited():
+                return {"ok": False, "message": "ChatGPT 仍处于用量限制冷却期"}
             desktop = getattr(self.autopilot, "desktop", None)
             available = bool(desktop and desktop.available())
             return {"ok": available, "message": "ChatGPT 桌面端可用" if available else "ChatGPT 桌面端不可用"}
@@ -1274,3 +1323,15 @@ def _parse_dt(value: str) -> datetime | None:
 def _duration_since(value: str, finished: datetime) -> float:
     started = _parse_dt(value)
     return round(max(0.0, (finished - started).total_seconds()), 1) if started else 0.0
+
+
+def _diff(before: dict[str, Any], after: dict[str, Any], prefix: str = "") -> dict[str, list[Any]]:
+    changed: dict[str, list[Any]] = {}
+    for key in sorted(set(before) | set(after)):
+        old, new = before.get(key), after.get(key)
+        name = f"{prefix}{key}"
+        if isinstance(old, dict) and isinstance(new, dict):
+            changed.update(_diff(old, new, f"{name}."))
+        elif old != new:
+            changed[name] = [old, new]
+    return changed

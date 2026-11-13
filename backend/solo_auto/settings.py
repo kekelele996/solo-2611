@@ -103,7 +103,14 @@ class AutopilotSettings(BaseModel):
     agent_args: list[str] = Field(default_factory=list)
     chatgpt_folder_id: str = ""
     chatgpt_push_helper: str = ""
-    chatgpt_timeout_seconds: int = Field(default=12 * 60 * 60, ge=300)
+    # 会话既没有工具调用、任务目录也没有新产物的最长时间；轮询长命令算作有进展。
+    chatgpt_timeout_seconds: int = Field(default=30 * 60, ge=300)
+    # 单题累计预算。已交付样本中位约 2 小时、P95 约 6 小时，预算取 P95 以免误杀正常任务。
+    task_timeout_seconds: int = Field(default=6 * 60 * 60, ge=300)
+    # 平台不再跟踪的会话，最近这么久仍有写入就视为仍在运行，继续占用会话名额。
+    orphan_quiet_seconds: int = Field(default=15 * 60, ge=60, le=6 * 60 * 60)
+    # 检测到用量限制后暂停新开会话的时长。
+    usage_limit_cooldown_seconds: int = Field(default=30 * 60, ge=60, le=12 * 60 * 60)
     restricted: bool = False
     stage_timeout_seconds: int = Field(default=3600, ge=60)
     stage_attempts: int = Field(default=2, ge=1, le=10)
@@ -248,7 +255,6 @@ class DispatchRefillSettings(BaseModel):
     daily_claim_cap: int = Field(default=30, ge=1, le=10000)
     allow_reuse: bool = False
     engineering_usage_limit: int = Field(default=1, ge=1, le=1000)
-    backpressure_threshold: int = Field(default=12, ge=1, le=1000)
     refill_while_paused: bool = False
 
     @model_validator(mode="after")

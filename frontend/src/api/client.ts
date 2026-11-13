@@ -12,6 +12,7 @@ import type {
   DispatchLimitsRequest,
   DispatchLogRow,
   DispatchSnapshot,
+  DispatchUpcomingResponse,
   EngineeringRow,
   EventRow,
   ExportHistoryRow,
@@ -365,8 +366,8 @@ export const api = {
     request<{ task_id?: string; sentence: string; decision: Record<string, unknown> | null }>(
       `/api/dispatch/explain${qs({ task_id: taskId })}`,
     ),
-  dispatchUpcoming: () =>
-    request<{ items: DispatchSnapshot["upcoming"] }>("/api/dispatch/upcoming"),
+  dispatchUpcoming: (limit = 20) =>
+    request<DispatchUpcomingResponse>(`/api/dispatch/upcoming${qs({ limit })}`),
   dispatchThroughput: (hours = 24) =>
     request<DispatchSnapshot["throughput"] & { hours: number }>(`/api/dispatch/throughput${qs({ hours })}`),
   dispatchCapacity: (hours = 24) =>

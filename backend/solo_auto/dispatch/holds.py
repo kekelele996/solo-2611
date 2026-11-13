@@ -15,6 +15,9 @@ from typing import Any
 
 from solo_auto.dispatch.storage import read_json, write_json
 
+# 已下线的守护来源：旧进程留下的持久化挂起在重启时直接丢弃。
+DEPRECATED_HOLD_SOURCES = frozenset({"backpressure"})
+
 
 def _now() -> datetime:
     return datetime.now().astimezone()
@@ -191,6 +194,8 @@ class HoldRegistry:
             try:
                 hold = Hold(**{key: value for key, value in raw.items() if key in known})
             except TypeError:
+                continue
+            if hold.source in DEPRECATED_HOLD_SOURCES:
                 continue
             self.holds[hold.source] = hold
         self.history = [

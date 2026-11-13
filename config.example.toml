@@ -98,7 +98,6 @@ target = 0
 daily_claim_cap = 30
 allow_reuse = false
 engineering_usage_limit = 1
-backpressure_threshold = 12
 refill_while_paused = false
 
 [dispatch.watchdog]

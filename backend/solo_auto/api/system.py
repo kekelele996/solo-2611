@@ -32,6 +32,7 @@ from solo_auto.api.types import (
 from solo_auto.build_info import build_id
 from solo_auto.context import AppContext
 from solo_auto.errors import ApiError, SourceAuthError, SourceOfflineError
+from solo_auto.pipeline.reaper import reap_and_record
 from solo_auto.pipeline.usage import UsageLedger
 
 router = APIRouter(prefix="/api")
@@ -704,6 +705,7 @@ async def release_claim(
         if task and task.get("job_status") not in {"exported", "archived", "aborted"} and not force:
             raise ApiError(409, "CLAIM_HAS_ACTIVE_TASK", "领取关联的任务尚未归档；确认放弃后才可归还")
         if task_root.is_dir():
+            await reap_and_record(ctx.repo, task_root, task_id=task["id"] if task else None, actor="user")
             cleanup = await ctx.gateway.call(["cleanup", "--task-root", str(task_root)], timeout=120)
             if cleanup.code != 0:
                 raise ApiError(

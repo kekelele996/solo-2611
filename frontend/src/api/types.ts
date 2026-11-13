@@ -157,6 +157,7 @@ export type AutopilotSnapshot = {
   parallel_delivering: number;
   parallel_chatgpt: number;
   stage_timeout_seconds: number;
+  task_timeout_seconds: number;
   chatgpt_timeout_seconds: number;
   jobs: AutopilotJob[];
 };
@@ -585,6 +586,26 @@ export type DispatchQueueItem = {
   gate: DispatchDecision;
 };
 
+export type DispatchUpcomingItem = DispatchQueueItem & {
+  estimated_start_at: string;
+  estimated_seconds: number;
+};
+
+export type DispatchPreviewItem = {
+  task_id: string;
+  task_name: string;
+  engineering_id: string;
+  project_id: string;
+  preview: true;
+  cycle: number;
+  used: number;
+  last_used_at: string;
+};
+
+export type DispatchUpcomingResponse = {
+  items: Array<DispatchUpcomingItem | DispatchPreviewItem>;
+};
+
 export type DispatchPool = {
   name: string;
   used: number;
@@ -618,7 +639,7 @@ export type DispatchSnapshot = {
   hold_history: Array<DispatchHold & { released_at: string; released_by: string; duration_seconds: number }>;
   counts: { active: number; waiting: number; needs_action: number; finished: number; all: number };
   queue: DispatchQueueItem[];
-  upcoming: Array<DispatchQueueItem & { estimated_start_at: string; estimated_seconds: number }>;
+  upcoming: DispatchUpcomingItem[];
   guard: { mode: "off" | "observe" | "enforce"; count: number; hits: Array<Record<string, unknown>> };
   throughput: {
     hours: number;
@@ -682,6 +703,7 @@ export type ConfigResponse = {
     chatgpt_folder_id: string;
     chatgpt_push_helper: string;
     chatgpt_timeout_seconds: number;
+    task_timeout_seconds: number;
     restricted: boolean;
     stage_timeout_seconds: number;
     stage_attempts: number;

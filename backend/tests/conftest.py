@@ -17,6 +17,15 @@ os.environ.setdefault("SOLO_AUTO_DISPATCH__ENGINE", "v2")
 os.environ.setdefault("SOLO_AUTO_HOME", str(Path(tempfile.gettempdir()) / f"solo-auto-pytest-import-{os.getpid()}"))
 
 
+@pytest.fixture(autouse=True)
+def isolated_codex_sessions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Never let tests read the developer's real ChatGPT rollouts."""
+    sessions = tmp_path / "codex-sessions"
+    sessions.mkdir()
+    monkeypatch.setenv("CODEX_SESSIONS_DIR", str(sessions))
+    return sessions
+
+
 @pytest.fixture
 def fixture_factory(tmp_path: Path):
     def materialize(name: str, destination: Path | None = None) -> Path:

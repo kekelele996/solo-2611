@@ -259,9 +259,12 @@ class IntakeService:
         result = await source_auth
         if not result.get("ok"):
             raise ApiError(409, "PREFLIGHT_FAILED", str(result.get("message") or "题源登录态不可用"))
-        recovery = await self.autopilot.start_tasks(
-            [str(task_id) for task_id in plan.get("task_ids") or []]
-        )
+        task_ids = [str(task_id) for task_id in plan.get("task_ids") or []]
+        recoverable = [task_id for task_id in task_ids if self.repo.get_task(task_id) is not None]
+        missing = [task_id for task_id in task_ids if task_id not in recoverable]
+        if missing:
+            plan["task_ids"] = recoverable
+        recovery = await self.autopilot.start_tasks(recoverable)
         plan["status"] = "running"
         plan.pop("pause_reason", None)
         plan["updated_at"] = _now()
@@ -269,12 +272,14 @@ class IntakeService:
         self.repo.add_event(
             "intake.resumed",
             f"生产计划继续；重新拉起 {len(recovery.get('recovered') or [])} 题，"
-            f"补入队列 {len(recovery.get('added') or [])} 题",
+            f"补入队列 {len(recovery.get('added') or [])} 题"
+            + (f"，忽略 {len(missing)} 个已失效任务" if missing else ""),
             actor="user",
             details={
                 "recovered": recovery.get("recovered") or [],
                 "added": recovery.get("added") or [],
                 "skipped": recovery.get("skipped") or [],
+                "missing": missing,
             },
         )
         self.bus.publish("intake.updated", {"status": "running", "counts": self._counts(plan)})
@@ -340,33 +345,12 @@ class IntakeService:
             if dispatcher is not None and dispatcher.v3_enabled:
                 if dispatcher.desired_state != "running" and not dispatcher.config.refill.refill_while_paused:
                     return
-                backpressure = self.repo.query_one(
-                    """
-                    SELECT
-                      (SELECT COUNT(*) FROM tasks WHERE job_status='blocked')
-                      + (SELECT COUNT(*) FROM dispatch_items WHERE status='quarantined')
-                      + (SELECT COUNT(*) FROM audits WHERE sampled=1 AND verdict IS NULL) AS n
-                    """
-                ) or {"n": 0}
-                backlog = int(backpressure.get("n") or 0)
-                threshold = dispatcher.config.refill.backpressure_threshold
-                if backlog <= threshold * 0.7 and "backpressure" in dispatcher.holds.holds:
-                    dispatcher.release_hold("backpressure", actor="backpressure")
                 # 「题源暂无候选」由本计划自己按退避重查，其余挂起照常拦住补位。
                 retry_empty = self._empty_retry_due(plan)
                 if any(
                     not (hold.reason_code == "source.empty" and retry_empty)
                     for hold in dispatcher.holds.active(scope="intake")
                 ):
-                    return
-                if backlog > threshold:
-                    dispatcher.register_hold(
-                        source="backpressure",
-                        scope=["intake"],
-                        reason_code="backpressure",
-                        reason=f"待处理积压 {backlog}，超过阈值 {threshold}",
-                        auto=True,
-                    )
                     return
             await self._repair_missing_jobs(plan)
             await self._release_finished_claims(plan)
@@ -562,6 +546,52 @@ class IntakeService:
         return max(1, self.settings.autopilot.parallel_authoring + self.settings.execution.max_containers)
 
     async def _next_candidate(self, plan: dict[str, Any]) -> dict[str, Any] | None:
+        candidates = await self._candidate_pool(plan)
+        return candidates[0] if candidates else None
+
+    async def preview_candidates(self, limit: int = 20) -> list[dict[str, Any]]:
+        plan = self.plan
+        if not plan or plan.get("status") not in {"running", "paused"}:
+            return []
+        candidates = await self._candidate_pool(plan)
+        if not candidates:
+            return []
+        stats = {
+            str(row["engineering_id"]): row
+            for row in self.ledger.engineering_stats(project_id=str(plan.get("project_id") or ""))
+        }
+        preview: list[dict[str, Any]] = []
+        cycle = 0
+        while len(preview) < limit and cycle < limit:
+            added = False
+            for item in candidates:
+                engineering_id = _engineering_id(item)
+                if not engineering_id:
+                    continue
+                if preview and preview[-1]["engineering_id"] == engineering_id:
+                    continue
+                usage = stats.get(engineering_id) or {}
+                preview.append(
+                    {
+                        "task_id": f"preview:{engineering_id}:{cycle}",
+                        "task_name": str(item.get("name") or engineering_id),
+                        "engineering_id": engineering_id,
+                        "project_id": str(plan.get("project_id") or ""),
+                        "preview": True,
+                        "cycle": cycle,
+                        "used": int(usage.get("used") or 0),
+                        "last_used_at": str(usage.get("last_used_at") or ""),
+                    }
+                )
+                added = True
+                if len(preview) >= limit:
+                    break
+            if not added:
+                break
+            cycle += 1
+        return preview
+
+    async def _candidate_pool(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
         filters = dict(plan.get("filters") or {})
         page = 1
         failed = _cooling_failures(plan)
@@ -613,8 +643,6 @@ class IntakeService:
             if page * int(response.get("page_size") or 100) >= total:
                 break
             page += 1
-        if not candidates:
-            return None
 
         def priority(pair: tuple[int, dict[str, Any]]) -> tuple[int, str, int]:
             # 用得最少的先上；同样次数时最久没用过的先上，让题库整轮转起来。
@@ -622,10 +650,13 @@ class IntakeService:
             usage = stats.get(_engineering_id(item), {})
             return int(usage.get("used") or 0), str(usage.get("last_used_at") or ""), index
 
-        return min(
-            enumerate(candidates),
-            key=priority,
-        )[1]
+        return [
+            item
+            for _, item in sorted(
+                enumerate(candidates),
+                key=priority,
+            )
+        ]
 
     def _counts(self, plan: dict[str, Any]) -> dict[str, int]:
         completed = active = failed = recoverable = orphaned = 0

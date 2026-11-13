@@ -314,7 +314,7 @@ Policy.decide(item, failure) ──▶ 动作集合：
     {
       "id": "llm",                    // 每个来源至多一条
       "source": "llm_guard",          // llm_guard | docker_guard | disk_guard | source_guard | session_guard |
-                                      // recording_guard | skill_guard | breaker | crash_loop | backpressure |
+                                      // recording_guard | skill_guard | breaker | crash_loop |
                                       // unknown_burst | window | submit_guard
       "scope": ["containers"],        // global | intake | containers | sessions | recording | submit | task:<id>
       "reason_code": "gateway.unreachable",
@@ -351,7 +351,6 @@ Policy.decide(item, failure) ──▶ 动作集合：
 | `recording_guard` | recording | 屏幕录制权限丢失 / 录屏服务连续失败 2 次 | 每 5 分钟 | 15 分钟后升级（权限只能人给） |
 | `skill_guard` | global | 技能版本变化 / 技能脚本不可执行 / 表头导入失败 | 每 60 s | 立即升级 |
 | `submit_guard` | submit | SOLO2 登录失败 / 连续提交失败 | 每 5 分钟 | 60 分钟 |
-| `backpressure` | intake | 待抽检 + 待人工 + 已隔离 > 阈值 | 每拍；降到阈值 × 0.7 解除 | 不升级（进收件箱提示有积压） |
 | `unknown_burst` | intake | 最近 10 题中 `unknown` ≥ 4 | 无（人工） | 立即升级 |
 | `breaker` | global | v2 规则：同类连续失败、抽检打回率、鉴权失败 | 无（人工） | 立即升级 |
 | `crash_loop` | global | 15 分钟内异常退出 ≥ 2 次 | 无（人工） | 立即升级 |
@@ -597,7 +596,6 @@ target = 0
 daily_claim_cap = 30
 allow_reuse = false
 engineering_usage_limit = 1
-backpressure_threshold = 12
 refill_while_paused = false
 # 项目与权重存在 run/dispatch.json 的 plan 里，不放 config（它是操作态不是配置）
 

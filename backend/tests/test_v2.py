@@ -616,6 +616,52 @@ async def test_intake_resume_repairs_missing_job_and_clears_pause_reason(
 
 
 @pytest.mark.asyncio
+async def test_intake_resume_skips_task_ids_missing_from_repository(
+    fixture_factory: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, roots = await _app(tmp_path, monkeypatch, fixture_factory, names=("prompt-only",))
+    ctx = app.state.context
+    task = ctx.repo.get_task_by_root(roots["prompt-only"])
+    started: list[str] = []
+
+    async def source_ok() -> dict[str, Any]:
+        return {"ok": True, "message": "工程台连接正常"}
+
+    async def fake_start_tasks(task_ids: list[str]) -> dict[str, list[str]]:
+        started.extend(task_ids)
+        return {"recovered": [], "added": task_ids, "skipped": []}
+
+    monkeypatch.setattr(ctx.source, "test", source_ok)
+    monkeypatch.setattr(ctx.autopilot, "start_tasks", fake_start_tasks)
+    missing = "missing-task"
+    ctx.intake.plan = {
+        "id": "resume-stale-task",
+        "project_id": "project-1",
+        "project_name": "项目一",
+        "target": 5,
+        "status": "paused",
+        "task_ids": [missing, task["id"]],
+        "attempted_engineering_ids": [],
+        "claimed_engineering_ids": [],
+        "failed_claims": [],
+        "claim_limit": 10,
+        "filters": {},
+    }
+    try:
+        result = await ctx.intake.resume()
+        assert result["status"] == "running"
+        assert started == [task["id"]]
+        assert ctx.intake.plan["task_ids"] == [task["id"]]
+        event = ctx.repo.events(limit=1)[0]
+        assert event["action"] == "intake.resumed"
+        assert event["details"]["missing"] == [missing]
+    finally:
+        await ctx.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_intake_tick_repairs_missing_job_before_counting_capacity(
     fixture_factory: Any,
     tmp_path: Path,
