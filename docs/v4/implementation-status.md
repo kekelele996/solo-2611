@@ -1,7 +1,7 @@
 # v4 实现与验收状态
 
 日期：2026-11-13
-状态：**P0–P2 已实现并通过自动化检查；P1 已完成真实镜像探针、受管会话接受和监督器故障接回；P3 的长稳与平台试水尚未执行。**
+状态：**P0–P2 已实现、发布并通过自动化检查；真实探针、受管接受、Ctrl-C 接回、监督器接回、生产重启认领和 print 回退均已验证。P3 只剩长稳与平台试水。**
 
 ## 1. 交付结论
 
@@ -15,8 +15,8 @@
 
 | 检查 | 结果 |
 |---|---|
-| 技能测试 | `91 passed` |
-| 工作台后端 | `ruff`、`mypy --strict`、`pytest 138 passed` |
+| 技能测试 | `92 passed` |
+| 工作台后端 | `ruff`、`mypy --strict`、`pytest 140 passed` |
 | OpenAPI / TypeScript schema | `make check` contract 检查通过 |
 | 前端 | typecheck、ESLint、25 个 Vitest、生产构建全部通过 |
 | 静态门禁 | `make check` 的 grep 规则全部通过 |
@@ -30,6 +30,10 @@
 | PR1 交互探针 | 官方镜像下中文逐字输入、实时轨迹 bind、Ctrl-C 后“继续”三项全部通过 | `docs/v4/evidence/probe-interactive.json` |
 | 受管正常会话 | `run` 立即返回；监督器完成题面、轮次判定、收尾、轨迹收集和接受 | `docs/v4/evidence/managed-session-smoke.md` |
 | SV1 监督器接回 | `kill -9` 后容器/tmux 保留，`resume` 起新 PID 接回；继续次数仍为 0，最终接受 | `docs/v4/evidence/supervisor-resume.md` |
+| Ctrl-C 脱离 | Python 进程退出后容器仍运行、workspace 不变；`resume` 等待原容器结束后接受 | `docs/v4/evidence/ctrl-c-resume.md` |
+| print 回退 | `run --mode print` 一次机会、继续预算 0/0，11.35 秒完成接受 | `docs/v4/evidence/print-fallback.md` |
+| 生产重启认领 | 工作台 0.3.0→0.4.0、技能 0.5.0→0.6.0；任务、容器、3 个桌面线程未变 | `docs/v4/evidence/production-cutover.md` |
+| 四结局调度 | 自动化覆盖正常接受、429 后继续 1 次、继续用尽、人工终止 | `backend/tests/test_session_v4.py` |
 | UI 渲染 | 任务页显示第 1 轮/继续 0/2/已接受；调度页显示等待继续与会话质量；设置页无旧“尝试次数”输入 | `docs/v4/evidence/ui-check.json` 与三张 PNG |
 
 真实探针发现并修正了两个镜像行为差异：
@@ -70,10 +74,10 @@
 
 ## 6. 尚未执行
 
-以下属于需要更长时间、多任务或平台外部状态的项目，当前没有伪造结果：
+以下属于需要更长时间或平台外部状态的项目，当前没有伪造结果：
 
-- T3.1 四题并发 E2E：未跑完整四场景。
-- T3.2 八小时长稳、磁盘紧张、断网 60 秒、Docker 服务重启：未执行。
+- T3.1 真实四题并发 E2E：已完成四结局调度自动化，但未同时启动四个真实官方容器。
+- T3.2 八小时长稳、磁盘紧张、断网 60 秒、Docker 服务重启：未执行；生产工作台重启认领已真实验证。
 - T3.4 3–5 条带“继续”的真实数据提交与质检回执：未提交，避免未经单独确认触发平台外部写操作。
 - LB1/LB2 八小时性能和三项吞吐目标对比：未执行。
 
@@ -87,5 +91,7 @@
 
 ## 8. 发布状态
 
-- 技能与工作台均在独立 `v4-session-recovery` 工作树完成，未覆盖生产 `~/.codex`、`~/.claude` 或 `~/.solo-auto`。
-- 发布脚本已用两个临时目标验证；生产双目录同步待最终人工确认后执行。
+- 技能已同步到 `~/.codex/skills/solo-2611`，`~/.claude/skills/solo-2611` 保持同一物理目录符号链接。
+- 工作台已部署到生产 `main` 并经 launchd 重启，版本 `0.4.0+5ea69dc55e62`。
+- 两侧 `main` 与 `v4-session-recovery` 已推送 GitHub；技能有 `v0.6.0` 与 `v0.6.0-hotfix1` 标签。
+- 升级前技能、数据库、原设计稿与任务快照均已备份到 `~/solo-auto/backups/`。

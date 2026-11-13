@@ -1,0 +1,88 @@
+{
+  "schema": "solo-2611/1",
+  "skillVersion": "0.6.0",
+  "taskName": "v4-ctrl-c-detach-probe-2",
+  "taskRoot": "/private/tmp/solo2611-accept/2026-11-13-v4-ctrl-c-detach-probe-2-mqp3",
+  "workspace": "/private/tmp/solo2611-accept/2026-11-13-v4-ctrl-c-detach-probe-2-mqp3/workspace",
+  "createdAt": "2026-11-13T11:26:29+00:00",
+  "createdDate": "2026-11-13",
+  "status": "snapshotted",
+  "source": {
+    "kind": "dir",
+    "path": "/Users/gaobo/repositories/gitlab/评审项目/solo-202611/solo-1111/solo-2611-new-device-kit-v0.5.0/skills/solo-2611"
+  },
+  "initialSha": "0d9032f134dd0ddda97d6dda67065b1d823297f7",
+  "fields": {
+    "所属领域": "数据工程",
+    "子方向": "数据分析与数据应用",
+    "Harness": "Claude Code",
+    "操作系统": "MacOS/Linux"
+  },
+  "attempts": [
+    {
+      "index": 1,
+      "container": "solo2611-v4-ctrl-c-detach-probe-2-01-e796",
+      "mode": "print",
+      "image": "adminfather/benzhi-claude-code2:20261110",
+      "startedAt": "2026-11-13T11:26:35+00:00",
+      "status": "accepted",
+      "dir": "/private/tmp/solo2611-accept/2026-11-13-v4-ctrl-c-detach-probe-2-mqp3/monitor/runs/attempt-01",
+      "pid": 40041,
+      "detachedAt": "2026-11-13T11:26:43+00:00",
+      "reattachedAt": "2026-11-13T11:28:50+00:00",
+      "reattachedFromPid": 40041,
+      "finishedAt": "2026-11-13T11:28:50+00:00",
+      "completion": {
+        "ok": true,
+        "errors": [],
+        "warnings": [],
+        "danglingToolUses": 0
+      },
+      "errors": []
+    }
+  ],
+  "updatedAt": "2026-11-13T11:28:50+00:00",
+  "promptPath": "/private/tmp/solo2611-accept/2026-11-13-v4-ctrl-c-detach-probe-2-mqp3/delivery/提示词.md",
+  "promptSha256": "27011812cb3ed4f32093a43365aafdf2731ef852bb2ca126d068fc736c1d6f0a",
+  "sessionRun": {
+    "schema": "solo2611/session-run/1",
+    "mode": "print",
+    "attemptIndex": 1,
+    "container": "solo2611-v4-ctrl-c-detach-probe-2-01-e796",
+    "status": "running",
+    "startedAt": "2026-11-13T11:26:35+00:00",
+    "continues": {
+      "used": 0,
+      "max": 0,
+      "history": []
+    },
+    "rounds": [],
+    "interrupts": [],
+    "abort": null,
+    "outcome": null
+  },
+  "session": {
+    "sessionId": "7912384e-2eb1-4c34-9912-a075e778128b",
+    "promptId": "2253c532-6547-44bb-ac2f-d17eb2f4e928",
+    "harnessVersion": "2.1.319",
+    "entrypoint": "sdk-cli",
+    "models": [
+      "auto_model/urm"
+    ],
+    "trace": "/private/tmp/solo2611-accept/2026-11-13-v4-ctrl-c-detach-probe-2-mqp3/traces/-workspace/7912384e-2eb1-4c34-9912-a075e778128b.jsonl",
+    "tracesDir": "/private/tmp/solo2611-accept/2026-11-13-v4-ctrl-c-detach-probe-2-mqp3/traces",
+    "subagentFiles": 0,
+    "toolUses": 0,
+    "warnings": [],
+    "mode": "print"
+  },
+  "artifact": {
+    "sha": "0d9032f134dd0ddda97d6dda67065b1d823297f7",
+    "modelCommits": [],
+    "shortStat": "",
+    "stat": "",
+    "largeBinaries": [],
+    "createdAt": "2026-11-13T11:28:50+00:00",
+    "warning": "模型没有留下任何文件改动，产物快照等于初始快照"
+  }
+}

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import sqlite3
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -12,9 +15,12 @@ from solo_auto.app import create_app
 from solo_auto.dispatch.classify import Failure
 from solo_auto.dispatch.policy import RecoveryPolicy
 from solo_auto.dispatch.queue import DispatchItem
+from solo_auto.events.bus import EventBus
 from solo_auto.gateway.skill import COMMANDS, SkillGateway, SkillResult
+from solo_auto.pipeline.reconcile import Reconciler
+from solo_auto.pipeline.scheduler import ActiveRun, QueueEntry, RunScheduler
 from solo_auto.pipeline.steps import derive_job_status
-from solo_auto.settings import DispatchRetrySettings, ExecutionSettings
+from solo_auto.settings import DispatchRetrySettings, ExecutionSettings, app_paths
 from solo_auto.store.repo import Repository
 from solo_auto.store.state import SoloState, load_state
 
@@ -87,6 +93,40 @@ def test_state_accepts_session_run_and_old_tasks(tmp_path: Path) -> None:
     assert loaded.state.sessionRun is not None
     assert loaded.state.sessionRun.continues.used == 1
     assert loaded.state.sessionRun.rounds[0].continued is True
+
+
+def test_partial_v4_migration_recovers(tmp_path: Path) -> None:
+    path = tmp_path / "partial.db"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE attempts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id TEXT NOT NULL,
+          seq INTEGER NOT NULL,
+          mode TEXT NOT NULL,
+          container TEXT,
+          started_at TEXT NOT NULL,
+          finished_at TEXT,
+          exit_code INTEGER,
+          outcome TEXT NOT NULL,
+          error_kind TEXT,
+          detail TEXT,
+          session_run_status TEXT,
+          UNIQUE (task_id, seq)
+        );
+        PRAGMA user_version=3;
+        """
+    )
+    connection.commit()
+    connection.close()
+    repo = Repository(path)
+    assert repo.query_one("PRAGMA user_version")["user_version"] == 4
+    recovered = repo.query_one(
+        "SELECT action FROM events WHERE action='migration.recovered'"
+    )
+    assert recovered is not None
+    repo.close()
 
 
 def test_derive_job_status_for_managed_states() -> None:
@@ -180,6 +220,165 @@ def test_execution_retry_is_forced_to_one() -> None:
     assert settings.attempts == 1
     assert settings.continue_max == 2
     assert settings.start_attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_managed_scheduler_handles_four_session_outcomes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = app_paths(tmp_path / "app")
+    repo = Repository(paths.database)
+    tasks: list[tuple[str, Path]] = []
+    for number, name in enumerate(("normal", "continued", "exhausted", "manual"), 1):
+        root = tmp_path / "tasks" / name
+        (root / "monitor").mkdir(parents=True)
+        state = {
+            "schema": "solo-2611/1",
+            "taskName": name,
+            "taskRoot": str(root),
+            "workspace": str(root / "workspace"),
+            "createdAt": f"2026-11-13T0{number}:00:00Z",
+            "status": "prompt_ready",
+            "attempts": [],
+            "remote": {"initialPushed": "yes"},
+        }
+        (root / "monitor" / "state.json").write_text(json.dumps(state), encoding="utf-8")
+        task_id = repo.task_id_for_root(root)
+        repo.upsert_task(
+            {
+                "id": task_id,
+                "task_root": str(root),
+                "task_name": name,
+                "source_kind": "local_dir",
+                "engineering_id": "",
+                "project_id": "",
+                "claim_id": "",
+                "domain": "数据工程",
+                "sub_direction": "数仓与数据湖",
+                "task_type": "功能开发",
+                "difficulty": "困难",
+                "languages": "Python",
+                "repro_level": "完整",
+                "job_status": "ready",
+                "skill_status": "prompt_ready",
+                "skill_version": "0.6.0",
+                "initial_sha": "a" * 40,
+                "artifact_sha": "",
+                "session_id": None,
+                "prompt_id": "",
+                "prompt_sha256": "",
+                "feedback_score": None,
+                "review_acked_at": "",
+                "exported_at": None,
+                "created_at": "2026-11-13T00:00:00Z",
+            }
+        )
+        tasks.append((task_id, root))
+
+    class ManagedGateway:
+        async def call(self, argv: list[str], **_: Any) -> SkillResult:
+            return SkillResult(
+                code=0,
+                duration=0.01,
+                data={"ok": True, "supervised": True, "attempt": 1},
+            )
+
+        async def run_status(self, root: Path, **_: Any) -> SkillResult:
+            name = root.name
+            common = {
+                "attempt": 1,
+                "container": f"solo2611-{name}",
+                "tmuxAlive": True,
+                "supervisorAlive": True,
+                "startedAt": "2026-11-13T00:00:00Z",
+                "lastActivityAt": "2026-11-13T00:00:02Z",
+                "nextActionAt": None,
+                "remainingSeconds": 9000,
+            }
+            if name == "normal":
+                return SkillResult(
+                    code=0,
+                    duration=0,
+                    data={
+                        **common,
+                        "status": "accepted",
+                        "sessionState": "accepted",
+                        "round": 1,
+                        "continues": {"used": 0, "max": 2},
+                        "rounds": [{"no": 1, "kind": "none", "verdict": "complete"}],
+                        "abort": None,
+                    },
+                )
+            if name == "continued":
+                return SkillResult(
+                    code=0,
+                    duration=0,
+                    data={
+                        **common,
+                        "status": "accepted",
+                        "sessionState": "accepted",
+                        "round": 2,
+                        "continues": {"used": 1, "max": 2},
+                        "rounds": [
+                            {"no": 1, "kind": "rate_limited", "verdict": "continue", "continued": True},
+                            {"no": 2, "kind": "none", "verdict": "complete"},
+                        ],
+                        "abort": None,
+                    },
+                )
+            reason = "continues_exhausted" if name == "exhausted" else "manual_abort"
+            return SkillResult(
+                code=0,
+                duration=0,
+                data={
+                    **common,
+                    "status": "aborted",
+                    "sessionState": "aborted",
+                    "round": 2,
+                    "continues": {"used": 2 if name == "exhausted" else 0, "max": 2},
+                    "rounds": [{"no": 1, "kind": "truncated", "verdict": "continue"}],
+                    "lastKind": "truncated",
+                    "abort": {"reason": reason, "detail": reason},
+                },
+            )
+
+    async def fast_sleep(_: float) -> None:
+        return None
+
+    monkeypatch.setattr("solo_auto.pipeline.scheduler.asyncio.sleep", fast_sleep)
+    gateway = ManagedGateway()
+    reconciler = Reconciler(repo, paths, tmp_path / "tasks")
+
+    async def no_reconcile() -> int:
+        return 0
+
+    monkeypatch.setattr(reconciler, "run", no_reconcile)
+    scheduler = RunScheduler(
+        paths=paths,
+        gateway=gateway,  # type: ignore[arg-type]
+        repo=repo,
+        reconciler=reconciler,
+        bus=EventBus(),
+        attempt_total=1,
+    )
+    runs: list[ActiveRun] = []
+    for task_id, root in tasks:
+        entry = QueueEntry(task_id=task_id, task_name=root.name, task_root=root)
+        run = ActiveRun(entry=entry, started_at=0)
+        scheduler.active[task_id] = run
+        runs.append(run)
+    await asyncio.gather(*(scheduler._execute(run) for run in runs))
+    assert {task_id: repo.get_task(task_id)["job_status"] for task_id, _ in tasks} == {
+        tasks[0][0]: "ran",
+        tasks[1][0]: "ran",
+        tasks[2][0]: "aborted",
+        tasks[3][0]: "aborted",
+    }
+    continued_rows = repo.session_rounds(tasks[1][0])
+    assert len(continued_rows) == 2
+    assert any(paths.sessions.glob("*.json"))
+    repo.close()
 
 
 @pytest.mark.asyncio

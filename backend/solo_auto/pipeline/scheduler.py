@@ -650,6 +650,10 @@ class RunScheduler:
                 if final_status in {"aborted", "session_lost"}
                 else "running"
             )
+            if final_status == "accepted":
+                self.repo.set_job_status(task_id, "ran")
+            elif final_status not in {"aborted", "session_lost"}:
+                self.repo.set_job_status(task_id, "running")
             last_kind = str(status.get("lastKind") or "")
             abort_reason = str((status.get("abort") or {}).get("reason") or "")
             self.repo.execute(
@@ -767,7 +771,7 @@ class RunScheduler:
                 )
                 self._retry_tasks.add(retry)
                 retry.add_done_callback(self._retry_tasks.discard)
-        terminal = kind in {
+        terminal = str(status.get("status") or "") == "aborted" or kind in {
             "run.continues_exhausted",
             "run.timeout",
             "run.no_progress",
