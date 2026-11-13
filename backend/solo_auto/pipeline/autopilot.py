@@ -77,7 +77,10 @@ AGENT_FLAGS = (
     "--dangerously-bypass-approvals-and-sandbox",
 )
 VERDICT = "AUTOPILOT:"
-CHATGPT_LAUNCH_TIMEOUT_SECONDS = 5 * 60
+# 桌面端偶尔会先出现窗口、后拿到首条消息。先做两次低风险补按发送，
+# 仍未产生带唯一标识的 rollout 才交给调度器重开会话。
+CHATGPT_SUBMIT_RECOVERY_AT_SECONDS = (20, 45)
+CHATGPT_LAUNCH_TIMEOUT_SECONDS = 90
 LIVE_REFRESH_SECONDS = 10.0
 USAGE_LIMIT_RE = re.compile(
     r"(?i)usage limit|rate.?limit|too many requests|\b429\b|quota|用量(受限|上限)|额度(不足|用尽)|超限"
@@ -187,6 +190,9 @@ class Job:
     desktop_started_at: str = ""
     desktop_last_progress_at: str = ""
     desktop_stage_id: int = 0
+    desktop_recovery_attempts: int = 0
+    desktop_recovery_last_at: str = ""
+    desktop_recovery_error: str = ""
 
     @property
     def active(self) -> bool:
@@ -1040,6 +1046,9 @@ class Autopilot:
         job.desktop_workdir = info.cwd or job.desktop_workdir
         job.desktop_started_at = now
         job.desktop_last_progress_at = now
+        job.desktop_recovery_attempts = 0
+        job.desktop_recovery_last_at = ""
+        job.desktop_recovery_error = ""
         job.log = str(info.path)
         self.desktop_terminal_seen.discard(job.task_id)
         self._stage(job, "chatgpt", "已接管该任务仍在运行的 ChatGPT 会话，不再重复新开")
@@ -1094,6 +1103,9 @@ class Autopilot:
         job.desktop_deep_link = str(launched["deep_link"])
         job.desktop_started_at = str(launched["started_at"])
         job.desktop_last_progress_at = str(launched["started_at"])
+        job.desktop_recovery_attempts = 0
+        job.desktop_recovery_last_at = ""
+        job.desktop_recovery_error = ""
         job.desktop_rollout = ""
         job.desktop_thread_id = ""
         job.desktop_stage_id = stage_id
@@ -1158,9 +1170,18 @@ class Autopilot:
                             details={"rollout": str(path), "thread_id": job.desktop_thread_id},
                         )
                 if path is None:
-                    elapsed = (datetime.now().astimezone() - started).total_seconds()
+                    now = datetime.now().astimezone()
+                    await self._recover_missing_chatgpt_submission(job, started=started, now=now)
+                    elapsed = (now - started).total_seconds()
                     if elapsed >= CHATGPT_LAUNCH_TIMEOUT_SECONDS:
-                        detail = f"发出深链接后 {CHATGPT_LAUNCH_TIMEOUT_SECONDS // 60} 分钟未建立可跟踪会话"
+                        tried = (
+                            f"，已自动补按发送 {job.desktop_recovery_attempts} 次"
+                            if job.desktop_recovery_attempts
+                            else ""
+                        )
+                        detail = (
+                            f"发出深链接后 {CHATGPT_LAUNCH_TIMEOUT_SECONDS} 秒仍未建立可跟踪会话{tried}"
+                        )
                         await self._finish_desktop_stage(
                             job,
                             outcome="failed",
@@ -1176,6 +1197,54 @@ class Autopilot:
             LOGGER.exception("ChatGPT rollout follower failed: %s", task_id)
         finally:
             self.desktop_followers.pop(task_id, None)
+
+    async def _recover_missing_chatgpt_submission(
+        self,
+        job: Job,
+        *,
+        started: datetime,
+        now: datetime,
+    ) -> None:
+        """Nudge ChatGPT after a deep link opens without creating a rollout."""
+        attempt = job.desktop_recovery_attempts
+        if attempt >= len(CHATGPT_SUBMIT_RECOVERY_AT_SECONDS):
+            return
+        elapsed = (now - started).total_seconds()
+        if elapsed < CHATGPT_SUBMIT_RECOVERY_AT_SECONDS[attempt]:
+            return
+        result = await asyncio.to_thread(
+            self.desktop.submit_pending_prompt,
+            job.desktop_deep_link,
+        )
+        job.desktop_recovery_attempts = attempt + 1
+        job.desktop_recovery_last_at = _now()
+        job.desktop_recovery_error = "" if result.get("ok") else str(result.get("message") or "补按发送失败")
+        done = job.desktop_recovery_attempts
+        total = len(CHATGPT_SUBMIT_RECOVERY_AT_SECONDS)
+        if result.get("ok"):
+            detail = f"ChatGPT 已打开但未收到首条消息，已自动补按发送（{done}/{total}）"
+            level = "info"
+            action = "autopilot.chatgpt.submit_recovered"
+        else:
+            detail = f"ChatGPT 已打开但未收到首条消息，自动补发失败（{done}/{total}）：{job.desktop_recovery_error}"
+            level = "warn"
+            action = "autopilot.chatgpt.submit_recovery_failed"
+        self._stage(job, "chatgpt", detail)
+        self.repo.add_event(
+            action,
+            detail,
+            level=level,
+            actor=ACTOR,
+            task_id=job.task_id,
+            details={
+                "attempt": done,
+                "max_attempts": total,
+                "ok": bool(result.get("ok")),
+                "message": job.desktop_recovery_error,
+                "opened_with": str(result.get("opened_with") or ""),
+            },
+        )
+        self._changed()
 
     async def _finish_desktop_stage(
         self,

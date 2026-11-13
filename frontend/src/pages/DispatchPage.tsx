@@ -706,6 +706,11 @@ function QueueRow({
       <div className="dispatch-queue-meta mono">
         {pending && until ? <span>退避 <Countdown at={until} /></span> : null}
         {pending && !until && eta ? <span>预计 <Countdown at={eta} /></span> : null}
+        {item.desktop_recovery_attempts ? (
+          <span title={item.desktop_recovery_error || item.autopilot_detail || "正在补按发送，不会重新创建任务"}>
+            <Badge tone="warn">自动补发 {item.desktop_recovery_attempts}/2</Badge>
+          </span>
+        ) : null}
         {item.total_attempts > 1 ? <span>尝试 {item.total_attempts}</span> : null}
         {item.keep ? <Badge tone="info">保留</Badge> : null}
       </div>

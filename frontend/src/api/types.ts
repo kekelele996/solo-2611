@@ -133,6 +133,9 @@ export type AutopilotJob = {
   desktop_thread_id: string;
   desktop_started_at: string;
   desktop_last_progress_at: string;
+  desktop_recovery_attempts: number;
+  desktop_recovery_last_at: string;
+  desktop_recovery_error: string;
 };
 
 export type AutopilotSnapshot = {
@@ -390,6 +393,21 @@ export type SessionStatus = {
   tmuxAlive: boolean;
   sessionId: string;
   promptId: string;
+  promptDelivery: {
+    status: string;
+    startedAt: string;
+    confirmedAt: string;
+    trace: string;
+    promptId: string;
+    literalAttempts: number;
+    submitAttempts: number;
+    repairCount: number;
+    maxRepairCount: number;
+    lastAction: string;
+    lastActionAt: string;
+    error: string;
+  } | null;
+  error: string;
   blocked: { kind: string; since: string; until: string } | null;
   abort: { reason: string; detail: string; at: string; by: string } | null;
   outcome: { acceptedAt: string; remark: string } | null;
@@ -717,6 +735,11 @@ export type DispatchQueueItem = {
   job_status: string;
   failure_label: string;
   matched_by: string;
+  autopilot_detail?: string;
+  desktop_running?: boolean;
+  desktop_recovery_attempts?: number;
+  desktop_recovery_last_at?: string;
+  desktop_recovery_error?: string;
   reason: string;
   gate: DispatchDecision;
 };

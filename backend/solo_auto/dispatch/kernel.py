@@ -944,6 +944,11 @@ class Dispatcher:
         position = next((index + 1 for index, candidate in enumerate(ordered) if candidate.task_id == item.task_id), None)
         decision = self._decision_for(item, queue_head=position == 1)
         task = self.repo.get_task(item.task_id) or {}
+        job: Any = None
+        if self.autopilot is not None:
+            jobs = getattr(self.autopilot, "jobs", {})
+            if isinstance(jobs, dict):
+                job = jobs.get(item.task_id)
         return {
             **item.view(queue_position=position),
             "project_id": item.project_id or str(task.get("project_id") or ""),
@@ -952,6 +957,11 @@ class Dispatcher:
             "job_status": str(task.get("job_status") or ""),
             "failure_label": str((item.last_failure or {}).get("kind") or ""),
             "matched_by": str((item.last_failure or {}).get("matched_by") or ""),
+            "autopilot_detail": str(getattr(job, "detail", "") or ""),
+            "desktop_running": bool(getattr(job, "desktop_running", False)),
+            "desktop_recovery_attempts": int(getattr(job, "desktop_recovery_attempts", 0) or 0),
+            "desktop_recovery_last_at": str(getattr(job, "desktop_recovery_last_at", "") or ""),
+            "desktop_recovery_error": str(getattr(job, "desktop_recovery_error", "") or ""),
             "reason": decision.text
             or ("可启动" if position == 1 else f"排队第 {position} 位" if position else item.wait_text or "等待人工处理"),
             "gate": decision.view(),

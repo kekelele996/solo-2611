@@ -452,6 +452,19 @@ class RunScheduler:
                         },
                     )
                     return
+                elif status.get("status") == "start_failed":
+                    run.phase = "failed"
+                    detail = str(
+                        status.get("error")
+                        or "Claude Code 在会话成立前启动失败"
+                    )
+                    await self._record_run_failure(
+                        task_id,
+                        kind="run.start_failed",
+                        detail=detail,
+                        status=status,
+                    )
+                    return
                 elif status.get("status") in {"aborted", "session_lost"}:
                     run.phase = "failed"
                     reason = str(
@@ -816,6 +829,9 @@ class RunScheduler:
                 "hold.start": "session.held",
                 "session.aborted": "session.aborted",
                 "session.accepted": "session.accepted",
+                "prompt.delivery_retry": "session.prompt_retry",
+                "prompt.sent": "session.prompt_sent",
+                "prompt.delivery_failed": "session.prompt_failed",
             }
             if action in mapping:
                 self.bus.publish(

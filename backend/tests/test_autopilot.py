@@ -379,6 +379,80 @@ def _fake_desktop(pilot: Autopilot, tmp_path: Path) -> list[str]:
     return launched
 
 
+@pytest.mark.asyncio
+async def test_missing_chatgpt_prompt_is_resubmitted_before_relaunch(
+    fixture_factory: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, root = await _app(tmp_path, monkeypatch, fixture_factory, "prompt-only")
+    ctx = app.state.context
+    await ctx.startup()
+    pilot = ctx.autopilot
+    task = ctx.repo.get_task_by_root(root)
+    started = datetime.now().astimezone().replace(microsecond=0)
+    job = Job(
+        task_id=task["id"],
+        task_name=task["task_name"],
+        stage="chatgpt",
+        desktop_running=True,
+        desktop_deep_link="codex://threads/new?prompt=test",
+        desktop_started_at=started.isoformat(),
+    )
+    pilot.jobs[task["id"]] = job
+    results = [
+        {"ok": False, "opened_with": "helper", "message": "窗口尚未就绪"},
+        {"ok": True, "opened_with": "helper", "message": "已补按发送"},
+    ]
+    calls: list[str] = []
+
+    def fake_submit(link: str = "") -> dict[str, Any]:
+        calls.append(link)
+        return results[len(calls) - 1]
+
+    pilot.desktop.submit_pending_prompt = fake_submit  # type: ignore[method-assign]
+    try:
+        await pilot._recover_missing_chatgpt_submission(
+            job,
+            started=started,
+            now=started + timedelta(seconds=19),
+        )
+        assert calls == [] and job.desktop_recovery_attempts == 0
+
+        await pilot._recover_missing_chatgpt_submission(
+            job,
+            started=started,
+            now=started + timedelta(seconds=21),
+        )
+        assert calls == [job.desktop_deep_link]
+        assert job.desktop_recovery_attempts == 1
+        assert "窗口尚未就绪" in job.detail
+
+        await pilot._recover_missing_chatgpt_submission(
+            job,
+            started=started,
+            now=started + timedelta(seconds=46),
+        )
+        await pilot._recover_missing_chatgpt_submission(
+            job,
+            started=started,
+            now=started + timedelta(seconds=80),
+        )
+        assert calls == [job.desktop_deep_link, job.desktop_deep_link]
+        assert job.desktop_recovery_attempts == 2
+        assert "已自动补按发送（2/2）" in job.detail
+        queue_item = ctx.dispatcher.queue.enqueue(task["id"], stage="chatgpt")
+        queue_view = ctx.dispatcher._item_view(queue_item)
+        assert queue_view["desktop_recovery_attempts"] == 2
+        assert queue_view["desktop_recovery_last_at"] == job.desktop_recovery_last_at
+        assert queue_view["autopilot_detail"] == job.detail
+        actions = [event["action"] for event in ctx.repo.events(task_id=task["id"], limit=20)]
+        assert "autopilot.chatgpt.submit_recovery_failed" in actions
+        assert "autopilot.chatgpt.submit_recovered" in actions
+    finally:
+        await ctx.shutdown()
+
+
 def test_rollout_index_reads_incrementally_and_follows_turns(isolated_codex_sessions: Path) -> None:
     task_id = "11111111-2222-3333-4444-555555555555"
     path = _write_rollout(isolated_codex_sessions, task_id, [_event("task_started"), _tool(-5)])

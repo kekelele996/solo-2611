@@ -1,6 +1,6 @@
 # ChatGPT 桌面执行模式
 
-更新时间：2026-11-11
+更新时间：2026-11-14
 
 ## 目标
 
@@ -16,10 +16,15 @@
    `codex://threads/new?path=~/solo-auto/chatgpt-workspaces/YYYY-MM-DD&mode=work&prompt=<shortPrompt>`。
    ChatGPT 文件夹按自然日复用；任务根目录只写在短提示词和完整指令文件中。
 4. ChatGPT 桌面端创建新 thread 并提交首条消息；提示词不再通过 URL 传递数 KB 正文。
-5. 平台在 `~/.codex/sessions/` 中查找同时满足以下条件的 rollout：
+5. `CodexQueuePush` 会等待 ChatGPT 窗口就绪，并在首轮输入后再次确认回车。如果 20 秒内仍未出现
+   带本次唯一 marker 的 rollout，平台只对当前输入框再补按发送，不重新打开深链接；45 秒时最多再补一次。
+   这样不会把同一道题同时送进两个新建会话。
+6. 平台在 `~/.codex/sessions/` 中查找同时满足以下条件的 rollout：
    - 首条用户消息包含本次唯一 marker；
    - `session_meta.cwd` 的规范化路径等于任务目录。
-6. 生产线实时读取该 rollout，并继续用磁盘 `state.json`、证据和技能门禁决定任务结局。
+7. 生产线实时读取该 rollout，并继续用磁盘 `state.json`、证据和技能门禁决定任务结局。
+   90 秒后仍没有可跟踪会话，才按 `agent.launch_lost` 交给调度器退避重开；窗口已打开但提示词未送达
+   不再需要人工发现。补发期间调度页会在对应任务卡上显示 `自动补发 n/2`，鼠标悬停可看失败原因。
 
 ## 状态边界
 

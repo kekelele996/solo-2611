@@ -82,6 +82,11 @@ const SNAPSHOT: DispatchSnapshot = {
       job_status: "blocked",
       failure_label: "gate.rejected",
       matched_by: "gate_errors",
+      autopilot_detail: "ChatGPT 已打开但未收到首条消息，已自动补按发送（1/2）",
+      desktop_running: true,
+      desktop_recovery_attempts: 1,
+      desktop_recovery_last_at: "2026-11-11T19:30:10+08:00",
+      desktop_recovery_error: "",
       reason: "门禁连续两次返回相同错误",
       gate: {
         item_id: "task-1",
@@ -155,6 +160,7 @@ describe("dispatch page", () => {
     expect(screen.getByRole("heading", { name: /正在处理/ })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /已处理/ })).toBeInTheDocument();
     expect(screen.getByText("门禁连续两次返回相同错误")).toBeInTheDocument();
+    expect(screen.getByText("自动补发 1/2")).toBeInTheDocument();
     fireEvent.click(screen.getByText("门禁连续两次返回相同错误"));
     expect(screen.getByText("WHY NOT RUNNING")).toBeInTheDocument();
     expect(screen.getByText("G12")).toBeInTheDocument();

@@ -261,6 +261,7 @@ def _core_execution_trace_path(task_root: Path) -> tuple[Path, bool]:
     active = live_status in {
         "launching",
         "prompt_sent",
+        "prompt_delivery",
         "running",
         "continuing",
         "holding",

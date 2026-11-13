@@ -42,6 +42,8 @@ const SESSION: SessionStatus = {
   tmuxAlive: true,
   sessionId: "",
   promptId: "",
+  promptDelivery: null,
+  error: "",
   blocked: null,
   abort: null,
   outcome: null,
@@ -93,5 +95,39 @@ describe("SessionPanel", () => {
     expect(screen.getByText("429 Tokens Per Minute")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "继续" }));
     await waitFor(() => expect(send).toHaveBeenCalledWith("task-1"));
+  });
+
+  it("shows automatic prompt delivery repair before the first trace event", async () => {
+    (api.session as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...SESSION,
+      status: "prompt_delivery",
+      sessionState: "running",
+      rounds: [],
+      promptDelivery: {
+        status: "waiting_trace",
+        startedAt: "2026-11-13T09:00:00+08:00",
+        confirmedAt: "",
+        trace: "",
+        promptId: "",
+        literalAttempts: 1,
+        submitAttempts: 1,
+        repairCount: 1,
+        maxRepairCount: 4,
+        lastAction: "submit",
+        lastActionAt: "2026-11-13T09:00:08+08:00",
+        error: "",
+      },
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <ToastProvider>
+          <SessionPanel task={TASK} onAbort={() => undefined} />
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("题面发送确认中")).toBeInTheDocument();
+    expect(screen.getByText("题面尚未确认送达，已自动补发 1/4")).toBeInTheDocument();
   });
 });

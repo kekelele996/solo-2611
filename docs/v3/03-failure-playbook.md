@@ -228,7 +228,7 @@ regex   = '''(?i)pull access denied|manifest unknown|no such image|error pulling
 |---|---|---|---|---|---|---|
 | D1 | Agent 可执行文件不存在（CLI） | 启动抛 `FileNotFoundError` / 预检项失败 | L2 | `session_guard` 挂起 sessions；题不标失败 | 每 2 分钟探测；可执行即解除 | 30 分钟 |
 | D2 | ChatGPT 桌面端没开 / 崩了 | 进程不存在或深链接调用失败 | L2 | 先尝试 `open -a` 拉起一次并等 20 秒；仍不行 → `session_guard` | 同上 | 30 分钟 |
-| D3 | 深链接发出了但会话没建立 | 发出后 N 分钟（默认 5）内按 marker + cwd 找不到 rollout | L1 | `agent.launch_lost`：不计入题目次数，间隔 ≥ 20 秒后重发，最多 2 次 | — | 连续 3 题 → `session_guard` |
+| D3 | 深链接已打开但提示词没送达 | 20 秒、45 秒时仍按 marker + cwd 找不到 rollout | L0→L1 | 先对当前输入框补按发送 2 次，不重新打开深链接；90 秒仍无轨迹才记 `agent.launch_lost`，由调度器退避重开会话 | 轨迹出现即停止补发 | 连续失败 → `session_guard` |
 | D4 | CodexQueuePush 辅助功能权限丢失 | helper 返回权限错误 | L4 | `session_guard`（`auto=false`） | 人工授权后解除 | 立即 |
 | D5 | ChatGPT 未登录 / 会话被登出 | rollout 或 helper 输出命中登录特征 | L4 | 同 D4 | 人工 | 立即 |
 | D6 | ChatGPT 用量受限 | 会话终止文本命中用量限制特征 | L2 | `session_guard` 挂起 sessions；能解析出重置时间则到点探测，否则每 15 分钟；容器池不受影响（已起草的题照常运行） | 自动 | 重置时间后 30 分钟仍不行 |

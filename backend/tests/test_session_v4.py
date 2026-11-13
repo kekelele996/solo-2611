@@ -168,6 +168,87 @@ def test_start_failure_has_independent_limit() -> None:
     assert third.action == "quarantine"
 
 
+@pytest.mark.asyncio
+async def test_start_failed_status_is_classified_before_requeue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = app_paths(tmp_path / "app")
+    paths.ensure()
+    repo = Repository(paths.database)
+
+    class Gateway:
+        async def call(self, *_: Any, **__: Any) -> SkillResult:
+            return SkillResult(
+                code=0,
+                duration=0,
+                data={"ok": True, "supervised": True, "attempt": 1},
+            )
+
+        async def run_status(self, *_: Any, **__: Any) -> SkillResult:
+            return SkillResult(
+                code=0,
+                duration=0,
+                data={
+                    "status": "start_failed",
+                    "sessionState": "start_failed",
+                    "error": "题面连续 4 次自动补发仍未写入 Claude Code 轨迹",
+                    "attempt": 1,
+                    "rounds": [],
+                    "continues": {"used": 0, "max": 2},
+                },
+            )
+
+    async def no_reconcile() -> int:
+        return 0
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    reconciler = Reconciler(repo, paths, tmp_path / "tasks")
+    monkeypatch.setattr(reconciler, "run", no_reconcile)
+    monkeypatch.setattr("solo_auto.pipeline.scheduler.asyncio.sleep", no_sleep)
+    scheduler = RunScheduler(
+        paths=paths,
+        gateway=Gateway(),  # type: ignore[arg-type]
+        repo=repo,
+        reconciler=reconciler,
+        bus=EventBus(),
+        attempt_total=1,
+    )
+    classified: list[tuple[str, str]] = []
+
+    async def record_failure(
+        task_id: str,
+        *,
+        kind: str,
+        detail: str,
+        status: dict[str, Any],
+    ) -> None:
+        classified.append((kind, detail))
+
+    monkeypatch.setattr(scheduler, "_record_run_failure", record_failure)
+    monkeypatch.setattr(scheduler, "_write_session_shadow", lambda *_: None)
+    monkeypatch.setattr(scheduler, "_sync_session_state", lambda *_: None)
+    run = ActiveRun(
+        entry=QueueEntry(
+            task_id="task-start-failed",
+            task_name="题面未送达",
+            task_root=tmp_path / "task",
+        ),
+        started_at=0,
+    )
+    scheduler.active[run.entry.task_id] = run
+
+    await scheduler._execute(run)
+
+    assert run.phase == "failed"
+    assert classified == [
+        ("run.start_failed", "题面连续 4 次自动补发仍未写入 Claude Code 轨迹")
+    ]
+    repo.close()
+
+
 def test_session_rounds_and_stats_are_written_from_skill_state(tmp_path: Path) -> None:
     repo = Repository(tmp_path / "solo-auto.db")
     repo.execute(

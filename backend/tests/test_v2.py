@@ -130,6 +130,28 @@ def test_chatgpt_deep_link_uses_one_workspace_per_date(
     assert result["workdir"] == query["path"][0]
 
 
+def test_chatgpt_submit_only_reuses_the_existing_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    helper = tmp_path / "CodexQueuePush"
+    helper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    helper.chmod(0o755)
+    desktop = ChatGPTDesktop(home=tmp_path / "home", helper=str(helper))
+    captured: list[str] = []
+
+    def fake_run(args: list[str], **_: Any) -> SimpleNamespace:
+        captured.extend(args)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    link = "codex://threads/new?path=test&prompt=test"
+    result = desktop.submit_pending_prompt(link)
+
+    assert result["ok"] is True
+    assert captured == [str(helper), "--submit-only", link]
+
+
 @pytest.mark.asyncio
 async def test_audit_sampling_is_stable_and_readonly_decision(
     fixture_factory: Any,

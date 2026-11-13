@@ -48,6 +48,7 @@ DEFAULT_HELPERS = (
     / "MacOS"
     / "CodexQueuePush",
 )
+SUBMIT_PENDING_FLAG = "--submit-only"
 
 
 class ChatGPTDesktop:
@@ -137,6 +138,58 @@ class ChatGPTDesktop:
             "opened_with": opened_with,
             "workdir": str(grouped_workdir),
             "started_at": datetime.now().astimezone().replace(microsecond=0).isoformat(),
+        }
+
+    def submit_pending_prompt(self, link: str = "") -> dict[str, Any]:
+        """Ask the trusted helper to submit the prompt already present in ChatGPT.
+
+        This deliberately does not reopen the deep link. Reopening can create a
+        second thread when the first one was merely slow to accept its prompt.
+        """
+        if not self.helper or not self.helper.is_file() or not os.access(self.helper, os.X_OK):
+            return {
+                "ok": False,
+                "opened_with": "",
+                "message": "未找到支持补发的 CodexQueuePush",
+            }
+        args = [str(self.helper), SUBMIT_PENDING_FLAG]
+        if link:
+            args.append(link)
+        try:
+            result = subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "ok": False,
+                "opened_with": str(self.helper),
+                "message": "补按发送超时",
+            }
+        except OSError as exc:
+            return {
+                "ok": False,
+                "opened_with": str(self.helper),
+                "message": f"补按发送失败：{exc}",
+            }
+        if result.returncode == 0:
+            return {
+                "ok": True,
+                "opened_with": str(self.helper),
+                "message": "已补按发送",
+            }
+        message = (result.stderr or result.stdout).strip()
+        if result.returncode == 3:
+            message = "CodexQueuePush 缺少辅助功能权限，请在系统设置中授权"
+        elif result.returncode == 2 and not message:
+            message = "当前 CodexQueuePush 版本不支持补按发送"
+        return {
+            "ok": False,
+            "opened_with": str(self.helper),
+            "message": message or f"CodexQueuePush 补发退出码 {result.returncode}",
         }
 
     def find_rollout(self, marker: str, *, started_at: datetime, workdir: Path) -> Path | None:

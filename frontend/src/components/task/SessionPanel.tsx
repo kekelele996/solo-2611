@@ -8,7 +8,7 @@ import { Badge, Button } from "../ui";
 import { errorText } from "../../utils/display";
 import { formatDateTime } from "../../utils/time";
 
-const TERMINAL = new Set(["accepted", "aborted"]);
+const TERMINAL = new Set(["accepted", "aborted", "start_failed"]);
 const KIND_LABEL: Record<string, string> = {
   rate_limited: "限流",
   gateway: "网关错误",
@@ -19,6 +19,9 @@ const KIND_LABEL: Record<string, string> = {
   incomplete: "没有做完",
   empty: "空回复",
   unresponsive: "继续后无响应",
+  prompt_delivery_timeout: "题面未送达",
+  prompt_delivery_failed: "题面补发失败",
+  tmux_session_missing: "终端会话丢失",
   none: "正常结束",
 };
 
@@ -76,6 +79,13 @@ export function SessionPanel({
   const current = status?.status ?? state.sessionRun?.status ?? "unknown";
   const terminal = TERMINAL.has(current);
   const blocked = Boolean(status?.blocked);
+  const delivery = status?.promptDelivery;
+  const repairing = Boolean(
+    delivery &&
+      delivery.status !== "confirmed" &&
+      delivery.repairCount > 0,
+  );
+  const startFailure = current === "start_failed" ? status?.error || "启动失败，等待重新排队" : "";
   const rounds = status?.rounds ?? [];
 
   return (
@@ -106,6 +116,15 @@ export function SessionPanel({
           </span>
         </div>
       ) : null}
+      {!blocked && (repairing || startFailure) ? (
+        <div className="session-alert">
+          <ShieldAlert size={16} />
+          <span>
+            {startFailure ||
+              `题面尚未确认送达，已自动补发 ${delivery?.repairCount ?? 0}/${delivery?.maxRepairCount ?? 4}`}
+          </span>
+        </div>
+      ) : null}
 
       <ol className="session-rounds">
         {rounds.map((round) => (
@@ -119,7 +138,9 @@ export function SessionPanel({
           {terminal
             ? current === "accepted"
               ? "会话已接受，可进入产物复核"
-              : "会话已终止，需换题"
+              : current === "start_failed"
+                ? "题面未送达，调度器会按启动失败重新排队"
+                : "会话已终止，需换题"
             : `剩余 ${formatRemaining(status?.remainingSeconds ?? 0)}`}
         </span>
         <div className="row-actions">
@@ -183,6 +204,7 @@ function statusLabel(status: string): string {
   return (
     {
       launching: "启动中",
+      prompt_delivery: "题面发送确认中",
       prompt_sent: "题面已发送",
       running: "运行中",
       continuing: "等待继续",
