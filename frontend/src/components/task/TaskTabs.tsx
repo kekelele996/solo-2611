@@ -27,7 +27,7 @@ import { useDraft } from "../../hooks/useDraft";
 import { useUIStore } from "../../stores/ui";
 import { errorText, formatDuration, shortDetail, splitPath, statusLabel } from "../../utils/display";
 import { formatClock } from "../../utils/time";
-import { LiveTracePanel } from "./LiveTracePanel";
+import { CoreTracePanel } from "./CoreTracePanel";
 import { useToast } from "../toast-context";
 import {
   Badge,
@@ -587,7 +587,7 @@ export function TimelineTab({ task }: { task: TaskDetail }) {
     enabled: timelineReady,
   });
   const live = task.skill_status === "running" || task.job_status === "running" || task.job_status === "queued" || !timelineReady
-    ? <LiveTracePanel taskId={task.id} />
+    ? <CoreTracePanel taskId={task.id} />
     : null;
   const rows = useMemo(() => {
     const all = timeline.data?.steps ?? [];

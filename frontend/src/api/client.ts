@@ -8,6 +8,7 @@ import type {
   CheckResponse,
   ConfigPatchRequest,
   ConfigResponse,
+  CoreTraceResponse,
   DiffResponse,
   DispatchLimitsRequest,
   DispatchLogRow,
@@ -339,6 +340,8 @@ export const api = {
   timeline: (id: string) => request<TimelineResponse>(`/api/tasks/${encodeURIComponent(id)}/timeline`),
   timelineBody: (id: string, no: number) =>
     request<TimelineBody>(`/api/tasks/${encodeURIComponent(id)}/timeline/steps/${no}`),
+  coreTrace: (id: string) =>
+    request<CoreTraceResponse>(`/api/tasks/${encodeURIComponent(id)}/core-trace`),
   diff: (id: string) => request<DiffResponse>(`/api/tasks/${encodeURIComponent(id)}/diff`),
   diffFile: async (id: string, path: string) => {
     const response = await fetch(`/api/tasks/${encodeURIComponent(id)}/diff/file${qs({ path })}`);

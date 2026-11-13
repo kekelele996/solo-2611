@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 
 from solo_auto.api.dependencies import context
 from solo_auto.api.types import RevealRequest, VerifyRequest
@@ -18,7 +18,7 @@ from solo_auto.context import AppContext
 from solo_auto.errors import ApiError
 from solo_auto.evidence.diff import diff_summary, file_diff
 from solo_auto.evidence.runtime import run_verification
-from solo_auto.evidence.trace import step_body, timeline, verify
+from solo_auto.evidence.trace import execution_trace, step_body, timeline, verify
 from solo_auto.store.state import load_state
 
 router = APIRouter(prefix="/api")
@@ -50,6 +50,33 @@ async def get_timeline(task_id: str, ctx: AppContext = Depends(context)) -> dict
     data = timeline(trace)
     data.pop("_bodies", None)
     return data
+
+
+@router.get("/tasks/{task_id}/core-trace")
+async def get_core_trace(
+    task_id: str,
+    limit: int = Query(default=500, ge=50, le=2000),
+    ctx: AppContext = Depends(context),
+) -> dict[str, Any]:
+    task = _task(ctx, task_id)
+    trace, live = _core_execution_trace_path(Path(task["task_root"]))
+    data = execution_trace(trace, limit=limit)
+    source = data["source"]
+    if isinstance(source, dict):
+        source["live"] = live
+        source["mode"] = "live" if live else "final"
+    return data
+
+
+@router.get("/tasks/{task_id}/core-trace/raw")
+async def download_core_trace(task_id: str, ctx: AppContext = Depends(context)) -> FileResponse:
+    task = _task(ctx, task_id)
+    trace, _ = _core_execution_trace_path(Path(task["task_root"]))
+    return FileResponse(
+        trace,
+        media_type="application/x-ndjson",
+        filename=f"{task_id}-core-trace.jsonl",
+    )
 
 
 @router.get("/tasks/{task_id}/timeline/steps/{number}")
@@ -220,6 +247,58 @@ def _trace_path(task: dict[str, Any]) -> Path:
     if not envelope.state or not envelope.state.session or not envelope.state.session.trace:
         raise ApiError(409, "TRACE_NOT_AVAILABLE", "该任务还没有被接受的轨迹")
     return Path(envelope.state.session.trace)
+
+
+def _core_execution_trace_path(task_root: Path) -> tuple[Path, bool]:
+    envelope = load_state(task_root)
+    state = envelope.state
+    live_trace: Path | None = None
+    live_status = ""
+    if state and state.sessionRun:
+        live_status = state.sessionRun.status
+        if state.sessionRun.liveTraceDir:
+            live_trace = _latest_jsonl(Path(state.sessionRun.liveTraceDir))
+    active = live_status in {
+        "launching",
+        "prompt_sent",
+        "running",
+        "continuing",
+        "holding",
+        "manual_input",
+        "closing",
+    }
+    if active and live_trace is not None:
+        return live_trace, True
+    if state and state.session and state.session.trace:
+        final_trace = Path(state.session.trace)
+        if not final_trace.is_absolute():
+            final_trace = task_root / final_trace
+        if final_trace.is_file() and final_trace.stat().st_size:
+            return final_trace, False
+    for directory in (
+        task_root / "traces",
+        *sorted((task_root / "monitor" / "runs").glob("attempt-*/live")),
+        *sorted((task_root / "monitor" / "runs").glob("attempt-*/traces")),
+    ):
+        candidate = _latest_jsonl(directory)
+        if candidate is not None:
+            return candidate, candidate == live_trace
+    if live_trace is not None:
+        return live_trace, True
+    raise ApiError(409, "CORE_TRACE_NOT_AVAILABLE", "该任务还没有 Claude Code 核心执行轨迹")
+
+
+def _latest_jsonl(directory: Path) -> Path | None:
+    if not directory.is_dir():
+        return None
+    candidates = [
+        path
+        for path in directory.rglob("*.jsonl")
+        if "subagents" not in path.parts and path.is_file() and path.stat().st_size > 0
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: (path.stat().st_mtime, path.stat().st_size))
 
 
 def _read_json(path: Path) -> dict[str, Any]:

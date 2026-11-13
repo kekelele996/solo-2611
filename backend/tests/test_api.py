@@ -102,6 +102,13 @@ async def test_api_fact_routes_without_real_skill(
             assert timeline.status_code == 200
             assert timeline.json()["counts"]["total"] == 1
 
+            core_trace = await client.get(f"/api/tasks/{task['id']}/core-trace")
+            assert core_trace.status_code == 200
+            core_trace_data = core_trace.json()
+            assert core_trace_data["counts"]["commands"] == 1
+            assert core_trace_data["steps"][0]["output"] == "1 passed"
+            assert core_trace_data["source"]["mode"] == "final"
+
             video = await client.get(f"/api/tasks/{task['id']}/recording/video")
             assert video.status_code == 200
             assert video.headers["content-type"] == "video/mp4"

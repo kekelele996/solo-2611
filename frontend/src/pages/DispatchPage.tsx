@@ -26,7 +26,7 @@ import type {
   DispatchUpcomingItem,
 } from "../api/types";
 import { IntakePanel } from "../components/IntakePanel";
-import { LiveTracePanel } from "../components/task/LiveTracePanel";
+import { CoreTracePanel } from "../components/task/CoreTracePanel";
 import { useToast } from "../components/toast-context";
 import { Badge, Button, ErrorPanel, LoadingLines, Panel, StatusDot } from "../components/ui";
 import { errorText, formatDuration } from "../utils/display";
@@ -711,8 +711,8 @@ function QueueRow({
       </div>
       <div className="dispatch-queue-actions">
         {zone === "processing" ? (
-          <Button className="dispatch-live-link" size="small" variant="ghost" onClick={onTrace} title="实时轨迹">
-            <Radio size={12} /> 轨迹
+          <Button className="dispatch-live-link" size="small" variant="ghost" onClick={onTrace} title="核心代码执行轨迹">
+            <Radio size={12} /> 执行轨迹
           </Button>
         ) : null}
         {pending && (needs || item.status === "backoff") ? (
@@ -878,12 +878,12 @@ function LiveTraceDrawer({ item, onClose }: { item: DispatchQueueItem; onClose: 
       <aside
         className="dispatch-drawer dispatch-trace-drawer"
         role="dialog"
-        aria-label={`实时轨迹：${item.task_name}`}
+        aria-label={`核心代码执行轨迹：${item.task_name}`}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header>
           <div>
-            <span className="eyebrow">LIVE TRACE</span>
+            <span className="eyebrow">CORE CODE TRACE</span>
             <h2>{item.task_name}</h2>
           </div>
           <div className="dispatch-trace-head-actions">
@@ -891,7 +891,7 @@ function LiveTraceDrawer({ item, onClose }: { item: DispatchQueueItem; onClose: 
             <Button size="small" variant="ghost" onClick={onClose} title="关闭（Esc）"><X size={14} /></Button>
           </div>
         </header>
-        <LiveTracePanel taskId={item.task_id} />
+        <CoreTracePanel taskId={item.task_id} />
       </aside>
     </div>
   );

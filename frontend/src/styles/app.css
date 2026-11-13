@@ -1806,37 +1806,64 @@ select:focus {
   background: var(--surface);
 }
 
-.live-trace {
+.core-trace {
   position: relative;
   margin-bottom: 14px;
+  overflow: hidden;
   border: 1px solid var(--line);
   background: var(--surface);
 }
 
-.live-trace-head {
+.core-trace-head {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  min-height: 42px;
-  padding: 6px 10px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 16px;
   border-bottom: 1px solid var(--line);
-  background: var(--surface-2);
+  background:
+    linear-gradient(105deg, color-mix(in srgb, var(--accent-bg) 72%, var(--surface)) 0%, var(--surface) 54%),
+    var(--surface);
 }
 
-.live-trace-head > div {
+.core-trace-title {
+  min-width: 0;
+}
+
+.core-trace-title > div {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
 
-.live-trace-head > .mono {
-  margin-left: auto;
+.core-trace-title strong {
+  font-size: 15px;
+}
+
+.core-trace-title p {
+  margin: 5px 0 0;
   color: var(--ink-3);
-  font-size: 10px;
+  font-size: 11px;
+}
+
+.core-trace-head-meta {
+  display: grid;
+  flex: 0 0 auto;
+  justify-items: end;
+  gap: 5px;
+}
+
+.core-trace-head-meta > span {
+  max-width: 360px;
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 9px;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.live-trace-head a {
+.core-trace-head-meta a {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -1845,94 +1872,365 @@ select:focus {
   white-space: nowrap;
 }
 
-.live-trace-toolbar {
+.core-trace-overview {
+  display: grid;
+  grid-template-columns: minmax(280px, 1.2fr) minmax(220px, 0.9fr) minmax(180px, 0.8fr);
+  gap: 1px;
+  border-bottom: 1px solid var(--line);
+  background: var(--line-soft);
+}
+
+.core-trace-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(58px, 1fr));
+  gap: 1px;
+  background: var(--line-soft);
+}
+
+.core-trace-metrics > div {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 2px 6px;
+  padding: 10px 12px;
+  background: var(--surface);
+}
+
+.core-trace-metrics svg {
+  grid-row: span 2;
+  color: var(--accent);
+}
+
+.core-trace-metrics span {
+  color: var(--ink-3);
+  font-size: 9px;
+}
+
+.core-trace-metrics strong {
+  font: 18px/20px var(--font-mono);
+}
+
+.core-trace-metrics .is-danger svg,
+.core-trace-metrics .is-danger strong {
+  color: var(--danger);
+}
+
+.core-trace-activity {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: end;
+  gap: 12px;
+  padding: 9px 12px;
+  background: var(--surface);
+}
+
+.core-trace-activity > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.core-trace-activity span,
+.core-trace-files > span {
+  color: var(--ink-3);
+  font-size: 9px;
+}
+
+.core-trace-activity small,
+.core-trace-files small {
+  color: var(--ink-4);
+  font-size: 9px;
+}
+
+.core-trace-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 42px;
+  padding: 5px 0 1px;
+  border-bottom: 1px solid var(--line);
+}
+
+.core-trace-bars i {
+  flex: 1;
+  min-width: 2px;
+  max-width: 14px;
+  border-radius: 1px 1px 0 0;
+  background: var(--accent);
+}
+
+.core-trace-bars i[data-empty] {
+  height: 3px !important;
+  background: var(--line);
+}
+
+.core-trace-files {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: center;
+  gap: 4px;
+  padding: 9px 12px;
+  background: var(--surface);
+}
+
+.core-trace-files > span {
+  width: 100%;
+}
+
+.core-trace-files code {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 2px 5px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.core-trace-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 4px;
-  padding: 6px 8px;
+  padding: 7px 9px;
   border-bottom: 1px solid var(--line-soft);
+  background: var(--surface-2);
 }
 
-.live-trace-toolbar .search-box {
-  width: min(240px, 100%);
+.core-trace-toolbar .search-box {
+  width: min(250px, 100%);
   margin-right: 4px;
 }
 
-.live-trace-toolbar > button {
+.core-trace-toolbar > button {
   height: 24px;
   padding: 0 7px;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
-  background: transparent;
+  background: var(--surface);
   color: var(--ink-3);
   font-size: 10px;
 }
 
-.live-trace-toolbar > button[data-active] {
-  border-color: var(--accent);
+.core-trace-toolbar > button[data-active] {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
   background: var(--accent-bg);
   color: var(--accent);
 }
 
-.live-trace-toolbar > span {
+.core-trace-toolbar > .core-trace-failed-filter[data-active] {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.core-trace-toolbar > span {
   margin-left: auto;
   color: var(--ink-4);
   font: 10px var(--font-mono);
 }
 
-.live-trace-body {
-  height: min(42vh, 440px);
-  min-height: 240px;
+.core-trace-body {
+  position: relative;
+  height: min(52vh, 620px);
+  min-height: 280px;
   overflow: auto;
-  background: var(--ink);
+  background: color-mix(in srgb, var(--surface-2) 58%, var(--surface));
 }
 
-.live-trace-body > div {
+.core-trace-body .empty-inline {
+  padding: 34px 18px;
+  color: var(--ink-3);
+  text-align: center;
+}
+
+.core-trace-list {
+  position: relative;
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
-  gap: 6px;
-  padding: 4px 8px;
-  border-bottom: 1px solid color-mix(in srgb, var(--surface) 9%, transparent);
-  color: color-mix(in srgb, var(--surface) 84%, transparent);
-}
-
-.live-trace-body > div > span {
-  color: color-mix(in srgb, var(--surface) 45%, transparent);
-  font: 9px/16px var(--font-mono);
-}
-
-.live-trace-body pre {
+  gap: 0;
   margin: 0;
-  overflow-wrap: anywhere;
-  font: 11px/16px var(--font-mono);
+  padding: 10px 12px 18px 30px;
+  list-style: none;
+}
+
+.core-trace-list::before {
+  position: absolute;
+  top: 18px;
+  bottom: 22px;
+  left: 19px;
+  width: 1px;
+  background: var(--line);
+  content: "";
+}
+
+.core-trace-event {
+  --trace-color: var(--ink-3);
+  position: relative;
+  display: block;
+  margin: 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.core-trace-event[data-kind="command"] {
+  --trace-color: var(--accent);
+}
+
+.core-trace-event[data-kind="edit"] {
+  --trace-color: var(--info);
+}
+
+.core-trace-event[data-kind="search"] {
+  --trace-color: var(--warn);
+}
+
+.core-trace-event[data-kind="agent"] {
+  --trace-color: var(--ok);
+}
+
+.core-trace-event[data-status="failed"] {
+  --trace-color: var(--danger);
+}
+
+.core-trace-node {
+  position: absolute;
+  top: 16px;
+  left: -15px;
+  z-index: 1;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--surface);
+  border-radius: 50%;
+  background: var(--trace-color);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--trace-color) 55%, var(--line));
+}
+
+.core-trace-event-head {
+  display: grid;
+  grid-template-columns: 14px 38px minmax(104px, auto) minmax(0, 1fr) 48px 62px;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  height: 38px;
+  padding: 0 8px 0 6px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+
+.core-trace-event-head:hover {
+  background: color-mix(in srgb, var(--trace-color) 5%, var(--surface));
+}
+
+.core-trace-event-head > svg {
+  color: var(--ink-4);
+}
+
+.core-trace-event.is-open .core-trace-event-head > svg {
+  transform: rotate(90deg);
+}
+
+.core-trace-event.is-open {
+  background: var(--surface);
+}
+
+.core-trace-no,
+.core-trace-event-head time {
+  color: var(--ink-4);
+  font-size: 10px;
+}
+
+.core-trace-summary {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.core-trace-status {
+  color: var(--ink-3);
+  font-size: 9px;
+  text-align: right;
+}
+
+.core-trace-event[data-status="failed"] .core-trace-status {
+  color: var(--danger);
+}
+
+.core-trace-event[data-status="running"] .core-trace-status {
+  color: var(--warn);
+}
+
+.core-trace-event-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 18px;
+  padding: 0 8px 4px 65px;
+  color: var(--ink-3);
+  font-size: 9px;
+}
+
+.core-trace-event-sub code {
+  overflow: hidden;
+  max-width: 46%;
+  color: var(--ink-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.core-trace-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 8px;
+  padding: 2px 10px 10px 65px;
+}
+
+.core-trace-code {
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.core-trace-code > span {
+  display: block;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-3);
+  font-size: 9px;
+}
+
+.core-trace-code pre {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  padding: 8px;
+  color: var(--ink-2);
+  font: 10px/16px var(--font-mono);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
-.live-trace-body > div[data-kind="message"] pre {
-  color: var(--surface);
+.core-trace-latest {
+  position: absolute;
+  right: 22px;
+  bottom: 40px;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-float);
+  color: var(--accent);
+  font-size: 10px;
 }
 
-.live-trace-body > div[data-kind="thinking"],
-.live-trace-body > div[data-kind="other"] {
-  opacity: 0.78;
-}
-
-.live-trace-body > div[data-kind="error"] {
-  border-left: 2px solid var(--danger);
-  background: color-mix(in srgb, var(--danger) 14%, transparent);
-  color: color-mix(in srgb, var(--danger) 45%, var(--surface));
-}
-
-.live-trace-body .empty-inline {
-  padding: 24px 12px;
-  color: color-mix(in srgb, var(--surface) 55%, transparent);
-}
-
-.live-trace-file {
+.core-trace-file {
   overflow: hidden;
   margin: 0;
-  padding: 5px 8px;
+  padding: 5px 9px;
   border-top: 1px solid var(--line-soft);
   color: var(--ink-4);
   font-size: 9px;
@@ -5271,12 +5569,12 @@ kbd {
   padding: 18px;
 }
 
-.dispatch-trace-drawer .live-trace {
+.dispatch-trace-drawer .core-trace {
   margin: 0;
 }
 
-.dispatch-trace-drawer .live-trace-body {
-  height: calc(100vh - 190px);
+.dispatch-trace-drawer .core-trace-body {
+  height: calc(100vh - 330px);
   min-height: 360px;
 }
 

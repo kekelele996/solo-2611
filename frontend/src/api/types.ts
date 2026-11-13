@@ -548,6 +548,48 @@ export type TimelineBody = {
   tool_use_id: string;
 };
 
+export type CoreTraceKind = "command" | "edit" | "read" | "search" | "agent" | "network" | "other";
+
+export type CoreTraceStep = {
+  no: number;
+  kind: CoreTraceKind;
+  tool: string;
+  summary: string;
+  note: string;
+  target: string;
+  status: "ok" | "failed" | "running";
+  ts: string;
+  duration_ms: number | null;
+  input: Record<string, unknown>;
+  output: string;
+  output_chars: number;
+  tool_use_id: string;
+};
+
+export type CoreTraceResponse = {
+  steps: CoreTraceStep[];
+  counts: {
+    total: number;
+    failed: number;
+    running: number;
+    commands: number;
+    edits: number;
+    reads: number;
+    searches: number;
+    by_kind: Record<CoreTraceKind, number>;
+  };
+  modified_files: string[];
+  read_files: string[];
+  source: {
+    path: string;
+    session_id: string;
+    models: string[];
+    updated_at: string;
+    live: boolean;
+    mode: "live" | "final";
+  };
+};
+
 export type DiffResponse = {
   files: Array<{ path: string; add: number; del: number; status: string }>;
   total: { add: number; del: number; files: number };
