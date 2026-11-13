@@ -620,7 +620,7 @@ class RunScheduler:
         live = await _running_containers()
         for task in self.repo.query(
             "SELECT id, task_root, task_name, job_status FROM tasks "
-            "WHERE job_status='running'"
+            "WHERE job_status IN ('running','blocked')"
         ):
             task_id = str(task["id"])
             if task_id in self.active:
@@ -950,6 +950,7 @@ class RunScheduler:
     async def _maintenance_loop(self) -> None:
         while True:
             await asyncio.sleep(30)
+            await self._adopt_legacy_print_runs()
             if self.dispatcher is not None and self.dispatcher.v3_enabled:
                 snapshot = await self.dispatcher.facts.snapshot(force=True)
                 containers = set(snapshot.docker.containers)
