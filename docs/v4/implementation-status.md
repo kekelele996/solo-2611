@@ -15,7 +15,7 @@
 
 | 检查 | 结果 |
 |---|---|
-| 技能测试 | `95 passed` |
+| 技能测试 | `96 passed` |
 | 工作台后端 | `ruff`、`mypy --strict`、`pytest 141 passed` |
 | OpenAPI / TypeScript schema | `make check` contract 检查通过 |
 | 前端 | typecheck、ESLint、25 个 Vitest、生产构建全部通过 |
@@ -94,5 +94,5 @@
 
 - 技能已同步到 `~/.codex/skills/solo-2611`，`~/.claude/skills/solo-2611` 保持同一物理目录符号链接。
 - 工作台已部署到生产 `main` 并经 launchd 重启，版本 `0.4.0+5ea69dc55e62`。
-- 两侧 `main` 与 `v4-session-recovery` 已推送 GitHub；技能有 `v0.6.0` 与 hotfix1–4 标签。
+- 两侧 `main` 与 `v4-session-recovery` 已推送 GitHub；技能有 `v0.6.0` 与 hotfix1–5 标签。
 - 升级前技能、数据库、原设计稿与任务快照均已备份到 `~/solo-auto/backups/`。
