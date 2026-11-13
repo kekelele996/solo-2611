@@ -2869,6 +2869,8 @@ export interface components {
             attempts?: number | null;
             /** Run Mode */
             run_mode?: ("supervised" | "print") | null;
+            /** Open Terminal On Run */
+            open_terminal_on_run?: boolean | null;
             /** Continue Max */
             continue_max?: number | null;
             /** Start Attempts */

@@ -59,6 +59,7 @@ class ExecutionSettings(BaseModel):
     run_timeout_seconds: int = Field(default=10800, ge=60)
     attempts: int = Field(default=1, ge=1, le=10)
     run_mode: Literal["supervised", "print"] = "supervised"
+    open_terminal_on_run: bool = False
     continue_max: int = Field(default=2, ge=0, le=2)
     start_attempts: int = Field(default=2, ge=1, le=2)
     silent_seconds: int = Field(default=1200, ge=60)

@@ -26,6 +26,7 @@ const CONFIG: ConfigResponse = {
     run_timeout_seconds: 10800,
     attempts: 1,
     run_mode: "supervised",
+    open_terminal_on_run: false,
     continue_max: 2,
     start_attempts: 2,
     silent_seconds: 1200,
@@ -158,6 +159,27 @@ describe("settings page", () => {
     await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
     expect(
       (patch.mock.calls[0][0] as { submission?: { auto_submit?: boolean } }).submission?.auto_submit,
+    ).toBe(true);
+  });
+
+  it("saves the visible terminal switch", async () => {
+    const patch = vi.spyOn(api, "patchConfig").mockResolvedValue(CONFIG);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <ToastProvider>
+          <SystemPage />
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+    const toggle = await screen.findByRole("checkbox", { name: /启动时打开终端窗口/ });
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole("button", { name: "保存配置" }));
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+    expect(
+      (patch.mock.calls[0][0] as { execution?: { open_terminal_on_run?: boolean } }).execution
+        ?.open_terminal_on_run,
     ).toBe(true);
   });
 

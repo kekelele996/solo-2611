@@ -336,6 +336,23 @@ export function SystemPage() {
               <option value="print">无头回退</option>
             </select>
           </Field>
+          <label className="check-inline">
+            <input
+              type="checkbox"
+              checked={form.execution.open_terminal_on_run}
+              onChange={(event) =>
+                update({
+                  ...form,
+                  execution: {
+                    ...form.execution,
+                    open_terminal_on_run: event.target.checked,
+                  },
+                })
+              }
+            />
+            启动时打开终端窗口 <span className="effect-tag">新会话 / 仅 macOS</span>
+          </label>
+          <p className="form-note">用于直接观察模型运行；关闭窗口只退出查看，不会停止容器和任务。</p>
           <Field label="超时秒数">
             <input
               type="number"

@@ -148,8 +148,14 @@ async def diagnostics(ctx: AppContext = Depends(context)) -> dict[str, Any]:
 @router.get("/system/config")
 async def get_config(ctx: AppContext = Depends(context)) -> dict[str, Any]:
     skill_config = await ctx.gateway.config()
+    raw_skill_claude = skill_config.get("claude")
+    skill_claude = cast(dict[str, Any], raw_skill_claude) if isinstance(raw_skill_claude, dict) else {}
     raw_skill_submission = skill_config.get("submission")
     skill_submission = cast(dict[str, Any], raw_skill_submission) if isinstance(raw_skill_submission, dict) else {}
+    execution = ctx.settings.execution.model_dump()
+    execution["open_terminal_on_run"] = bool(
+        skill_claude.get("openTerminalOnRun", execution["open_terminal_on_run"])
+    )
     submission = ctx.settings.submission.model_dump()
     submission.update(
         {
@@ -179,7 +185,7 @@ async def get_config(ctx: AppContext = Depends(context)) -> dict[str, Any]:
             "password": "<set>" if ctx.secrets.has("projecthub.password") else "<unset>",
             "bearer_token": "<set>" if ctx.secrets.has("projecthub.bearer") else "<unset>",
         },
-        "execution": ctx.settings.execution.model_dump(),
+        "execution": execution,
         "storage": ctx.settings.storage.model_dump(),
         "recording": ctx.settings.recording.model_dump(),
         "submission": submission,
@@ -355,6 +361,9 @@ async def patch_config(payload: ConfigPatchRequest, ctx: AppContext = Depends(co
             pairs.append(f"claude.attempts={execution['attempts']}")
         if "run_mode" in execution:
             pairs.append(f"claude.runMode={execution['run_mode']}")
+        if "open_terminal_on_run" in execution:
+            value = "true" if execution["open_terminal_on_run"] else "false"
+            pairs.append(f"claude.openTerminalOnRun={value}")
         if "continue_max" in execution:
             pairs.append(f"claude.continueMax={execution['continue_max']}")
         if "start_attempts" in execution:

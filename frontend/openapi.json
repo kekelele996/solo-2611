@@ -7544,6 +7544,17 @@
             ],
             "title": "Run Mode"
           },
+          "open_terminal_on_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Open Terminal On Run"
+          },
           "continue_max": {
             "anyOf": [
               {

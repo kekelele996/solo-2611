@@ -158,6 +158,7 @@ class ExecutionConfigPatch(BaseModel):
     run_timeout_seconds: int | None = None
     attempts: int | None = None
     run_mode: Literal["supervised", "print"] | None = None
+    open_terminal_on_run: bool | None = None
     continue_max: int | None = Field(default=None, ge=0, le=2)
     start_attempts: int | None = Field(default=None, ge=1, le=2)
     silent_seconds: int | None = Field(default=None, ge=60)

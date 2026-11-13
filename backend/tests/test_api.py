@@ -68,6 +68,7 @@ async def test_api_fact_routes_without_real_skill(
                         "poll_interval_seconds": 120,
                         "poll_timeout_seconds": 3600,
                     },
+                    "execution": {"open_terminal_on_run": True},
                     "secrets": {"solo2_password": "saved-password"},
                 },
             )
@@ -76,6 +77,7 @@ async def test_api_fact_routes_without_real_skill(
             assert saved.json()["solo2"]["password"] == "<set>"
             assert saved.json()["submission"]["auto_submit"] is True
             assert saved.json()["submission"]["poll_interval_seconds"] == 120
+            assert saved.json()["execution"]["open_terminal_on_run"] is True
             assert "saved-password" not in saved.text
             assert context.secrets.get("solo2.password") == "saved-password"
 

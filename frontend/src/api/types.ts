@@ -789,6 +789,7 @@ export type ConfigResponse = {
     run_timeout_seconds: number;
     attempts: number;
     run_mode: "supervised" | "print";
+    open_terminal_on_run: boolean;
     continue_max: number;
     start_attempts: number;
     silent_seconds: number;
