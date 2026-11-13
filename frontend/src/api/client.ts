@@ -23,6 +23,8 @@ import type {
   PromptTemplate,
   PromptData,
   PromptInstallResponse,
+  PromptLibraryImportResult,
+  PromptLibraryResponse,
   PromptPreview,
   ProjectRow,
   PurgeResult,
@@ -233,6 +235,36 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ text }),
     }),
+  promptLibrary: (projectId: string) =>
+    request<PromptLibraryResponse>(
+      `/api/source/prompts${qs({ project_id: projectId })}`,
+    ),
+  importPromptLibrary: (
+    projectId: string,
+    items: Array<Record<string, unknown>>,
+    sourceName = "",
+  ) =>
+    request<PromptLibraryImportResult>("/api/source/prompts/import", {
+      method: "POST",
+      body: JSON.stringify({
+        project_id: projectId,
+        source_name: sourceName,
+        items,
+      }),
+    }),
+  exportPromptLibrary: async (projectId: string) => {
+    const response = await fetch(
+      `/api/source/prompts/export${qs({ project_id: projectId })}`,
+    );
+    if (!response.ok) {
+      throw new ApiError(
+        response.status,
+        "PROMPT_LIBRARY_EXPORT_FAILED",
+        (await response.text()) || "提示词库导出失败",
+      );
+    }
+    return response.text();
+  },
   installPrompt: (
     id: string,
     body: {

@@ -23,6 +23,7 @@ from solo_auto.api import (
     evidence,
     feedback_export,
     intake,
+    prompt_library,
     purge,
     recording,
     session,
@@ -91,6 +92,7 @@ def create_app(home: Path | None = None, *, auto_start: bool = True) -> FastAPI:
 
     app.include_router(system.router)
     app.include_router(purge.router)
+    app.include_router(prompt_library.router)
     app.include_router(session.router)
     app.include_router(tasks.router)
     app.include_router(evidence.router)

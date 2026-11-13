@@ -1050,6 +1050,122 @@
         }
       }
     },
+    "/api/source/prompts": {
+      "get": {
+        "summary": "List Prompts",
+        "operationId": "list_prompts_api_source_prompts_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response List Prompts Api Source Prompts Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/source/prompts/import": {
+      "post": {
+        "summary": "Import Prompts",
+        "operationId": "import_prompts_api_source_prompts_import_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromptLibraryImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Import Prompts Api Source Prompts Import Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/source/prompts/export": {
+      "get": {
+        "summary": "Export Prompts",
+        "operationId": "export_prompts_api_source_prompts_export_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tasks/{task_id}/run/resume": {
       "post": {
         "summary": "Resume",
@@ -7742,6 +7858,35 @@
           "languages"
         ],
         "title": "PromptInstallRequest"
+      },
+      "PromptLibraryImportRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "items": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array",
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "Items"
+          },
+          "source_name": {
+            "type": "string",
+            "maxLength": 255,
+            "title": "Source Name",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "items"
+        ],
+        "title": "PromptLibraryImportRequest"
       },
       "PruneRequest": {
         "properties": {

@@ -48,6 +48,12 @@ class PromptInstallRequest(BaseModel):
     allow_over_170: bool = False
 
 
+class PromptLibraryImportRequest(BaseModel):
+    project_id: str
+    items: list[dict[str, Any]] = Field(min_length=1, max_length=1000)
+    source_name: str = Field(default="", max_length=255)
+
+
 class ReopenRequest(BaseModel):
     reason: str
 

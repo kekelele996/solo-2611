@@ -40,9 +40,18 @@
 | DELETE | `/api/claims/{claim_id}` | 归还；`?force=false` 时若存在关联未归档任务则 409 |
 | GET | `/api/claims` | 已领取未建任务的列表（「待开工」区） |
 | GET | `/api/staging` | 本地暂存区内容与占用 |
+| GET | `/api/source/prompts?project_id=` | 项目提示词库；汇总该项目的在用任务、历史记录与导入记录 |
+| POST | `/api/source/prompts/import` | 项目级导入；`{project_id, source_name?, items:[{text,...}]}` |
+| GET | `/api/source/prompts/export?project_id=` | 导出项目提示词库 JSON 文件 |
 
 **`GET /api/source/projects/{pid}/engineering` 的行为**：
 `pid` 缺失或为空 → `400 {code: "PROJECT_REQUIRED"}`。这是 FR-SRC-02 的服务端强制点。
+
+**提示词库导入**：单次 1–1000 条，单条正文最多 5000 字；支持 `text`、`prompt` 或
+`userPrompt` 字段。同一项目内按忽略空白、标点和大小写的题面去重，重复或无效记录跳过，
+已有提示词不会被覆盖。导出结构为
+`{schema:"solo-auto/prompt-library/1", project:{id,name}, exportedAt, items:[...]}`，
+可直接重新导入。
 
 ## 4. 任务
 

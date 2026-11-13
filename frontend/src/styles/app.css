@@ -5519,6 +5519,102 @@ kbd {
   margin: 0 0 10px;
 }
 
+.prompt-library-panel {
+  margin-bottom: 18px;
+}
+
+.prompt-library-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.prompt-library-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.prompt-library-toolbar > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.prompt-library-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.prompt-library-card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--panel) 92%, var(--accent) 8%);
+}
+
+.prompt-library-card header,
+.prompt-library-card footer {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.prompt-library-card header > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.prompt-library-card header strong,
+.prompt-library-card header span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prompt-library-card header span,
+.prompt-library-card footer time {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.prompt-library-card p {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.prompt-library-card footer {
+  align-items: center;
+}
+
+.prompt-library-more {
+  display: flex;
+  justify-content: center;
+  padding-top: 12px;
+}
+
+@media (max-width: 900px) {
+  .prompt-library-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .prompt-library-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 .session-panel {
   display: grid;
   gap: 14px;

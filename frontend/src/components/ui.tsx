@@ -574,7 +574,7 @@ export function Panel({
   children,
   className = "",
   ...props
-}: HTMLAttributes<HTMLElement> & {
+}: Omit<HTMLAttributes<HTMLElement>, "title"> & {
   title?: ReactNode;
   actions?: ReactNode;
 }) {

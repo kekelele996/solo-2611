@@ -16,6 +16,7 @@ import {
   Panel,
 } from "../components/ui";
 import { useToast } from "../components/toast-context";
+import { PromptLibraryPanel } from "../components/source/PromptLibraryPanel";
 import { errorText, formatNames } from "../utils/display";
 import { formatDateTime } from "../utils/time";
 
@@ -171,6 +172,8 @@ export function SourcePage() {
           </Button>
         </div>
       </Panel>
+
+      <PromptLibraryPanel projectId={projectId} projectName={selected?.name ?? ""} />
 
       {authError ? (
         <EmptyState

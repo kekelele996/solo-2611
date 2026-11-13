@@ -483,6 +483,33 @@ export type PromptData = {
   limits: { preferred: number; hard: number };
 };
 
+export type PromptLibraryItem = {
+  recordId: string;
+  projectId: string;
+  engineeringId: string;
+  taskId: string;
+  taskName: string;
+  subDirection: string;
+  taskType: string;
+  text: string;
+  usedAt: string;
+  source: string;
+};
+
+export type PromptLibraryResponse = {
+  items: PromptLibraryItem[];
+  total: number;
+};
+
+export type PromptLibraryImportResult = {
+  ok: boolean;
+  projectId: string;
+  imported: number;
+  skipped: number;
+  errors: string[];
+  total: number;
+};
+
 export type PromptPreview = {
   ok: boolean;
   chars: number;

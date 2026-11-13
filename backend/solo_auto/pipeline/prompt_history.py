@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import threading
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
@@ -48,6 +51,7 @@ class PromptHistory:
     def __init__(self, repo: Repository, path: Path) -> None:
         self.repo = repo
         self.path = path
+        self._lock = threading.RLock()
 
     def prior(self, task_id: str) -> list[PriorPrompt]:
         engineering_id = self._engineering_id(task_id)
@@ -115,31 +119,173 @@ class PromptHistory:
         engineering_id = self._engineering_id(task_id)
         if not text or not engineering_id:
             return
-        if any(record.get("task_id") == task_id for record in self._records()):
-            return
-        task = self.repo.get_task(task_id) or {}
-        prior = PriorPrompt(
-            task_id=task_id,
-            task_name=str(task.get("task_name") or ""),
-            sub_direction=str(task.get("sub_direction") or ""),
-            task_type=str(task.get("task_type") or ""),
-            text=text,
-        )
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"engineering_id": engineering_id, **asdict(prior)}, ensure_ascii=False) + "\n")
+        with self._lock:
+            if any(record.get("task_id") == task_id for record in self._records()):
+                return
+            task = self.repo.get_task(task_id) or {}
+            prior = PriorPrompt(
+                task_id=task_id,
+                task_name=str(task.get("task_name") or ""),
+                sub_direction=str(task.get("sub_direction") or ""),
+                task_type=str(task.get("task_type") or ""),
+                text=text,
+            )
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            record = {
+                "engineering_id": engineering_id,
+                "project_id": str(task.get("project_id") or ""),
+                "created_at": str(task.get("created_at") or ""),
+                **asdict(prior),
+            }
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     def backfill(self) -> int:
-        known = {str(record.get("task_id") or "") for record in self._records()}
-        rows = self.repo.query(
-            "SELECT id, task_root FROM tasks WHERE exported_at IS NOT NULL AND engineering_id IS NOT NULL"
+        with self._lock:
+            known = {str(record.get("task_id") or "") for record in self._records()}
+            rows = self.repo.query(
+                "SELECT id, task_root FROM tasks WHERE exported_at IS NOT NULL AND engineering_id IS NOT NULL"
+            )
+            added = 0
+            for row in rows:
+                if str(row["id"]) not in known and _read_prompt(Path(str(row["task_root"]))):
+                    self.remember(str(row["id"]), Path(str(row["task_root"])))
+                    added += 1
+            return added
+
+    def project_library(self, project_id: str) -> list[dict[str, Any]]:
+        """Return every used prompt attributed to one project, including purged tasks."""
+        if not project_id:
+            return []
+        with self._lock:
+            items: dict[str, dict[str, Any]] = {}
+            for record in self._records():
+                if self._record_project_id(record) != project_id:
+                    continue
+                text = str(record.get("text") or "").strip()
+                if not text:
+                    continue
+                task_id = str(record.get("task_id") or "")
+                key = f"task:{task_id}" if task_id else f"text:{_prompt_hash(project_id, text)}"
+                item = {
+                    "recordId": key,
+                    "projectId": project_id,
+                    "engineeringId": str(record.get("engineering_id") or ""),
+                    "taskId": task_id,
+                    "taskName": str(record.get("task_name") or ""),
+                    "subDirection": str(record.get("sub_direction") or ""),
+                    "taskType": str(record.get("task_type") or ""),
+                    "text": text,
+                    "usedAt": str(
+                        record.get("created_at")
+                        or record.get("imported_at")
+                        or record.get("usedAt")
+                        or ""
+                    ),
+                    "source": str(record.get("source") or "history"),
+                }
+                items[key] = item
+
+            rows = self.repo.query(
+                """
+                SELECT id, task_name, task_root, engineering_id, project_id,
+                       sub_direction, task_type, created_at
+                FROM tasks
+                WHERE project_id = ? AND prompt_sha256 IS NOT NULL AND prompt_sha256 != ''
+                ORDER BY created_at DESC
+                """,
+                (project_id,),
+            )
+            for row in rows:
+                text = _read_prompt(Path(str(row["task_root"])))
+                if not text:
+                    continue
+                task_id = str(row["id"])
+                key = f"task:{task_id}"
+                item = {
+                    "recordId": key,
+                    "projectId": project_id,
+                    "engineeringId": str(row.get("engineering_id") or ""),
+                    "taskId": task_id,
+                    "taskName": str(row.get("task_name") or ""),
+                    "subDirection": str(row.get("sub_direction") or ""),
+                    "taskType": str(row.get("task_type") or ""),
+                    "text": text,
+                    "usedAt": str(row.get("created_at") or ""),
+                    "source": "live",
+                }
+                if key in items:
+                    items[key].update({key_name: value for key_name, value in item.items() if value})
+                else:
+                    items[key] = item
+        return sorted(
+            items.values(),
+            key=lambda item: (str(item.get("usedAt") or ""), str(item.get("taskName") or "")),
+            reverse=True,
         )
-        added = 0
-        for row in rows:
-            if str(row["id"]) not in known and _read_prompt(Path(str(row["task_root"]))):
-                self.remember(str(row["id"]), Path(str(row["task_root"])))
-                added += 1
-        return added
+
+    def import_library(
+        self,
+        project_id: str,
+        items: list[dict[str, Any]],
+        *,
+        source_name: str = "",
+    ) -> dict[str, Any]:
+        existing = {
+            _prompt_hash(project_id, str(item.get("text") or ""))
+            for item in self.project_library(project_id)
+        }
+        imported: list[dict[str, Any]] = []
+        skipped = 0
+        errors: list[str] = []
+        now = datetime.now(UTC).replace(microsecond=0).isoformat()
+        with self._lock:
+            for index, raw in enumerate(items, 1):
+                text = str(
+                    raw.get("text")
+                    or raw.get("prompt")
+                    or raw.get("userPrompt")
+                    or ""
+                ).strip()
+                if not text:
+                    errors.append(f"第 {index} 条缺少提示词正文")
+                    skipped += 1
+                    continue
+                if len(text) > 5000:
+                    errors.append(f"第 {index} 条提示词超过 5000 字")
+                    skipped += 1
+                    continue
+                digest = _prompt_hash(project_id, text)
+                if digest in existing:
+                    skipped += 1
+                    continue
+                existing.add(digest)
+                record = {
+                    "project_id": project_id,
+                    "origin_project_id": str(raw.get("projectId") or ""),
+                    "engineering_id": str(raw.get("engineeringId") or ""),
+                    "task_id": str(raw.get("taskId") or ""),
+                    "task_name": str(raw.get("taskName") or ""),
+                    "sub_direction": str(raw.get("subDirection") or ""),
+                    "task_type": str(raw.get("taskType") or ""),
+                    "text": text,
+                    "created_at": str(raw.get("usedAt") or now),
+                    "imported_at": now,
+                    "source": "import",
+                    "source_file": source_name,
+                }
+                imported.append(record)
+            if imported:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                with self.path.open("a", encoding="utf-8") as handle:
+                    for record in imported:
+                        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return {
+            "imported": len(imported),
+            "skipped": skipped,
+            "errors": errors,
+            "total": len(existing),
+        }
 
     def _engineering_id(self, task_id: str) -> str:
         task = self.repo.get_task(task_id)
@@ -150,6 +296,31 @@ class PromptHistory:
             (task_id,),
         )
         return str(row["engineering_id"]) if row and row.get("engineering_id") else ""
+
+    def _record_project_id(self, record: dict[str, Any]) -> str:
+        project_id = str(record.get("project_id") or "")
+        if project_id:
+            return project_id
+        task_id = str(record.get("task_id") or "")
+        if task_id:
+            task = self.repo.get_task(task_id)
+            if task and task.get("project_id"):
+                return str(task["project_id"])
+            row = self.repo.query_one(
+                "SELECT project_id FROM usage_ledger WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                (task_id,),
+            )
+            if row and row.get("project_id"):
+                return str(row["project_id"])
+        engineering_id = str(record.get("engineering_id") or "")
+        if engineering_id:
+            row = self.repo.query_one(
+                "SELECT project_id FROM usage_ledger WHERE engineering_id = ? ORDER BY id DESC LIMIT 1",
+                (engineering_id,),
+            )
+            if row and row.get("project_id"):
+                return str(row["project_id"])
+        return ""
 
     def _records(self) -> list[dict[str, Any]]:
         try:
@@ -188,3 +359,8 @@ def _read_prompt(root: Path) -> str:
         return (root / PROMPT_FILE).read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+def _prompt_hash(project_id: str, text: str) -> str:
+    payload = f"{project_id}\0{_normalize(text)}".encode()
+    return hashlib.sha256(payload).hexdigest()
