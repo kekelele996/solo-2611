@@ -1166,6 +1166,45 @@
         }
       }
     },
+    "/api/source/prompts/dedupe": {
+      "post": {
+        "summary": "Dedupe Prompts",
+        "operationId": "dedupe_prompts_api_source_prompts_dedupe_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromptDedupeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Dedupe Prompts Api Source Prompts Dedupe Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tasks/{task_id}/run/resume": {
       "post": {
         "summary": "Resume",
@@ -7792,6 +7831,49 @@
           "task_ids"
         ],
         "title": "PrivacyRecheckRequest"
+      },
+      "PromptDedupeRequest": {
+        "properties": {
+          "task_root": {
+            "type": "string",
+            "maxLength": 4096,
+            "title": "Task Root",
+            "default": ""
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "Project Id",
+            "default": ""
+          },
+          "engineering_id": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "Engineering Id",
+            "default": ""
+          },
+          "exclude_task_id": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "Exclude Task Id",
+            "default": ""
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 5000,
+            "title": "Text",
+            "default": ""
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 500.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 50
+          }
+        },
+        "type": "object",
+        "title": "PromptDedupeRequest"
       },
       "PromptDraftRequest": {
         "properties": {

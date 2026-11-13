@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
 
 from solo_auto.api.dependencies import context
-from solo_auto.api.types import PromptLibraryImportRequest
+from solo_auto.api.types import PromptDedupeRequest, PromptLibraryImportRequest
 from solo_auto.context import AppContext
 from solo_auto.errors import ApiError
 from solo_auto.pipeline.prompt_history import PromptHistory
@@ -82,3 +83,35 @@ async def export_prompts(
         media_type="application/json; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.post("/dedupe")
+async def dedupe_prompts(
+    payload: PromptDedupeRequest,
+    ctx: AppContext = Depends(context),
+) -> dict[str, Any]:
+    project_id = payload.project_id.strip()
+    engineering_id = payload.engineering_id.strip()
+    exclude_task_id = payload.exclude_task_id.strip()
+    task_id = ""
+    if payload.task_root.strip():
+        task_root = str(Path(payload.task_root).expanduser().resolve())
+        task = ctx.repo.query_one("SELECT * FROM tasks WHERE task_root = ?", (task_root,))
+        if not task:
+            raise ApiError(404, "TASK_NOT_FOUND", f"工作台找不到任务目录：{task_root}")
+        task_id = str(task["id"])
+        project_id = str(task.get("project_id") or "")
+        engineering_id = str(task.get("engineering_id") or "")
+        exclude_task_id = task_id
+    if not project_id:
+        raise ApiError(400, "PROJECT_REQUIRED", "查询提示词去重必须指定项目或任务目录")
+    if not engineering_id:
+        raise ApiError(400, "ENGINEERING_REQUIRED", "查询提示词去重必须指定工程")
+    result = _history(ctx).dedupe(
+        project_id=project_id,
+        engineering_id=engineering_id,
+        candidate_text=payload.text,
+        exclude_task_id=exclude_task_id,
+        limit=payload.limit,
+    )
+    return {"ok": True, "taskId": task_id, **result}

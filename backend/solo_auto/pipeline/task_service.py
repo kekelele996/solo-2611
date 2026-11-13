@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +75,13 @@ class TaskService:
             )
         task_root = Path(str(result.data["taskRoot"])).resolve()
         task_id = self.repo.task_id_for_root(task_root)
+        _write_workbench_marker(
+            task_root,
+            task_id=task_id,
+            meta=meta,
+            host=self.settings.host,
+            port=self.settings.port,
+        )
         drafts = self.paths.drafts / task_id
         drafts.mkdir(parents=True, exist_ok=True)
         template_result = await self.gateway.call(
@@ -136,6 +144,37 @@ class TaskService:
 
 def task_id_for_root(task_root: Path) -> str:
     return str(__import__("uuid").uuid5(__import__("uuid").NAMESPACE_URL, str(task_root.resolve())))
+
+
+def _write_workbench_marker(
+    task_root: Path,
+    *,
+    task_id: str,
+    meta: dict[str, Any],
+    host: str,
+    port: int,
+) -> None:
+    api_host = host if host not in {"0.0.0.0", "::", ""} else "127.0.0.1"
+    path = task_root / "monitor" / "workbench.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema": "solo-auto/workbench-task/1",
+                "taskId": task_id,
+                "taskRoot": str(task_root),
+                "projectId": str(meta.get("projectId") or ""),
+                "projectName": str(meta.get("projectName") or ""),
+                "engineeringId": str(meta.get("engineeringId") or ""),
+                "engineeringName": str(meta.get("name") or ""),
+                "apiBase": f"http://{api_host}:{port}",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _classification(meta: dict[str, Any]) -> tuple[str, str]:

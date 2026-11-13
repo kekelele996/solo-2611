@@ -29,6 +29,7 @@ COMMANDS = {
     "config",
     "init",
     "prompt",
+    "prompt-history",
     "run",
     "run-status",
     "resume",

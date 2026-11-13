@@ -16,7 +16,7 @@
 | 检查 | 结果 |
 |---|---|
 | 技能测试 | `97 passed` |
-| 工作台后端 | `ruff`、`mypy --strict`、`pytest 143 passed` |
+| 工作台后端 | `ruff`、`mypy --strict`、`pytest 145 passed` |
 | OpenAPI / TypeScript schema | `make check` contract 检查通过 |
 | 前端 | typecheck、ESLint、26 个 Vitest、生产构建全部通过 |
 | 静态门禁 | `make check` 的 grep 规则全部通过 |
@@ -38,6 +38,7 @@
 | 短时资源采样 | 单监督器 3 分钟平均 CPU 0.53%，最大 3.1% | `docs/v4/evidence/short-soak.md` |
 | UI 渲染 | 任务页显示第 1 轮/继续 0/2/已接受；调度页显示等待继续与会话质量；设置页无旧“尝试次数”输入 | `docs/v4/evidence/ui-check.json` 与三张 PNG |
 | 项目提示词库 | 题源独立页签按工程折叠归档；搜索、页面导入、重复跳过、JSON 导出及回导去重通过 | `docs/v4/evidence/prompt-library-check.json` 与 PNG |
+| 出题前提示词去重 | 技能按任务标记查询 GB-544 同工程 2 条历史；重复题面返回 duplicate，新题面返回 clear | `docs/v4/evidence/prompt-dedupe-check.json` |
 
 真实探针发现并修正了两个镜像行为差异：
 
@@ -69,6 +70,7 @@
 - 启动失败独立计数；运行失败类别不再重试。
 - 题源分为「工程列表 / 提示词库」页签；提示词库按具体工程折叠归档，支持搜索、复制、
   JSON/JSONL 导入与 JSON 导出。
+- 新任务写入 `monitor/workbench.json`；技能 `prompt-history` 与题面安装共用工程级去重查询。
 
 ## 5. 保守降级
 

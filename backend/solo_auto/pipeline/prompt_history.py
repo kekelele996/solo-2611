@@ -256,6 +256,127 @@ class PromptHistory:
             reverse=True,
         )
 
+    def dedupe(
+        self,
+        *,
+        project_id: str,
+        engineering_id: str,
+        candidate_text: str = "",
+        exclude_task_id: str = "",
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Return one engineering's prompt history with optional similarity checks."""
+        items = [
+            item
+            for item in self.project_library(project_id)
+            if item.get("engineeringId") == engineering_id
+            and (not exclude_task_id or item.get("taskId") != exclude_task_id)
+        ]
+        task_ids = [str(item.get("taskId") or "") for item in items if item.get("taskId")]
+        task_roots: dict[str, str] = {}
+        if task_ids:
+            placeholders = ",".join("?" for _ in task_ids)
+            rows = self.repo.query(
+                f"SELECT id, task_root FROM tasks WHERE id IN ({placeholders})",
+                tuple(task_ids),
+            )
+            task_roots = {str(row["id"]): str(row["task_root"]) for row in rows}
+
+        candidate = candidate_text.strip()
+        clean_candidate = _normalize(candidate)
+        compared: list[dict[str, Any]] = []
+        for item in items:
+            text = str(item.get("text") or "").strip()
+            ratio = 0.0
+            jaccard = 0.0
+            common_fragment = ""
+            level = "history"
+            exact = False
+            if candidate and clean_candidate:
+                ratio, jaccard = similarity(candidate, text)
+                common_fragment = _common_fragment(candidate, text)
+                exact = clean_candidate == _normalize(text)
+                if exact or common_fragment or ratio >= 0.75:
+                    level = "duplicate"
+                elif ratio >= 0.55:
+                    level = "review"
+                else:
+                    level = "clear"
+            compared.append(
+                {
+                    **item,
+                    "taskRoot": task_roots.get(str(item.get("taskId") or ""), ""),
+                    "sha256": hashlib.sha256(text.encode()).hexdigest(),
+                    "exact": exact,
+                    "ratio": ratio,
+                    "jaccard": jaccard,
+                    "commonFragment": common_fragment,
+                    "level": level,
+                }
+            )
+        if candidate:
+            compared.sort(
+                key=lambda item: (
+                    {"duplicate": 2, "review": 1}.get(str(item.get("level")), 0),
+                    float(item.get("ratio") or 0),
+                    str(item.get("usedAt") or ""),
+                ),
+                reverse=True,
+            )
+        duplicates = sum(item["level"] == "duplicate" for item in compared)
+        reviews = sum(item["level"] == "review" for item in compared)
+        status = (
+            "duplicate"
+            if duplicates
+            else "review"
+            if reviews
+            else "clear"
+            if candidate
+            else "history"
+        )
+        project_row = self.repo.query_one(
+            """
+            SELECT project_name FROM usage_ledger
+            WHERE project_id = ? AND project_name != ''
+            ORDER BY id DESC LIMIT 1
+            """,
+            (project_id,),
+        )
+        engineering_row = self.repo.query_one(
+            """
+            SELECT engineering_name FROM usage_ledger
+            WHERE project_id = ? AND engineering_id = ? AND engineering_name != ''
+            ORDER BY id DESC LIMIT 1
+            """,
+            (project_id, engineering_id),
+        )
+        engineering_name = str(
+            (engineering_row or {}).get("engineering_name")
+            or next((item.get("engineeringName") for item in items if item.get("engineeringName")), "")
+            or engineering_id
+        )
+        return {
+            "projectId": project_id,
+            "projectName": str((project_row or {}).get("project_name") or project_id),
+            "engineeringId": engineering_id,
+            "engineeringName": engineering_name,
+            "candidateSha256": hashlib.sha256(candidate.encode()).hexdigest() if candidate else "",
+            "status": status,
+            "blocking": duplicates > 0,
+            "summary": {
+                "history": len(compared),
+                "duplicate": duplicates,
+                "review": reviews,
+            },
+            "thresholds": {
+                "blockSimilarity": 0.75,
+                "reviewSimilarity": 0.55,
+                "commonFragmentChars": 12,
+            },
+            "total": len(compared),
+            "items": compared[:limit],
+        }
+
     def import_library(
         self,
         project_id: str,
@@ -397,3 +518,15 @@ def _read_prompt(root: Path) -> str:
 def _prompt_hash(project_id: str, text: str) -> str:
     payload = f"{project_id}\0{_normalize(text)}".encode()
     return hashlib.sha256(payload).hexdigest()
+
+
+def _common_fragment(left: str, right: str, size: int = 12) -> str:
+    a, b = _normalize(left), _normalize(right)
+    if len(a) < size or len(b) < size:
+        return ""
+    right_grams = {b[index : index + size] for index in range(len(b) - size + 1)}
+    for index in range(len(a) - size + 1):
+        fragment = a[index : index + size]
+        if fragment in right_grams:
+            return fragment
+    return ""

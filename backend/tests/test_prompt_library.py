@@ -190,3 +190,69 @@ async def test_prompt_library_api_import_export(
             assert missing.json()["error"]["code"] == "PROJECT_REQUIRED"
     finally:
         await context.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_prompt_dedupe_api_queries_current_engineering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLO_AUTO_HOME", str(tmp_path / "app"))
+    monkeypatch.setenv("SOLO_AUTO_TASKS_DIR", str(tmp_path / "tasks"))
+    monkeypatch.setenv("SOLO_AUTO_DISABLE_KEYCHAIN", "1")
+    app = create_app(tmp_path / "app", auto_start=False)
+    context = app.state.context
+    await context.startup()
+    history_root = tmp_path / "tasks" / "history"
+    current_root = tmp_path / "tasks" / "current"
+    _task(
+        context.repo,
+        history_root,
+        "history",
+        "project-a",
+        "eng-1",
+        "把订单按来源时间合并，重复执行不能新增记录。",
+    )
+    _task(
+        context.repo,
+        current_root,
+        "current",
+        "project-a",
+        "eng-1",
+        "设计新的库存预警题面。",
+    )
+    _usage(context.repo, "project-a", "eng-1", "GB-544", "history")
+    _usage(context.repo, "project-a", "eng-1", "GB-544", "current")
+    transport = httpx.ASGITransport(app=app)
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            duplicated = await client.post(
+                "/api/source/prompts/dedupe",
+                json={
+                    "task_root": str(current_root),
+                    "text": "把订单按来源时间合并，重复执行时不能新增记录。",
+                },
+            )
+            assert duplicated.status_code == 200
+            payload = duplicated.json()
+            assert payload["engineeringName"] == "GB-544"
+            assert payload["status"] == "duplicate"
+            assert payload["blocking"] is True
+            assert payload["summary"] == {"history": 1, "duplicate": 1, "review": 0}
+            assert payload["items"][0]["taskRoot"] == str(history_root)
+            assert payload["items"][0]["commonFragment"]
+
+            clear = await client.post(
+                "/api/source/prompts/dedupe",
+                json={
+                    "project_id": "project-a",
+                    "engineering_id": "eng-1",
+                    "exclude_task_id": "current",
+                    "text": "对账失败后按错误码拆分重试队列并保留审计记录。",
+                },
+            )
+            assert clear.status_code == 200
+            assert clear.json()["status"] == "clear"
+            assert clear.json()["summary"]["history"] == 1
+    finally:
+        await context.shutdown()

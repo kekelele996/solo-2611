@@ -43,6 +43,7 @@
 | GET | `/api/source/prompts?project_id=` | 项目提示词库；汇总该项目的在用任务、历史记录与导入记录 |
 | POST | `/api/source/prompts/import` | 项目级导入；`{project_id, source_name?, items:[{text,...}]}` |
 | GET | `/api/source/prompts/export?project_id=` | 导出项目提示词库 JSON 文件 |
+| POST | `/api/source/prompts/dedupe` | 技能出题前按任务或工程查询历史题面，并检查候选题面是否重复 |
 
 **`GET /api/source/projects/{pid}/engineering` 的行为**：
 `pid` 缺失或为空 → `400 {code: "PROJECT_REQUIRED"}`。这是 FR-SRC-02 的服务端强制点。
@@ -53,6 +54,12 @@
 `{schema:"solo-auto/prompt-library/1", project:{id,name}, exportedAt, items:[...]}`，
 可直接重新导入。每条记录含 `engineeringId` 与 `engineeringName`；名称优先取使用台账，
 台账缺失时回退任务名，无工程关联的手工导入归入「未关联工程」。
+
+**提示词去重查询**：请求体优先使用 `{task_root, text?, limit?}` 定位当前任务，也可用
+`{project_id, engineering_id, exclude_task_id?, text?, limit?}`。传 `text` 时按技能同一口径返回
+`status=duplicate|review|clear`、`blocking`、12 字连续片段以及逐条 `ratio/jaccard/level`；
+不传 `text` 时返回该工程历史清单。工作台创建任务时写入 `monitor/workbench.json`，
+技能据此调用本接口，不需要自行持有项目或工程 ID。
 
 ## 4. 任务
 

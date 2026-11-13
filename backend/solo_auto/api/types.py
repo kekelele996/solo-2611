@@ -54,6 +54,15 @@ class PromptLibraryImportRequest(BaseModel):
     source_name: str = Field(default="", max_length=255)
 
 
+class PromptDedupeRequest(BaseModel):
+    task_root: str = Field(default="", max_length=4096)
+    project_id: str = Field(default="", max_length=200)
+    engineering_id: str = Field(default="", max_length=200)
+    exclude_task_id: str = Field(default="", max_length=200)
+    text: str = Field(default="", max_length=5000)
+    limit: int = Field(default=50, ge=1, le=500)
+
+
 class ReopenRequest(BaseModel):
     reason: str
 

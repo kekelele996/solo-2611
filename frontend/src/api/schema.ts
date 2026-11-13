@@ -472,6 +472,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/source/prompts/dedupe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Dedupe Prompts */
+        post: operations["dedupe_prompts_api_source_prompts_dedupe_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tasks/{task_id}/run/resume": {
         parameters: {
             query?: never;
@@ -2947,6 +2964,39 @@ export interface components {
             /** Task Ids */
             task_ids: string[];
         };
+        /** PromptDedupeRequest */
+        PromptDedupeRequest: {
+            /**
+             * Task Root
+             * @default
+             */
+            task_root: string;
+            /**
+             * Project Id
+             * @default
+             */
+            project_id: string;
+            /**
+             * Engineering Id
+             * @default
+             */
+            engineering_id: string;
+            /**
+             * Exclude Task Id
+             * @default
+             */
+            exclude_task_id: string;
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+            /**
+             * Limit
+             * @default 50
+             */
+            limit: number;
+        };
         /** PromptDraftRequest */
         PromptDraftRequest: {
             /** Text */
@@ -4057,6 +4107,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dedupe_prompts_api_source_prompts_dedupe_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PromptDedupeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */
