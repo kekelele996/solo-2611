@@ -89,6 +89,7 @@ class RunScheduler:
             self.limit = self.dispatcher.effective_container_limit
         else:
             await self.refresh_limit()
+        await self._adopt_legacy_print_runs()
         self._tick_task = asyncio.create_task(self._tick_loop())
         self._maintenance_task = asyncio.create_task(self._maintenance_loop())
 
@@ -611,6 +612,103 @@ class RunScheduler:
                 await self.reconciler.run()
             except Exception:
                 LOGGER.exception("post-run reconcile failed")
+            self.bus.publish("queue.updated", self.queue_snapshot())
+            self.bus.publish("task.updated", {"task_id": task_id, "phase": run.phase})
+
+    async def _adopt_legacy_print_runs(self) -> None:
+        """Adopt pre-v4 print containers that survived a workbench restart."""
+        live = await _running_containers()
+        for task in self.repo.query(
+            "SELECT id, task_root, task_name, job_status FROM tasks "
+            "WHERE job_status='running'"
+        ):
+            task_id = str(task["id"])
+            if task_id in self.active:
+                continue
+            root = Path(str(task["task_root"]))
+            envelope = load_state(root)
+            if envelope.state is None or envelope.state.sessionRun is not None:
+                continue
+            attempt = next(
+                (
+                    item
+                    for item in reversed(envelope.state.attempts)
+                    if item.container
+                    and item.status in {"running", "pending_collect"}
+                ),
+                None,
+            )
+            if attempt is None or attempt.container not in live:
+                continue
+            entry = QueueEntry(
+                task_id=task_id,
+                task_name=str(task["task_name"]),
+                task_root=root,
+            )
+            run = ActiveRun(
+                entry=entry,
+                started_at=time.time(),
+                phase="running",
+                attempt=attempt.index,
+            )
+            self.active[task_id] = run
+            run.task = asyncio.create_task(self._resume_legacy_print(run))
+            self.repo.add_event(
+                "run.legacy_adopted",
+                f"{entry.task_name} 的旧版 print 容器已由重启后的工作台认领",
+                actor="scheduler",
+                task_id=task_id,
+                details={"container": attempt.container, "attempt": attempt.index},
+            )
+
+    async def _resume_legacy_print(self, run: ActiveRun) -> None:
+        task_id = run.entry.task_id
+        try:
+            streamed = await self.gateway.stream(
+                ["resume", "--task-root", str(run.entry.task_root)],
+                task_root=run.entry.task_root,
+                timeout=None,
+                task_id=task_id,
+                cancel_key=f"legacy-resume:{task_id}",
+            )
+            result = streamed.result
+            if result.code == 0 and result.data and result.data.get("ok"):
+                run.phase = "done"
+                self.repo.add_event(
+                    "run.legacy_resumed",
+                    f"{run.entry.task_name} 的旧版 print 会话已接回收尾",
+                    actor="scheduler",
+                    task_id=task_id,
+                    details=result.data,
+                )
+            else:
+                run.phase = "failed"
+                detail = result.err.strip() or result.out.strip() or f"exit={result.code}"
+                await self._record_run_failure(
+                    task_id,
+                    kind="run.incomplete",
+                    detail=detail,
+                    status={},
+                )
+        except Exception as exc:
+            run.phase = "failed"
+            await self._record_run_failure(
+                task_id,
+                kind="run.session_lost",
+                detail=str(exc),
+                status={"status": "aborted", "abort": {"reason": "session_lost", "detail": str(exc)}},
+            )
+        finally:
+            self.active.pop(task_id, None)
+            (self.paths.slots / f"{task_id}.json").unlink(missing_ok=True)
+            if self.dispatcher is not None and self.dispatcher.v3_enabled:
+                if run.phase == "done":
+                    self.dispatcher.on_success(task_id, stage="running")
+                self.dispatcher.release_container(task_id, success=run.phase == "done")
+            try:
+                await self.reconciler.run()
+            except Exception:
+                LOGGER.exception("legacy resume reconcile failed")
             self.bus.publish("queue.updated", self.queue_snapshot())
             self.bus.publish("task.updated", {"task_id": task_id, "phase": run.phase})
 

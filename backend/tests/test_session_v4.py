@@ -382,6 +382,108 @@ async def test_managed_scheduler_handles_four_session_outcomes(
 
 
 @pytest.mark.asyncio
+async def test_legacy_print_container_is_adopted_after_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = app_paths(tmp_path / "app")
+    repo = Repository(paths.database)
+    root = tmp_path / "tasks" / "legacy"
+    (root / "monitor").mkdir(parents=True)
+    state = {
+        "schema": "solo-2611/1",
+        "taskName": "legacy",
+        "taskRoot": str(root),
+        "workspace": str(root / "workspace"),
+        "createdAt": "2026-11-13T00:00:00Z",
+        "status": "running",
+        "attempts": [
+            {
+                "index": 1,
+                "container": "solo2611-legacy",
+                "mode": "print",
+                "startedAt": "2026-11-13T00:00:00Z",
+                "status": "running",
+                "dir": str(root / "monitor" / "runs" / "attempt-01"),
+            }
+        ],
+        "remote": {"initialPushed": "yes"},
+    }
+    (root / "monitor" / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    task_id = repo.task_id_for_root(root)
+    repo.upsert_task(
+        {
+            "id": task_id,
+            "task_root": str(root),
+            "task_name": "legacy",
+            "source_kind": "local_dir",
+            "engineering_id": "",
+            "project_id": "",
+            "claim_id": "",
+            "domain": "数据工程",
+            "sub_direction": "数仓与数据湖",
+            "task_type": "",
+            "difficulty": "",
+            "languages": "",
+            "repro_level": "",
+            "job_status": "running",
+            "skill_status": "running",
+            "skill_version": "0.5.0",
+            "initial_sha": "b" * 40,
+            "artifact_sha": "",
+            "session_id": None,
+            "prompt_id": "",
+            "prompt_sha256": "",
+            "feedback_score": None,
+            "review_acked_at": "",
+            "exported_at": None,
+            "created_at": "2026-11-13T00:00:00Z",
+        }
+    )
+
+    class LegacyGateway:
+        async def stream(self, argv: list[str], **_: Any) -> Any:
+            assert argv[:1] == ["resume"]
+            return type(
+                "Streamed",
+                (),
+                {
+                    "result": SkillResult(
+                        code=0,
+                        duration=0.1,
+                        data={"ok": True, "status": "accepted"},
+                    )
+                },
+            )()
+
+    async def live_containers() -> set[str]:
+        return {"solo2611-legacy"}
+
+    monkeypatch.setattr("solo_auto.pipeline.scheduler._running_containers", live_containers)
+    reconciler = Reconciler(repo, paths, tmp_path / "tasks")
+
+    async def no_reconcile() -> int:
+        return 0
+
+    monkeypatch.setattr(reconciler, "run", no_reconcile)
+    scheduler = RunScheduler(
+        paths=paths,
+        gateway=LegacyGateway(),  # type: ignore[arg-type]
+        repo=repo,
+        reconciler=reconciler,
+        bus=EventBus(),
+    )
+    await scheduler._adopt_legacy_print_runs()
+    adopted = scheduler.active[task_id]
+    assert adopted.attempt == 1
+    assert adopted.task is not None
+    await adopted.task
+    assert task_id not in scheduler.active
+    assert repo.events(task_id=task_id)[-1]["action"] == "run.legacy_resumed"
+    repo.close()
+
+
+@pytest.mark.asyncio
 async def test_session_api_reads_skill_status(
     fixture_factory,
     tmp_path: Path,
