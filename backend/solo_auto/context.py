@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from solo_auto.auto_dispose import AutoDisposer
 from solo_auto.config_watch import ConfigWatcher
 from solo_auto.dispatch.facts import docker_info_ok
 from solo_auto.dispatch.kernel import Dispatcher
@@ -225,6 +226,7 @@ class AppContext:
             source=self.source,
             recording=self.recording,
         )
+        self.disposer = AutoDisposer(self)
         self.started_at = datetime.now().astimezone()
         self.skill_version = ""
         self.source_online = False
@@ -249,6 +251,7 @@ class AppContext:
                 asyncio.create_task(self.watcher.changes(self.reconciler.run)),
                 asyncio.create_task(self._source_loop()),
                 asyncio.create_task(self._cleanup_loop()),
+                asyncio.create_task(self.disposer.loop()),
             ]
             await self.dispatcher.start()
             await self.scheduler.start()

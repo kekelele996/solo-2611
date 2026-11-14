@@ -850,7 +850,22 @@ class Dispatcher:
 
     def in_hand_count(self) -> int:
         """已领取、仍会继续推进的任务数；需人工处理和已结束的不占在手。"""
-        return sum(1 for item in self.queue.all_items(include_terminal=False) if item.status in IN_HAND)
+        jobs = getattr(self.autopilot, "jobs", {}) if self.autopilot is not None else {}
+        awaiting = (
+            {
+                task_id
+                for task_id, job in jobs.items()
+                if getattr(job, "desktop_running", False) and getattr(job, "awaiting_platform", False)
+            }
+            if isinstance(jobs, dict)
+            else set()
+        )
+        # 已提交到 SOLO2、只等质检反馈的题不再占在手。
+        return sum(
+            1
+            for item in self.queue.all_items(include_terminal=False)
+            if item.status in IN_HAND and item.task_id not in awaiting
+        )
 
     def status_sentence(self) -> str:
         pools = self.pools_book.snapshot()
@@ -959,11 +974,12 @@ class Dispatcher:
             "matched_by": str((item.last_failure or {}).get("matched_by") or ""),
             "autopilot_detail": str(getattr(job, "detail", "") or ""),
             "desktop_running": bool(getattr(job, "desktop_running", False)),
+            "awaiting_platform": bool(getattr(job, "awaiting_platform", False)),
             "desktop_recovery_attempts": int(getattr(job, "desktop_recovery_attempts", 0) or 0),
             "desktop_recovery_last_at": str(getattr(job, "desktop_recovery_last_at", "") or ""),
             "desktop_recovery_error": str(getattr(job, "desktop_recovery_error", "") or ""),
             "reason": decision.text
-            or ("可启动" if position == 1 else f"排队第 {position} 位" if position else item.wait_text or "等待人工处理"),
+            or ("可启动" if position == 1 else f"排队第 {position} 位" if position else item.wait_text or "已隔离，稍后自动清理并补位"),
             "gate": decision.view(),
         }
 
@@ -1025,7 +1041,8 @@ class Dispatcher:
                 key = f"task:{task_id}"
                 desktop_running = bool(getattr(job, "desktop_running", False))
                 agent_running = task_id in agents
-                if desktop_running:
+                # 已提交、只在等 SOLO2 质检结果的会话不占会话名额。
+                if desktop_running and not bool(getattr(job, "awaiting_platform", False)):
                     sessions.add(key)
                 if agent_running:
                     stage = str(getattr(agents[task_id], "stage", ""))

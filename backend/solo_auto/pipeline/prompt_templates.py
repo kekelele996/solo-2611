@@ -80,7 +80,10 @@ AUTOPILOT: BLOCKED <一句话原因>
 6. 再次运行 status，确认第 1 到第 10 项全部通过。随后执行
    python3 $S export --task-root ROOT --no-submit 生成交付表，再执行
    python3 $S submit --task-root ROOT --execute --watch 提交到 SOLO2 平台，并持续轮询到 QC_PASSED。
-   若返回 PENDING_FIX，返修原记录；其他终态失败保留证据并停止。
+   若返回 PENDING_FIX，先对照轨迹和真实产物核对质检意见，再返修原记录；评分和 Feedback 只能写
+   轨迹里查得到的事实，不得为了通过质检改写结论。repair 返回 local_review_required（退出码 4）
+   表示返修意见与已提交意见出入较大：立即停止，不要登记 local-review 结论，不要调整措辞绕过，
+   以 `AUTOPILOT: BLOCKED 等待本地核验` 结束。其他终态失败保留证据并停止。
 
 边界：
 - 不修改技能目录或平台文件，不使用强制通过、允许缺项或绕过门禁的参数。

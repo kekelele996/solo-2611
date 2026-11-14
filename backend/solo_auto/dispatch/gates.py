@@ -236,7 +236,7 @@ def _session_spacing_gate(settings: DispatchSettings, last_session_at: float, no
 
 def _item_gate(item: DispatchItem, now: datetime) -> GateResult:
     if item.status == "quarantined":
-        return GateResult("G12", False, "quarantined", item.wait_text or "题目已隔离，等待人工处理")
+        return GateResult("G12", False, "quarantined", item.wait_text or "题目已隔离，稍后自动清理并补位")
     if item.status == "backoff":
         not_before = _parse(item.not_before)
         if not_before and not_before > now:

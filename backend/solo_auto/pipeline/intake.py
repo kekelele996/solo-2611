@@ -690,7 +690,7 @@ class IntakeService:
         ]
 
     def _counts(self, plan: dict[str, Any]) -> dict[str, int]:
-        completed = active = failed = recoverable = orphaned = 0
+        completed = active = failed = recoverable = orphaned = awaiting = 0
         for task_id in plan.get("task_ids") or []:
             job = self.autopilot.job(str(task_id))
             if not job:
@@ -708,6 +708,9 @@ class IntakeService:
                     recoverable += 1
             elif job.get("stage") in {"done", "awaiting_audit"}:
                 completed += 1
+            elif job.get("active") and job.get("desktop_running") and job.get("awaiting_platform"):
+                # 已提交到 SOLO2、只等质检反馈：不占在手名额，后面的题可以补位。
+                awaiting += 1
             elif job.get("active"):
                 active += 1
             elif job.get("stage") in {"failed", "stopped"}:
@@ -723,6 +726,7 @@ class IntakeService:
             "target": int(plan.get("target") or 0),
             "completed": completed,
             "active": active,
+            "awaiting_platform": awaiting,
             "failed": failed,
             "recoverable": recoverable,
             "orphaned": orphaned,

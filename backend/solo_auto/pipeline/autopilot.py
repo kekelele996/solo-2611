@@ -193,6 +193,8 @@ class Job:
     desktop_recovery_attempts: int = 0
     desktop_recovery_last_at: str = ""
     desktop_recovery_error: str = ""
+    # 已提交到 SOLO2、会话只是在轮询质检结果：不再占用会话名额，也不计入在手。
+    awaiting_platform: bool = False
 
     @property
     def active(self) -> bool:
@@ -346,7 +348,7 @@ class Autopilot:
 
     def occupied_sessions(self) -> tuple[int, int]:
         """Return (sessions really running, of which no longer followed by the platform)."""
-        tracked = sum(1 for job in self.jobs.values() if job.desktop_running)
+        tracked = sum(1 for job in self.jobs.values() if job.desktop_running and not job.awaiting_platform)
         orphans = len(self.orphan_sessions())
         return tracked + orphans, orphans
 
@@ -916,6 +918,26 @@ class Autopilot:
         except (OSError, json.JSONDecodeError):
             return {}
 
+    def _track_platform_wait(self, job: Job, root: Path) -> None:
+        """Free the session slot while the thread only polls SOLO2 for the review result."""
+        waiting = awaiting_platform_feedback(root)
+        if waiting == job.awaiting_platform:
+            return
+        job.awaiting_platform = waiting
+        if waiting:
+            if self.dispatcher is not None and self.dispatcher.v3_enabled:
+                self.dispatcher.release_session(job.task_id)
+            message = "已提交到 SOLO2，等待平台质检反馈；会话名额已让出，可继续开新题"
+        else:
+            message = "SOLO2 质检已有结论，会话恢复处理并重新计入会话名额"
+        self.repo.add_event(
+            "autopilot.chatgpt.platform_wait" if waiting else "autopilot.chatgpt.platform_resumed",
+            message,
+            actor=ACTOR,
+            task_id=job.task_id,
+        )
+        self._changed()
+
     # ---- ChatGPT desktop executor ----------------------------------
 
     async def _advance_chatgpt(self, job: Job, task: dict[str, Any], root: Path) -> None:
@@ -934,6 +956,7 @@ class Autopilot:
             if not job.desktop_workdir:
                 job.desktop_workdir = str(root)
             self._ensure_desktop_follower(job)
+            self._track_platform_wait(job, root)
             info = self._tracked_rollout(job)
             progress = _meaningful_progress_at(root)
             if info is not None and info.last_tool_at:
@@ -1088,15 +1111,36 @@ class Autopilot:
             attempt=job.attempts["chatgpt"],
             log_path="",
         )
-        launched = await asyncio.to_thread(
-            self.desktop.launch,
-            task_id=job.task_id,
-            task_name=job.task_name,
-            task_root=root,
-            prompt=prompt,
-            folder_id=self.settings.chatgpt_folder_id,
-        )
+        try:
+            launched = await asyncio.to_thread(
+                self.desktop.launch,
+                task_id=job.task_id,
+                task_name=job.task_name,
+                task_root=root,
+                prompt=prompt,
+                folder_id=self.settings.chatgpt_folder_id,
+            )
+        except Exception as error:
+            # 会话根本没开出来：不消耗尝试次数，收尾阶段记录并让出名额，交给调度按“拉起丢失”退避重试。
+            job.attempts["chatgpt"] = used
+            job.desktop_stage_id = stage_id
+            message = error.message if isinstance(error, ApiError) else f"{type(error).__name__}: {error}"
+            detail = f"ChatGPT 桌面会话拉起失败：{message}"
+            LOGGER.warning("ChatGPT launch failed for %s: %s", job.task_id, message)
+            permission = isinstance(error, ApiError) and error.code in {
+                "CHATGPT_LAUNCH_PERMISSION",
+                "CHATGPT_APP_MISSING",
+            }
+            await self._finish_desktop_stage(
+                job,
+                outcome="failed",
+                kind="agent_missing" if permission else "agent_launch_lost",
+                detail=detail,
+            )
+            self._finish(job, "failed", detail)
+            return
         job.desktop_running = True
+        job.awaiting_platform = False
         job.desktop_marker = str(launched["marker"])
         job.desktop_prompt_file = str(launched["prompt_path"])
         job.desktop_workdir = str(launched["workdir"])
@@ -1111,7 +1155,8 @@ class Autopilot:
         job.desktop_stage_id = stage_id
         self.desktop_terminal_seen.discard(job.task_id)
         job.log = job.desktop_prompt_file
-        self._stage(job, "chatgpt", "已打开 ChatGPT 桌面会话，等待执行")
+        warning = str(launched.get("warning") or "")
+        self._stage(job, "chatgpt", warning or "已打开 ChatGPT 桌面会话，等待执行")
         self.repo.add_event(
             "autopilot.chatgpt.started",
             "已在 ChatGPT 桌面端创建会话并提交任务",
@@ -1120,6 +1165,7 @@ class Autopilot:
             details={
                 "prompt": job.desktop_prompt_file,
                 "opened_with": launched["opened_with"],
+                "warning": warning,
                 "attempt": job.attempts["chatgpt"],
             },
         )
@@ -1262,6 +1308,7 @@ class Autopilot:
                 failure_detail=detail,
             )
         job.desktop_running = False
+        job.awaiting_platform = False
         job.desktop_stage_id = 0
         job.agent_pid = 0
         if self.dispatcher is not None and self.dispatcher.v3_enabled:
@@ -1674,9 +1721,44 @@ def _signal_group(process: asyncio.subprocess.Process, sig: int) -> None:
         os.killpg(process.pid, sig)
 
 
+PLATFORM_WAIT_STATUSES = frozenset(
+    {"SUBMITTED", "FIX_SUBMITTED", "QC_WAITING", "QC_RUNNING", "PENDING", "WAITING"}
+)
+
+
+def awaiting_platform_feedback(root: Path) -> bool:
+    """True once the task is uploaded to SOLO2 and only the review result is pending.
+
+    Reads the files the skill writes while ``submit --watch`` polls: the upload
+    result and the polling history.  Whichever was written last wins, so a
+    resubmitted fix counts as waiting again.
+    """
+    directory = root / "monitor" / "submission"
+    latest: tuple[float, str] | None = None
+    for name in ("api-result.json", "qc-history.json"):
+        path = directory / name
+        try:
+            mtime = path.stat().st_mtime
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict) or data.get("submissionId") in (None, ""):
+            continue
+        if name == "qc-history.json":
+            history = data.get("history")
+            entry = history[-1] if isinstance(history, list) and history else {}
+            status = str(entry.get("status") if isinstance(entry, dict) else "")
+        else:
+            status = str(data.get("status") or "")
+        if latest is None or mtime >= latest[0]:
+            latest = (mtime, status)
+    return latest is not None and latest[1].upper() in PLATFORM_WAIT_STATUSES
+
+
 def _dispatch_failure_kind(kind: str) -> str:
     return {
         "agent_launch_lost": "agent.launch_lost",
+        "agent_missing": "agent.missing",
         "usage_limited": "agent.usage_limited",
         "agent_timeout": "agent.timeout",
         "agent_blocked": "agent.blocked",

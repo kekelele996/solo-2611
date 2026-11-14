@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -49,6 +50,8 @@ DEFAULT_HELPERS = (
     / "CodexQueuePush",
 )
 SUBMIT_PENDING_FLAG = "--submit-only"
+LAUNCH_OPEN_ATTEMPTS = 2
+LOGGER = logging.getLogger(__name__)
 
 
 class ChatGPTDesktop:
@@ -102,43 +105,69 @@ class ChatGPTDesktop:
         )
         link = build_deep_link(workdir=grouped_workdir, prompt=link_prompt, folder_id=folder_id)
         (directory / f"chatgpt-{stamp}.url.txt").write_text(link + "\n", encoding="utf-8")
-        opened_with = "open"
-        if self.helper and self.helper.is_file() and os.access(self.helper, os.X_OK):
-            result = subprocess.run(
-                [str(self.helper), link],
-                capture_output=True,
-                text=True,
-                timeout=45,
-                check=False,
-            )
-            opened_with = str(self.helper)
-            if result.returncode != 0:
-                message = (result.stderr or result.stdout).strip() or f"CodexQueuePush 退出码 {result.returncode}"
-                if result.returncode == 3:
-                    message = "CodexQueuePush 缺少辅助功能权限，请在系统设置中授权"
-                raise ApiError(500, "CHATGPT_LAUNCH_FAILED", message)
-        else:
-            result = subprocess.run(
-                ["open", link],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-            if result.returncode != 0:
-                raise ApiError(
-                    500,
-                    "CHATGPT_LAUNCH_FAILED",
-                    (result.stderr or result.stdout).strip() or "打开 ChatGPT 深链接失败",
-                )
+        opened_with, warning = self._open_link(link)
         return {
             "marker": marker,
             "prompt_path": str(prompt_path),
             "deep_link": link,
             "opened_with": opened_with,
+            "warning": warning,
             "workdir": str(grouped_workdir),
             "started_at": datetime.now().astimezone().replace(microsecond=0).isoformat(),
         }
+
+    def _open_link(self, link: str) -> tuple[str, str]:
+        """Hand the deep link to ChatGPT; return (opener, warning).
+
+        The helper both opens the thread and presses send.  When it times out
+        or exits abnormally the thread may already exist, so the link is not
+        opened a second time (that could start a duplicate thread); the caller
+        keeps following the marker and re-presses send if no rollout appears.
+        Only a helper that cannot be started at all falls back to ``open``.
+        """
+        if self.helper and self.helper.is_file() and os.access(self.helper, os.X_OK):
+            try:
+                result = subprocess.run(
+                    [str(self.helper), link],
+                    capture_output=True,
+                    text=True,
+                    timeout=45,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                return str(self.helper), "CodexQueuePush 45 秒内没有返回，继续等待会话建立"
+            except OSError as error:
+                LOGGER.warning("CodexQueuePush could not start, falling back to open: %s", error)
+            else:
+                if result.returncode == 0:
+                    return str(self.helper), ""
+                message = (result.stderr or result.stdout).strip() or f"CodexQueuePush 退出码 {result.returncode}"
+                if result.returncode == 3:
+                    raise ApiError(
+                        500,
+                        "CHATGPT_LAUNCH_PERMISSION",
+                        "CodexQueuePush 缺少辅助功能权限，请在系统设置中授权",
+                    )
+                return str(self.helper), f"CodexQueuePush 异常退出，继续等待会话建立：{message[:300]}"
+        message = ""
+        for number in range(LAUNCH_OPEN_ATTEMPTS):
+            try:
+                result = subprocess.run(
+                    ["open", link],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                )
+            except (subprocess.TimeoutExpired, OSError) as error:
+                message = f"{type(error).__name__}: {error}"
+            else:
+                if result.returncode == 0:
+                    return "open", ""
+                message = (result.stderr or result.stdout).strip() or "打开 ChatGPT 深链接失败"
+            if number + 1 < LAUNCH_OPEN_ATTEMPTS:
+                time.sleep(2.0)
+        raise ApiError(500, "CHATGPT_LAUNCH_FAILED", message[:500])
 
     def submit_pending_prompt(self, link: str = "") -> dict[str, Any]:
         """Ask the trusted helper to submit the prompt already present in ChatGPT.

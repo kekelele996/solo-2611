@@ -676,7 +676,11 @@ function QueueRow({
             pulse={item.active}
           />
           {pending && !needs ? <span>下一道工程</span> : null}
-          {needs ? <span data-alert>门禁或运行异常</span> : null}
+          {needs ? (
+            <span data-alert>
+              {item.keep || item.wait_text === "人工隔离" ? "门禁或运行异常" : "运行失败，稍后自动清理并补位"}
+            </span>
+          ) : null}
         </div>
         <Link className="dispatch-queue-name" to={`/tasks/${item.task_id}`} title={item.task_name}>
           {item.task_name}
@@ -690,7 +694,9 @@ function QueueRow({
                 ? " · 等待人工处理"
                 : item.session_state === "manual_input"
                   ? " · 需要人工输入"
-                  : ` · ${item.engineering_id || "工程信息同步中"}`}
+                  : item.awaiting_platform
+                    ? " · 已提交，等待 SOLO2 质检反馈（不占会话名额）"
+                    : ` · ${item.engineering_id || "工程信息同步中"}`}
           </span>
         ) : zone === "processed" ? (
           <span className="dispatch-queue-note" title={item.wait_code === "ignored" ? item.wait_text : undefined}>
@@ -753,7 +759,7 @@ function QueueRow({
               ) : null}
               {pending && !needs ? (
                 <button type="button" disabled={readonly || busy} onClick={() => onAction("quarantine")}>
-                  隔离<small>移出自动调度，等待人工处理</small>
+                  隔离<small>移出自动调度并保留现场，不会被自动清理</small>
                 </button>
               ) : null}
               {!item.active ? (

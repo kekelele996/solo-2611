@@ -104,13 +104,19 @@ def _plan(ctx: AppContext, task: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def _execute(ctx: AppContext, plan: dict[str, Any], *, permanent: bool) -> dict[str, Any]:
+async def _execute(
+    ctx: AppContext,
+    plan: dict[str, Any],
+    *,
+    permanent: bool,
+    actor: str = "user",
+) -> dict[str, Any]:
     task_id = str(plan["task_id"])
     task = ctx.repo.get_task(task_id) or {}
     root = Path(str(task["task_root"])).resolve()
     if plan["has_state"]:
         # 任务整个不要了，未 collect 的交互容器也一并丢弃
-        await reap_and_record(ctx.repo, root, task_id=task_id, actor="user")
+        await reap_and_record(ctx.repo, root, task_id=task_id, actor=actor)
         cleanup = await ctx.gateway.call(["cleanup", "--task-root", str(root), "--force"], timeout=120, task_id=task_id)
         if cleanup.code != 0:
             raise ApiError(500, "CLEANUP_FAILED", cleanup.err.strip() or "容器清理失败，任务未清理")
@@ -146,10 +152,14 @@ async def _execute(ctx: AppContext, plan: dict[str, Any], *, permanent: bool) ->
         f"{plan['task_name']} 已清理（{'永久删除' if permanent else '移入回收站'}）"
         + ("；工程台归还未成功" if release_error else ""),
         level="warn",
-        actor="user",
+        actor=actor,
         details={"task_id": task_id, "paths": plan["paths"], "moved_to": moved_to, "release_error": release_error},
     )
     return {"removed": True, "moved_to": moved_to, "release_error": release_error}
+
+
+plan_purge = _plan
+execute_purge = _execute
 
 
 def _remove(sources: list[Path]) -> None:

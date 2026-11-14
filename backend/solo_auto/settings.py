@@ -262,7 +262,7 @@ class DispatchGuardSettings(BaseModel):
     run_overtime_factor: float = Field(default=1.25, ge=1.0, le=5.0)
     no_progress_minutes: int = Field(default=30, ge=5, le=1440)
     budget_authoring_minutes: int = Field(default=90, ge=5, le=1440)
-    budget_delivering_minutes: int = Field(default=120, ge=5, le=1440)
+    budget_delivering_minutes: int = Field(default=180, ge=5, le=1440)
     budget_recording_minutes: int = Field(default=20, ge=1, le=1440)
     budget_exporting_minutes: int = Field(default=15, ge=1, le=1440)
     zombie_grace_minutes: int = Field(default=5, ge=1, le=1440)
@@ -295,6 +295,20 @@ class DispatchDiskSettings(BaseModel):
         if self.emergency_gb > self.floor_gb:
             raise ValueError("紧急磁盘阈值不能高于正常下限")
         return self
+
+
+class DispatchDisposeSettings(BaseModel):
+    """失败题目的自动处置：清理工作数据、归还工程，由持续补位在队尾补新题。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = True
+    # 进入隔离后等这么久再清理，留出查看失败原因或点“保留”的时间。
+    grace_seconds: int = Field(default=120, ge=0, le=86400)
+    # False 移入回收站（可恢复），True 直接删除。
+    permanent: bool = False
+    # 一小时内自动清理超过这个数量就停下并提醒，避免环境故障时连续烧题。
+    max_per_hour: int = Field(default=6, ge=1, le=100)
 
 
 class DispatchRefillSettings(BaseModel):
@@ -353,6 +367,7 @@ class DispatchSettings(BaseModel):
     llm_guard: DispatchLLMGuardSettings = Field(default_factory=DispatchLLMGuardSettings)
     disk: DispatchDiskSettings = Field(default_factory=DispatchDiskSettings)
     refill: DispatchRefillSettings = Field(default_factory=DispatchRefillSettings)
+    dispose: DispatchDisposeSettings = Field(default_factory=DispatchDisposeSettings)
     watchdog: DispatchWatchdogSettings = Field(default_factory=DispatchWatchdogSettings)
     window: DispatchWindowSettings = Field(default_factory=DispatchWindowSettings)
 
@@ -531,6 +546,7 @@ def config_toml(settings: Settings) -> str:
                 "llm_guard",
                 "disk",
                 "refill",
+                "dispose",
                 "watchdog",
                 "window",
             },
@@ -547,6 +563,8 @@ def config_toml(settings: Settings) -> str:
         *_dump_table("dispatch.disk", settings.dispatch.disk),
         "",
         *_dump_table("dispatch.refill", settings.dispatch.refill),
+        "",
+        *_dump_table("dispatch.dispose", settings.dispatch.dispose),
         "",
         *_dump_table("dispatch.watchdog", settings.dispatch.watchdog),
         "",

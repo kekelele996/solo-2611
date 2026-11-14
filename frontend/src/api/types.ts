@@ -127,6 +127,7 @@ export type AutopilotJob = {
   retry_options: Array<{ stage: string; label: string; available: boolean; reason: string }>;
   audit?: AuditRow | null;
   desktop_running: boolean;
+  awaiting_platform?: boolean;
   desktop_marker: string;
   desktop_prompt_file: string;
   desktop_rollout: string;
@@ -737,6 +738,7 @@ export type DispatchQueueItem = {
   matched_by: string;
   autopilot_detail?: string;
   desktop_running?: boolean;
+  awaiting_platform?: boolean;
   desktop_recovery_attempts?: number;
   desktop_recovery_last_at?: string;
   desktop_recovery_error?: string;
