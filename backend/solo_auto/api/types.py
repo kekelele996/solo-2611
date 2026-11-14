@@ -285,23 +285,12 @@ class DispatchInterruptRequest(BaseModel):
     kill_containers: bool = True
 
 
-class DispatchElasticPatch(BaseModel):
-    enabled: bool | None = None
-    ceiling: int | None = Field(default=None, ge=1, le=8)
-
-
 class DispatchLimitsRequest(BaseModel):
-    preset: Literal["throughput", "balanced", "careful", "custom"] | None = None
+    mode: Literal["containers", "tasks"] | None = None
     containers: int | None = Field(default=None, ge=1, le=8)
-    sessions: int | None = Field(default=None, ge=0, le=8)
-    authoring: int | None = Field(default=None, ge=1, le=8)
-    delivering: int | None = Field(default=None, ge=1, le=8)
-    recording: int | None = Field(default=None, ge=1, le=16)
-    in_hand: int | None = Field(default=None, ge=0, le=100)
-    launch_spacing_seconds: int | None = Field(default=None, ge=10, le=3600)
-    session_spacing_seconds: int | None = Field(default=None, ge=20, le=3600)
+    max_tasks: int | None = Field(default=None, ge=1, le=50)
+    create_cooldown_seconds: int | None = Field(default=None, ge=20, le=3600)
     keep_awake: bool | None = None
-    elastic: DispatchElasticPatch | None = None
 
 
 class DispatchPoliciesRequest(BaseModel):

@@ -1,8 +1,7 @@
-"""Retry, quarantine, cooldown, and hold decisions."""
+"""Failure decisions: requeue at the tail, give up, or hold for an automatic probe."""
 
 from __future__ import annotations
 
-import random
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -24,10 +23,15 @@ class PolicyDecision:
     charge: bool = False
 
 
+# 运行失败统一的处理：记日志、排到队尾，短暂停留后自动重跑；不再退避、隔离或等人处理。
+REQUEUE_DELAY_SECONDS = 30
+# 会话已经消耗、不能原样重跑的失败：直接结束该题，由自动清理归还工程、在队尾补新题。
+GIVE_UP_DISPOSITIONS = frozenset({"quarantine", "manual", "final"})
+
+
 class RecoveryPolicy:
-    def __init__(self, settings: DispatchRetrySettings, *, ramp: random.Random | None = None) -> None:
+    def __init__(self, settings: DispatchRetrySettings) -> None:
         self.settings = settings
-        self.random = ramp or random.Random()
 
     def decide(
         self,
@@ -50,46 +54,22 @@ class RecoveryPolicy:
         if failure.disposition in {"requeue", "missing"}:
             status = "removed" if failure.disposition == "missing" else "queued"
             return PolicyDecision("requeue", status, detail=failure.detail)
-        if failure.disposition in {"quarantine", "manual"}:
-            return PolicyDecision("quarantine", "quarantined", detail=failure.detail)
-        evidence_stage = str(failure.evidence.get("stage") or item.stage)
-        stage_attempts = int(item.attempts.get(evidence_stage, 0))
-        if failure.kind == "run.start_failed":
-            start_failures = int(item.attempts.get("run.start_failed", 0))
-            if start_failures >= failure.max_retries:
-                return PolicyDecision(
-                    "quarantine",
-                    "quarantined",
-                    detail="启动失败次数已用尽，可人工重排（不计入工程冷却）",
-                )
-        if failure.kind == "run.session_lost":
-            lost_attempts = int(item.attempts.get("run.session_lost", 0))
-            if lost_attempts >= failure.max_retries:
-                return PolicyDecision("quarantine", "quarantined", detail=failure.detail)
-        charged = stage_attempts + (1 if failure.charge else 0)
-        if failure.kind == "agent.launch_lost" and item.total_attempts >= failure.max_retries:
-            return PolicyDecision("quarantine", "quarantined", detail="会话拉起连续失败，已隔离")
-        if failure.kind == f"unknown.{evidence_stage}" and charged > self.settings.unknown_retries:
-            return PolicyDecision("quarantine", "quarantined", detail="未知失败重试已用尽")
-        if failure.charge and stage_attempts >= failure.max_retries:
-            return PolicyDecision("quarantine", "quarantined", detail="该阶段重试次数已用尽")
-        if item.total_attempts + 1 >= self.settings.max_total_attempts:
-            return PolicyDecision("quarantine", "quarantined", detail="达到单题总尝试上限")
-        if failure.charge:
-            index = min(stage_attempts, len(self.settings.backoff_seconds) - 1)
-            base = self.settings.backoff_seconds[index]
-        else:
-            base = self.settings.backoff_seconds[0]
-        base = max(1, round(base * max(0.1, failure.backoff_multiplier)))
-        jitter = 1 + self.random.uniform(-self.settings.jitter, self.settings.jitter)
-        delay = max(1, round(base * jitter))
-        not_before = (current + timedelta(seconds=delay)).replace(microsecond=0).isoformat()
+        if failure.disposition in GIVE_UP_DISPOSITIONS:
+            return PolicyDecision("give_up", "failed", detail=failure.detail or failure.kind)
+        attempts = item.total_attempts + 1
+        if attempts >= self.settings.max_total_attempts:
+            return PolicyDecision(
+                "give_up",
+                "failed",
+                detail=f"累计失败 {attempts} 次，放弃该题：{failure.detail or failure.kind}",
+            )
+        not_before = (current + timedelta(seconds=REQUEUE_DELAY_SECONDS)).replace(microsecond=0).isoformat()
         return PolicyDecision(
             action="retry",
             status="backoff",
-            delay_seconds=delay,
+            delay_seconds=REQUEUE_DELAY_SECONDS,
             not_before=not_before,
-            detail=failure.detail,
+            detail=f"第 {attempts} 次失败已记录，排到队尾重跑：{failure.detail or failure.kind}",
             charge=failure.charge,
         )
 
@@ -110,6 +90,8 @@ class RecoveryPolicy:
             attempts[failure.kind] = int(attempts.get(failure.kind, 0)) + 1
         updates: dict[str, Any] = {
             "status": decision.status,
+            # 重跑的题排到队尾，先让后面的题有机会运行。
+            **({"position": queue.next_position(), "priority": 0} if decision.action == "retry" else {}),
             "stage": stage,
             "not_before": decision.not_before,
             "attempts": attempts,
@@ -120,12 +102,6 @@ class RecoveryPolicy:
             "wait_text": decision.detail,
             "wait_until": decision.not_before,
         }
-        if decision.status == "quarantined":
-            updates.update(
-                {
-                    "wait_code": "quarantined",
-                    "wait_text": decision.detail or failure.kind,
-                    "wait_until": "",
-                }
-            )
+        if decision.action == "give_up":
+            updates.update({"wait_code": "gave_up", "wait_text": decision.detail, "wait_until": ""})
         return decision, queue.update(item.task_id, **updates)

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -16,17 +16,27 @@ const SNAPSHOT: DispatchSnapshot = {
   sentence: "已自动挂起 · 容器 2/4 · 会话 1/5 · 在手 3/5 · 网关断开，02:30 复测",
   started_at: "2026-11-11T18:00:00+08:00",
   uptime_seconds: 7200,
-  preset: "balanced",
-  settings: { sessions: 0, authoring: 2, delivering: 1, in_hand: 0, session_spacing_seconds: 20 },
+  settings: { containers: 4, max_tasks: 5 },
   limits: {
+    mode: "containers",
     containers: 4,
-    effective_containers: 4,
-    sessions: 5,
-    in_hand: 5,
-    launch_spacing_seconds: 45,
+    max_tasks: 5,
+    create_cooldown_seconds: 180,
     recording: 1,
     skill_limit: 4,
     synced: true,
+  },
+  creation: {
+    allowed: false,
+    code: "create.cooldown",
+    text: "建题冷却中，还需 120 秒",
+    until: "2099-01-01T00:02:00+08:00",
+    last_created_at: "2099-01-01T00:00:00+08:00",
+    next_allowed_at: "2099-01-01T00:02:00+08:00",
+    cooldown_seconds: 180,
+    in_hand: 3,
+    max_tasks: 5,
+    containers: { live: 2, waiting: 1, extra: 0, used: 3, limit: 4 },
   },
   pools: {
     containers: { name: "containers", used: 2, limit: 4, available: 2, draining: false },
@@ -113,7 +123,6 @@ const SNAPSHOT: DispatchSnapshot = {
   },
   capacity: { items: [] },
   plan: { mode: "target", target: 30 },
-  elastic: { enabled: false, effective: 4, floor: 4, ceiling: 6 },
   loops: [],
   keep_awake: true,
 };
@@ -134,11 +143,6 @@ describe("dispatch page", () => {
       ok: true,
       message: "网关可用",
       detail: {},
-    });
-    vi.spyOn(api, "dispatchReleaseHold").mockResolvedValue({
-      ok: true,
-      source: "llm_guard",
-      snapshot: SNAPSHOT,
     });
     vi.spyOn(api, "dispatchProbe").mockResolvedValue({
       source: "llm_guard",
@@ -166,6 +170,30 @@ describe("dispatch page", () => {
     expect(screen.getByText("G12")).toBeInTheDocument();
   });
 
+  it("offers no manual failure handling: failures requeue and holds self-heal", async () => {
+    renderPage();
+    expect(await screen.findByText("网关连续 2 次探测失败")).toBeInTheDocument();
+    for (const name of ["重试", "解除"]) {
+      expect(screen.queryByRole("button", { name: new RegExp(name) })).not.toBeInTheDocument();
+    }
+    for (const text of ["忽略", "隔离", "保留", "需要你处理"]) {
+      expect(screen.queryByText(new RegExp(text))).not.toBeInTheDocument();
+    }
+    expect(screen.getByRole("button", { name: "立即探测" })).toBeInTheDocument();
+  });
+
+  it("shows container-first occupancy and the creation cooldown", async () => {
+    renderPage();
+    const strip = await screen.findByRole("region", { name: "资源占用" });
+    expect(strip).toHaveTextContent("容器3/4");
+    expect(strip).toHaveTextContent("运行 2 · 待起 1");
+    expect(strip).toHaveTextContent("建题冷却");
+    expect(screen.getByText(/暂不建新题：建题冷却中/)).toBeInTheDocument();
+    // 容器优先：任务格只显示数量，不显示上限。
+    expect(strip).toHaveTextContent("容器优先，不限任务数");
+    expect(strip).not.toHaveTextContent("任务3/5");
+  });
+
   it("shows the next 20 queue with a rotation preview", async () => {
     (api.dispatchUpcoming as ReturnType<typeof vi.fn>).mockResolvedValue({
       items: [
@@ -187,13 +215,37 @@ describe("dispatch page", () => {
     expect(screen.getByText(/工程不足时循环补位/)).toBeInTheDocument();
   });
 
-  it("applies in-page limits and queue actions", async () => {
+  it("switches between container-first and task-first modes", async () => {
     renderPage();
-    const containers = await screen.findByLabelText("容器数");
-    fireEvent.change(containers, { target: { value: "5" } });
+    const group = await screen.findByRole("radiogroup", { name: "调度模式" });
+    const containerFirst = within(group).getByRole("radio", { name: "容器优先" });
+    const taskFirst = within(group).getByRole("radio", { name: "任务优先" });
+    expect(containerFirst).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText("未启用")).toBeInTheDocument();
+    fireEvent.click(taskFirst);
+    expect(taskFirst).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryByText("未启用")).not.toBeInTheDocument();
+    expect(screen.getByText(/任务优先：在手任务数小于最大任务数/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "应用" }));
     await waitFor(() => expect(api.dispatchLimits).toHaveBeenCalledTimes(1));
-    expect((api.dispatchLimits as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({ containers: 5 });
+    expect((api.dispatchLimits as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({ mode: "tasks", max_tasks: 5 });
+  });
+
+  it("applies in-page limits and queue actions", async () => {
+    renderPage();
+    const containers = await screen.findByLabelText("最大容器数");
+    fireEvent.change(containers, { target: { value: "5" } });
+    fireEvent.change(screen.getByLabelText("最大任务数"), { target: { value: "7" } });
+    fireEvent.change(screen.getByLabelText("建题冷却"), { target: { value: "240" } });
+    expect(screen.queryByText("会话上限")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "应用" }));
+    await waitFor(() => expect(api.dispatchLimits).toHaveBeenCalledTimes(1));
+    expect((api.dispatchLimits as ReturnType<typeof vi.fn>).mock.calls[0][0]).toEqual({
+      mode: "containers",
+      containers: 5,
+      max_tasks: 7,
+      create_cooldown_seconds: 240,
+    });
     fireEvent.click(screen.getByTitle("置顶"));
     await waitFor(() => expect(api.dispatchQueueAction).toHaveBeenCalledWith("task-1", "pin"));
   });

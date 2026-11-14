@@ -448,11 +448,6 @@ export const api = {
       `/api/dispatch/holds/${encodeURIComponent(id)}/probe`,
       { method: "POST" },
     ),
-  dispatchReleaseHold: (id: string) =>
-    request<{ ok: boolean; source: string; snapshot: DispatchSnapshot }>(
-      `/api/dispatch/holds/${encodeURIComponent(id)}/release`,
-      { method: "POST" },
-    ),
   dispatchProbe: (source: string) =>
     request<{ source: string; ok: boolean; message: string; detail: Record<string, unknown> }>(
       `/api/dispatch/probes/${encodeURIComponent(source)}`,
@@ -470,7 +465,7 @@ export const api = {
     ),
   dispatchQueueAction: (
     taskId: string,
-    action: "pin" | "move" | "retry" | "quarantine" | "ignore" | "release" | "keep",
+    action: "pin" | "move",
     direction?: "up" | "down" | "top",
   ) =>
     request<{ ok: boolean; snapshot?: DispatchSnapshot }>(

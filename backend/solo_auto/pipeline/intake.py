@@ -414,6 +414,14 @@ class IntakeService:
             remaining_capacity = max(0, wanted - counts["active"])
             if staged:
                 if remaining_capacity > 0:
+                    # 暂存工程已计入在手和容器占用，判定时先扣掉它自己。
+                    if self._creation_blocked(
+                        plan,
+                        in_hand=max(0, counts["in_hand"] - 1),
+                        extra=max(0, counts["staged"] - 1),
+                    ):
+                        return
+                    self._mark_created(str(staged[0].get("engineeringId") or ""))
                     await self._adopt_staged(plan, staged[0])
                 else:
                     await self._release_staged_claim(staged[-1], "超过在手上限，已归还，等待后续补位")
@@ -428,6 +436,8 @@ class IntakeService:
                     return
             if not self._empty_retry_due(plan):
                 return
+            if self._creation_blocked(plan, in_hand=counts["in_hand"], extra=counts["staged"]):
+                return
             free_gb = shutil.disk_usage(self.paths.home).free / 1024**3
             if free_gb < self.settings.storage.disk_floor_gb:
                 if dispatcher is not None and dispatcher.v3_enabled:
@@ -436,7 +446,6 @@ class IntakeService:
                         scope=["containers", "intake"],
                         reason_code="disk.low",
                         reason=f"磁盘剩余 {free_gb:.1f}GB，低于安全阈值",
-                        auto=True,
                     )
                     return
                 plan["status"] = "paused"
@@ -454,7 +463,6 @@ class IntakeService:
                         scope=["intake"],
                         reason_code="source.auth",
                         reason=f"题源会话过期：{exc}",
-                        auto=True,
                     )
                     self.repo.add_event(
                         "source.auth_expired",
@@ -490,7 +498,6 @@ class IntakeService:
                         scope=["intake"],
                         reason_code="source.empty",
                         reason=reason,
-                        auto=True,
                     )
                 return
             if "empty_step" in plan or "empty_retry_at" in plan:
@@ -506,6 +513,8 @@ class IntakeService:
                 dispatcher.release_hold("source_guard", actor="intake")
             engineering_id = str(_engineering_id(candidate))
             plan["attempted_engineering_ids"].append(engineering_id)
+            # 冷却从开始领取这一刻起算；领取或建题失败也要等满冷却再试下一题。
+            self._mark_created(engineering_id)
             claimed_meta: dict[str, Any] | None = None
             task_created = False
             try:
@@ -566,6 +575,31 @@ class IntakeService:
                     plan["status"] = "paused"
                     self._save()
             self.bus.publish("intake.updated", {"counts": self._counts(plan), "status": plan["status"]})
+
+    def _creation_blocked(self, plan: dict[str, Any], *, in_hand: int, extra: int) -> bool:
+        """容器优先建题门禁；不放行时把原因写进计划等待说明并返回 True。"""
+        dispatcher = getattr(self.autopilot, "dispatcher", None)
+        if dispatcher is None or not dispatcher.v3_enabled:
+            return False
+        decision = dispatcher.creation_decision(in_hand=in_hand, extra_demand=extra)
+        if decision.allowed:
+            return False
+        if decision.code == "create.cooldown" and decision.until:
+            # 冷却倒计时每秒都在变，等待说明只写到期时刻，避免每轮都重写计划文件。
+            try:
+                until = datetime.fromisoformat(decision.until).astimezone()
+                reason = f"建题冷却中，{until:%H:%M:%S} 后建下一题"
+            except ValueError:
+                reason = "建题冷却中"
+        else:
+            reason = decision.text
+        self._wait(plan, reason)
+        return True
+
+    def _mark_created(self, engineering_id: str) -> None:
+        dispatcher = getattr(self.autopilot, "dispatcher", None)
+        if dispatcher is not None and dispatcher.v3_enabled:
+            dispatcher.mark_task_created(engineering_id=engineering_id)
 
     @property
     def max_in_hand(self) -> int:

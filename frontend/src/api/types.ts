@@ -782,19 +782,18 @@ export type DispatchSnapshot = {
   sentence: string;
   started_at: string;
   uptime_seconds: number;
-  preset: "throughput" | "balanced" | "careful" | "custom";
   settings: Record<string, unknown>;
   limits: {
+    mode: DispatchMode;
     containers: number;
-    effective_containers: number;
-    sessions: number;
-    in_hand: number;
-    launch_spacing_seconds: number;
+    max_tasks: number;
+    create_cooldown_seconds: number;
     recording: number;
     skill_limit: number;
     synced: boolean;
   };
   pools: Record<string, DispatchPool>;
+  creation?: DispatchCreation;
   session_capacity?: { running: number; waiting: number; label: string };
   holds: DispatchHold[];
   hold_history: Array<DispatchHold & { released_at: string; released_by: string; duration_seconds: number }>;
@@ -816,23 +815,35 @@ export type DispatchSnapshot = {
     latest?: { occupied: number; running: number; waiting: number; label: string };
   };
   plan: Record<string, unknown>;
-  elastic: { enabled: boolean; effective: number; floor: number; ceiling: number };
   loops: Array<{ name: string; status: string; last_beat_at: number; errors: number }>;
   keep_awake: boolean;
 };
 
+/** 调度模式：容器优先只看容器占用；任务优先只看在手任务数（容器仍受最大容器数约束）。 */
+export type DispatchMode = "containers" | "tasks";
+
+/** 建题门禁：按模式看容器占用或在手任务数，再加距上次建题满冷却。 */
+export type DispatchCreation = {
+  allowed: boolean;
+  code: string;
+  text: string;
+  until: string;
+  last_created_at: string;
+  next_allowed_at: string;
+  cooldown_seconds: number;
+  in_hand: number;
+  mode?: DispatchMode;
+  max_tasks: number;
+  containers: { live: number; waiting: number; extra: number; used: number; limit: number };
+};
+
+/** 调度页编辑：调度模式，以及最大容器数、最大任务数、建题冷却（秒）三个数。 */
 export type DispatchLimitsRequest = {
-  preset?: DispatchSnapshot["preset"];
+  mode?: DispatchMode;
   containers?: number;
-  sessions?: number;
-  authoring?: number;
-  delivering?: number;
-  recording?: number;
-  in_hand?: number;
-  launch_spacing_seconds?: number;
-  session_spacing_seconds?: number;
+  max_tasks?: number;
+  create_cooldown_seconds?: number;
   keep_awake?: boolean;
-  elastic?: { enabled?: boolean; ceiling?: number };
 };
 
 export type DispatchLogRow = EventRow & { family: string };

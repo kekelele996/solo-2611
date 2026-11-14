@@ -11,6 +11,10 @@ from solo_auto.dispatch.holds import Hold, HoldRegistry
 from solo_auto.dispatch.queue import DispatchItem
 from solo_auto.settings import DispatchSettings
 
+# 容器与会话的拉起间隔是固定的内部节拍，不再作为可调参数；建题节奏由建题冷却决定。
+LAUNCH_SPACING_SECONDS = 20
+SESSION_SPACING_SECONDS = 20
+
 
 @dataclass(slots=True)
 class GateResult:
@@ -81,13 +85,80 @@ def evaluate_container_gates(
         _disk_gate(facts, settings),
         _resync_gate(limit_resync_until, now),
         _capacity_gate(pools.get("containers", {})),
-        _spacing_gate(settings, pools.get("containers", {}), last_launch_at, now),
+        _spacing_gate(last_launch_at, now),
         _item_gate(item, now),
     ]
     for check in checks:
         if not check.ok:
             return GateDecision(item.task_id, item.stage, False, check.code, check.text, check.until, check.gate, checks)
     return GateDecision(item.task_id, item.stage, True, checks=checks)
+
+
+def evaluate_creation_gates(
+    *,
+    settings: DispatchSettings,
+    desired_state: str,
+    facts: FactsSnapshot,
+    holds: HoldRegistry,
+    startup_elapsed: float,
+    in_hand: int,
+    container_used: int,
+    last_created_at: float,
+    now: datetime,
+) -> GateDecision:
+    """建题准入，按调度模式只看一个上限，再加严格冷却。
+
+    容器优先：容器占用 + 1 不超过最大容器数（C2），不看最大任务数。
+    任务优先：在手任务数小于最大任务数（C1），不看容器占用；容器由容器门禁和技能限流器排队。
+    每次判定只放行一道题；冷却从上一次建题开始计时，重启后也接着算，绝不缩短。
+    """
+    task_limit = settings.max_tasks
+    tasks_first = settings.mode == "tasks"
+    checks = [
+        GateResult("G1", settings.enabled, "dispatch.disabled", "调度总开关已关闭") if not settings.enabled else GateResult("G1", True),
+        _intent_gate(desired_state),
+        _hold_gate(holds, ["containers"]),
+        GateResult("G5", True)
+        if startup_elapsed >= settings.startup_grace_seconds
+        else GateResult("G5", False, "startup.grace", "服务刚启动，等待状态核对完成"),
+        _docker_gate(facts),
+        GateResult("C1", True)
+        if not tasks_first or in_hand < task_limit
+        else GateResult("C1", False, "tasks.full", f"任务已满 {in_hand}/{task_limit}，等在手任务结束再建题"),
+        GateResult("C2", True)
+        if tasks_first or container_used + 1 <= settings.containers
+        else GateResult(
+            "C2",
+            False,
+            "containers.full",
+            f"容器已满 {container_used}/{settings.containers}，等容器释放再建题",
+        ),
+        _cooldown_gate(settings, last_created_at, now),
+    ]
+    for check in checks:
+        if not check.ok:
+            return GateDecision("intake", "create", False, check.code, check.text, check.until, check.gate, checks)
+    return GateDecision("intake", "create", True, checks=checks)
+
+
+def _cooldown_gate(settings: DispatchSettings, last_created_at: float, now: datetime) -> GateResult:
+    if last_created_at <= 0:
+        return GateResult("C3", True)
+    cooldown = max(20, settings.create_cooldown_seconds)
+    elapsed = now.timestamp() - last_created_at
+    if elapsed < 0:
+        # 系统时钟回拨时按整段冷却处理，不让冷却被“提前结束”。
+        elapsed = 0
+    if elapsed < cooldown:
+        until = (now + timedelta(seconds=cooldown - elapsed)).replace(microsecond=0).isoformat()
+        return GateResult(
+            "C3",
+            False,
+            "create.cooldown",
+            f"建题冷却中：距上次建题 {int(elapsed)} 秒，冷却 {cooldown} 秒",
+            until,
+        )
+    return GateResult("C3", True)
 
 
 def evaluate_session_gates(
@@ -107,7 +178,7 @@ def evaluate_session_gates(
         _hold_gate(holds, ["sessions", "authoring", "delivering"]),
         GateResult("G5", startup_elapsed >= settings.startup_grace_seconds),
         _capacity_gate(pools.get("sessions", {})),
-        _session_spacing_gate(settings, last_session_at, now),
+        _session_spacing_gate(last_session_at, now),
         _item_gate(item, now),
     ]
     for check in checks:
@@ -206,11 +277,11 @@ def _capacity_gate(pool: dict[str, Any]) -> GateResult:
     return GateResult("G10", True)
 
 
-def _spacing_gate(settings: DispatchSettings, pool: dict[str, Any], last_launch_at: float, now: datetime) -> GateResult:
+def _spacing_gate(last_launch_at: float, now: datetime) -> GateResult:
     if last_launch_at <= 0:
         return GateResult("G11", True)
-    available = int(pool.get("available") or 0)
-    spacing = max(10, settings.launch_spacing_seconds if available <= 1 else 10)
+    # 严格间隔：连发启动会让桌面深链与容器抢同一秒。
+    spacing = LAUNCH_SPACING_SECONDS
     elapsed = now.timestamp() - last_launch_at
     if elapsed < spacing:
         until = (now + timedelta(seconds=spacing - elapsed)).replace(microsecond=0).isoformat()
@@ -218,17 +289,17 @@ def _spacing_gate(settings: DispatchSettings, pool: dict[str, Any], last_launch_
     return GateResult("G11", True)
 
 
-def _session_spacing_gate(settings: DispatchSettings, last_session_at: float, now: datetime) -> GateResult:
+def _session_spacing_gate(last_session_at: float, now: datetime) -> GateResult:
     if last_session_at <= 0:
         return GateResult("G11", True)
     elapsed = now.timestamp() - last_session_at
-    if elapsed < settings.session_spacing_seconds:
-        until = (now + timedelta(seconds=settings.session_spacing_seconds - elapsed)).replace(microsecond=0).isoformat()
+    if elapsed < SESSION_SPACING_SECONDS:
+        until = (now + timedelta(seconds=SESSION_SPACING_SECONDS - elapsed)).replace(microsecond=0).isoformat()
         return GateResult(
             "G11",
             False,
             "spacing.session",
-            f"距上次拉起会话 {int(elapsed)} 秒，间隔 {settings.session_spacing_seconds} 秒",
+            f"距上次拉起会话 {int(elapsed)} 秒，间隔 {SESSION_SPACING_SECONDS} 秒",
             until,
         )
     return GateResult("G11", True)

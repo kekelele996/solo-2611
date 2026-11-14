@@ -11,21 +11,22 @@ import asyncio
 import logging
 import os
 import shutil
-import statistics
 from contextlib import suppress
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Protocol
 
 from solo_auto.dispatch.classify import Evidence, Failure, FailureClassifier
 from solo_auto.dispatch.clock import Clock, ClockState, observe_clock
-from solo_auto.dispatch.elastic import ElasticController
 from solo_auto.dispatch.facts import FactsCollector, FactsSnapshot
 from solo_auto.dispatch.faults import FaultController
 from solo_auto.dispatch.gates import (
+    LAUNCH_SPACING_SECONDS,
     GateDecision,
     evaluate_agent_gates,
     evaluate_container_gates,
+    evaluate_creation_gates,
     evaluate_session_gates,
 )
 from solo_auto.dispatch.guards import GuardRunner
@@ -45,6 +46,9 @@ from solo_auto.settings import DispatchSettings, Paths, Settings, save_settings
 from solo_auto.store.repo import Repository
 
 LOGGER = logging.getLogger(__name__)
+# 容器优先时不限在手任务数，用设置允许的最大值占位；会话最多 8 个。
+MAX_IN_HAND = 50
+MAX_SESSIONS = 8
 
 
 class RuntimeProtocol(Protocol):
@@ -92,19 +96,22 @@ class Dispatcher:
         self.intents = IntentLog(repo)
         self.throughput = ThroughputLedger(repo)
         self.health = LoopHealth()
-        self.elastic = ElasticController(paths.run / "elastic.json", self.config)
         self.probes = ProbeManager(holds=self.holds, facts=self.facts, settings=self.config)
         self.guards = GuardRunner(self.queue, self.config)
         self.state_file = paths.run / "dispatch.json"
         self.starts_file = paths.run / "starts.json"
         self.state = self._load_state()
         self.desired_state = str(self.state.get("desired_state") or ("running" if self.config.enabled else "paused"))
-        self.preset = str(self.state.get("preset") or self.config.preset)
         raw_plan = self.state.get("plan")
         self.plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
         self.started_monotonic = self.clock.monotonic()
         self.last_launch_at = 0.0
         self.last_session_at = 0.0
+        # 建题冷却必须跨重启生效，否则每次重启都会立刻连建一题。
+        try:
+            self.last_created_at = float(self.state.get("last_created_at") or 0.0)
+        except (TypeError, ValueError):
+            self.last_created_at = 0.0
         self.limit_resync_until = ""
         self.skill_limit = 0
         self.limit_synced = False
@@ -155,13 +162,16 @@ class Dispatcher:
         self._record_start()
         recent_crashes = self._recent_unclean_starts()
         if recent_crashes >= 2:
-            self.register_hold(
-                source="crash_loop",
-                scope=["global"],
-                reason_code="system.crash_loop",
-                reason=f"15 分钟内异常退出 {recent_crashes} 次，本次启动已自动挂起",
-                auto=False,
+            # 只记日志：异常退出后照常恢复调度，不再挂起等人处理。
+            self.repo.add_event(
+                "dispatch.crash_loop",
+                f"15 分钟内异常退出 {recent_crashes} 次，已照常恢复调度",
+                level="warn",
+                actor="dispatch",
             )
+        # 旧版本留下的人工挂起（崩溃挂起）直接丢弃。
+        self.holds.release("crash_loop", actor="dispatch")
+        self._close_legacy_quarantine()
         await self.tick()
         await self.sync_skill_limit(sync=False)
         definitions = {
@@ -169,7 +179,6 @@ class Dispatcher:
             "gate": (2.0, 60.0, self._gate_loop),
             "probe": (5.0, 120.0, self._probe_loop),
             "retry": (3.0, 60.0, self._retry_loop),
-            "elastic": (30.0, 180.0, self._elastic_loop),
         }
         for name, (interval, stall, runner) in definitions.items():
             self.health.register(name, interval=interval, stall_after=stall)
@@ -208,12 +217,8 @@ class Dispatcher:
         await self._refresh_waits()
 
     async def sync_skill_limit(self, *, sync: bool = True) -> dict[str, Any]:
-        desired = (
-            max(self.config.containers, self.elastic.state.ceiling)
-            if self.config.elastic.enabled
-            else self.config.containers
-        )
-        requested = self.config.elastic.ceiling if self.config.elastic.enabled else self.config.containers
+        desired = self.config.containers
+        requested = self.config.containers
         result = await self.gateway.call(["config", "show"], timeout=30)
         actual = 0
         if result.code == 0 and result.data:
@@ -292,6 +297,112 @@ class Dispatcher:
             )
         self._publish()
         return decision
+
+    def container_demand(self, *, extra: int = 0) -> dict[str, Any]:
+        """容器占用 = 运行中的受管容器 + 在手任务里还没拿到容器、但仍需要容器的数量。
+
+        沿用 sg-auto 的容器优先口径：刚建好还没起容器的题按 1 计，跑完容器阶段（ran 之后）计 0。
+        ``running`` 却长时间没有容器、状态文件也不再更新的题视为执行器已退出，不再计入，
+        避免一个失联任务把名额一直占着。``extra`` 用于计入已领取、尚未建题的暂存工程。
+        """
+        snapshot = self._fact_snapshot
+        live = set(snapshot.docker.containers) if snapshot is not None else set()
+        waiting: list[str] = []
+        now = self.clock.wall().timestamp()
+        for task_id in self._in_hand_task_ids():
+            task = self.repo.get_task(task_id) or {}
+            root = str(task.get("task_root") or "")
+            if not root:
+                waiting.append(task_id)
+                continue
+            status, container, mtime = _task_run_state(Path(root))
+            if status not in NEEDS_CONTAINER:
+                continue
+            if container and container in live:
+                continue
+            if status == "running" and mtime and now - mtime > self.config.phantom_seconds:
+                continue
+            waiting.append(task_id)
+        used = len(live) + len(waiting) + max(0, extra)
+        return {
+            "live": len(live),
+            "waiting": len(waiting),
+            "extra": max(0, extra),
+            "used": used,
+            "limit": self.config.containers,
+            "waiting_task_ids": waiting,
+        }
+
+    def creation_decision(self, *, in_hand: int, extra_demand: int = 0) -> GateDecision:
+        """领题建题前调用：只回答“现在能不能再建一题”，不改任何状态。"""
+        snapshot = self._fact_snapshot
+        if snapshot is None:
+            snapshot = FactsSnapshot(docker=self.facts._docker, disk_free_gb=self.config.disk.floor_gb, observed_at=0)
+        demand = self.container_demand(extra=extra_demand)
+        return evaluate_creation_gates(
+            settings=self.config,
+            desired_state=self.desired_state,
+            facts=snapshot,
+            holds=self.holds,
+            startup_elapsed=self.clock.monotonic() - self.started_monotonic,
+            in_hand=in_hand,
+            container_used=int(demand["used"]),
+            last_created_at=self.last_created_at,
+            now=self.clock.wall(),
+        )
+
+    def mark_task_created(self, *, engineering_id: str = "", actor: str = "intake") -> None:
+        """记录一次建题尝试；冷却从这一刻起算，领取失败也不提前结束冷却。"""
+        self.last_created_at = self.clock.wall().timestamp()
+        self._save_state()
+        self.repo.add_event(
+            "dispatch.task_created",
+            f"开始建题{('：' + engineering_id) if engineering_id else ''}，"
+            f"{self.config.create_cooldown_seconds} 秒内不再建新题",
+            actor=actor,
+            details={"engineering_id": engineering_id, "cooldown": self.config.create_cooldown_seconds},
+        )
+        self._publish()
+
+    def _in_hand_task_ids(self) -> list[str]:
+        jobs = getattr(self.autopilot, "jobs", None) if self.autopilot is not None else None
+        if isinstance(jobs, dict) and jobs:
+            ids: list[str] = []
+            for task_id, job in jobs.items():
+                if str(getattr(job, "stage", "")) not in {"pending", "chatgpt", "authoring", "running"}:
+                    continue
+                if getattr(job, "desktop_running", False) and getattr(job, "awaiting_platform", False):
+                    continue
+                ids.append(str(task_id))
+            return ids
+        return [item.task_id for item in self.queue.all_items(include_terminal=False) if item.status in IN_HAND]
+
+    def creation_view(self, *, in_hand: int | None = None, extra_demand: int = 0) -> dict[str, Any]:
+        count = self.in_hand_count() if in_hand is None else in_hand
+        decision = self.creation_decision(in_hand=count, extra_demand=extra_demand)
+        cooldown = max(20, self.config.create_cooldown_seconds)
+        next_at = ""
+        if self.last_created_at > 0:
+            next_at = (
+                datetime.fromtimestamp(self.last_created_at + cooldown, UTC).replace(microsecond=0).isoformat()
+            )
+        return {
+            "allowed": decision.allowed,
+            "code": decision.code,
+            "text": decision.text or "可以建下一题",
+            "until": decision.until,
+            "last_created_at": (
+                datetime.fromtimestamp(self.last_created_at, UTC).replace(microsecond=0).isoformat()
+                if self.last_created_at > 0
+                else ""
+            ),
+            "next_allowed_at": next_at,
+            "cooldown_seconds": cooldown,
+            "in_hand": count,
+            "mode": self.config.mode,
+            "max_tasks": self.config.max_tasks,
+            "containers": self.container_demand(extra=extra_demand),
+        }
 
     def mark_container_started(self, task_id: str) -> None:
         self.queue.update(task_id, status="active", stage="running", wait_code="", wait_text="", wait_until="")
@@ -376,26 +487,12 @@ class Dispatcher:
 
     def _install_config(self, config: DispatchSettings) -> None:
         """Validate and install a dispatch config into every component that reads it."""
-        if config.preset == "careful":
-            config.in_hand = 0
-            config.sessions = 0
-            config.launch_spacing_seconds = 90
-        elif config.preset == "throughput":
-            config.in_hand = 0
-            config.sessions = 0
-            config.launch_spacing_seconds = 30
-        elif config.preset == "balanced":
-            config.in_hand = 0
-            config.sessions = 0
-            config.launch_spacing_seconds = 45
-        self.preset = config.preset
         # Re-run model validation and enforce cross-field constraints.
         validated = DispatchSettings.model_validate(config.model_dump())
         self.settings.dispatch = validated
         self.config = validated
         self.policy.settings = self.config.retry
         self.guards.settings = self.config
-        self.elastic.settings = self.config
         self.probes.settings = self.config
         self.facts.timeout_seconds = self.config.docker_timeout_seconds
         self.facts.stale_seconds = self.config.docker_stale_seconds
@@ -430,18 +527,7 @@ class Dispatcher:
         return {"changed": changed, "sync": sync}
 
     async def update_limits(self, values: dict[str, Any], *, actor: str = "user") -> dict[str, Any]:
-        allowed = {
-            "preset",
-            "containers",
-            "sessions",
-            "authoring",
-            "delivering",
-            "recording",
-            "in_hand",
-            "launch_spacing_seconds",
-            "session_spacing_seconds",
-            "keep_awake",
-        }
+        allowed = {"mode", "containers", "max_tasks", "create_cooldown_seconds", "keep_awake"}
         changed: dict[str, list[Any]] = {}
         for key, value in values.items():
             if key not in allowed or value is None:
@@ -450,13 +536,6 @@ class Dispatcher:
             if old != value:
                 changed[key] = [old, value]
                 setattr(self.config, key, value)
-        elastic = values.get("elastic")
-        if isinstance(elastic, dict):
-            for key in ("enabled", "ceiling"):
-                if key in elastic and getattr(self.config.elastic, key) != elastic[key]:
-                    old = getattr(self.config.elastic, key)
-                    setattr(self.config.elastic, key, elastic[key])
-                    changed[f"elastic.{key}"] = [old, elastic[key]]
         self._install_config(self.config)
         save_settings(self.paths, self.settings)
         sync = await self.sync_skill_limit(sync=True)
@@ -489,7 +568,6 @@ class Dispatcher:
         self.config = validated
         self.policy.settings = self.config.retry
         self.guards.settings = self.config
-        self.elastic.settings = self.config
         self.probes.settings = self.config
         save_settings(self.paths, self.settings)
         self.repo.add_event("dispatch.policies_changed", "调度策略已更新", actor=actor, details={"changed": changed})
@@ -502,22 +580,24 @@ class Dispatcher:
         evidence: Evidence,
         *,
         actor: str = "executor",
+        final: bool = False,
     ) -> tuple[Failure, PolicyDecision, DispatchItem | None]:
+        """记录一次失败：能重跑的排到队尾，会话已消耗的（``final``）直接结束、由自动清理补新题。"""
         item = self.queue.get(task_id) or self.queue.enqueue(task_id, stage=evidence.stage)
         failure = self.classifier.classify(evidence)
         if failure.kind.startswith("gateway.") and self.preflight is not None:
             asyncio.create_task(self.probes.probe("llm_guard"))
         if failure.kind.startswith("docker.") and self.preflight is not None:
             asyncio.create_task(self.probes.probe("docker_guard"))
-        if item.repeat_signature and item.repeat_signature == failure.signature():
+        if final and not failure.hold_source:
             failure = Failure(
                 kind=failure.kind,
                 transient=False,
                 charge=False,
                 detail=failure.detail,
-                matched_by=f"{failure.matched_by};repeat",
+                matched_by=f"{failure.matched_by};final",
                 evidence=failure.evidence,
-                disposition="quarantine",
+                disposition="final",
             )
         decision, updated = self.policy.apply(self.queue, item, failure)
         if decision.hold_source:
@@ -526,13 +606,12 @@ class Dispatcher:
                 scope=decision.hold_scope or ["global"],
                 reason_code=failure.kind,
                 reason=failure.detail,
-                auto=decision.hold_source not in {"breaker"},
                 probe_seconds=self.config.llm_guard.paused_probe_seconds,
                 self_heal_seconds=3600,
                 caused_by_task=task_id,
                 metadata={"error": failure.detail, "matched_by": failure.matched_by},
             )
-        event_level = "warn" if decision.status in {"backoff", "quarantined", "interrupted"} else "info"
+        event_level = "error" if decision.action in {"retry", "give_up"} else "info"
         self.repo.add_event(
             "retry.decided" if decision.action == "retry" else f"retry.{decision.action}",
             f"{task_id} 分类为 {failure.kind}：{decision.detail[:240]}",
@@ -568,7 +647,7 @@ class Dispatcher:
         item = self.queue.get(task_id)
         if item is None:
             return
-        status = "done" if outcome in {"done", "awaiting_audit"} else ("quarantined" if outcome == "failed" else outcome)
+        status = "done" if outcome in {"done", "awaiting_audit"} else outcome
         if item.status == status:
             return
         self.queue.update(
@@ -622,20 +701,19 @@ class Dispatcher:
         scope: list[str],
         reason_code: str,
         reason: str,
-        auto: bool = True,
     ) -> Hold:
+        """所有挂起都由探测器自动复测、恢复后自动解除，不需要人工处理。"""
         hold = self.holds.register(
             source=source,
             scope=scope,
             reason_code=reason_code,
             reason=reason,
-            auto=auto,
-            probe_seconds=None if not auto else 300,
+            probe_seconds=300,
         )
         self.repo.add_event(
             "hold.entered",
             f"新增挂起：{reason}",
-            level="warn" if not auto else "info",
+            level="info",
             actor="dispatch",
             details=asdict(hold),
         )
@@ -710,19 +788,18 @@ class Dispatcher:
             "sentence": self.status_sentence(),
             "started_at": self.clock.wall().replace(microsecond=0).isoformat(),
             "uptime_seconds": round(self.clock.monotonic() - self.started_monotonic, 1),
-            "preset": self.preset,
             "settings": self.config.model_dump(),
             "limits": {
+                "mode": self.config.mode,
                 "containers": self.config.containers,
-                "effective_containers": self.effective_container_limit,
-                "sessions": self.effective_session_limit,
-                "in_hand": self.effective_in_hand,
-                "launch_spacing_seconds": self.config.launch_spacing_seconds,
+                "max_tasks": self.config.max_tasks,
+                "create_cooldown_seconds": max(20, self.config.create_cooldown_seconds),
                 "recording": self.config.recording,
                 "skill_limit": self.skill_limit,
                 "synced": self.limit_synced,
             },
             "pools": self.pools_book.snapshot(),
+            "creation": self.creation_view(),
             "session_capacity": {
                 "waiting": len(waiting_sessions),
                 "running": max(0, len(active) - len(waiting_sessions)),
@@ -750,11 +827,6 @@ class Dispatcher:
             "throughput": self.throughput.summary(),
             "capacity": self.throughput.capacity(),
             "plan": self.plan,
-            "elastic": {
-                **self.elastic.state.view(),
-                "enabled": self.config.elastic.enabled,
-                "effective": self.effective_container_limit,
-            },
             "loops": self.health.snapshot(),
             "keep_awake": self.config.keep_awake,
         }
@@ -782,7 +854,7 @@ class Dispatcher:
         # 已在执行的条目不算「接下来启动」，只列真正等待的。
         waiting = [item for item in ordered if not item.active][:limit]
         now = self.clock.wall()
-        spacing = max(10, self.config.launch_spacing_seconds)
+        spacing = LAUNCH_SPACING_SECONDS
         items: list[dict[str, Any]] = []
         for index, item in enumerate(waiting):
             decision = self._decision_for(item, queue_head=index == 0)
@@ -830,24 +902,22 @@ class Dispatcher:
 
     @property
     def effective_container_limit(self) -> int:
-        return self.elastic.effective if self.config.elastic.enabled else self.config.containers
+        """最大容器数是唯一的容器上限。"""
+        return self.config.containers
+
+    @property
+    def tasks_first(self) -> bool:
+        return self.config.mode == "tasks"
 
     @property
     def effective_in_hand(self) -> int:
-        if self.config.in_hand:
-            return self.config.in_hand
-        derived = self._derived_in_hand()
-        agent_mode = getattr(getattr(self.autopilot, "settings", None), "agent_mode", "")
-        if agent_mode == "chatgpt":
-            # 桌面模式下一个会话从出题跑到交付，领到手却开不了会话的题只会干等，
-            # 因此只多备一题，保证有会话结束时能立刻滚动补上。
-            derived = min(derived, self.effective_session_limit + 1)
-        return derived
+        """在手上限。任务优先时就是最大任务数；容器优先时不限任务数，由容器占用决定能否建题。"""
+        return self.config.max_tasks if self.tasks_first else MAX_IN_HAND
 
     @property
     def effective_session_limit(self) -> int:
-        """ChatGPT 会话上限：未单独设置时等于容器并发，按配置滚动而不是按在手数扩散。"""
-        return min(8, self.config.sessions or self.effective_container_limit)
+        """会话上限：任务优先跟随最大任务数；容器优先时任务数可以浮动，只受会话硬上限约束。"""
+        return max(1, min(MAX_SESSIONS, self.effective_in_hand))
 
     def in_hand_count(self) -> int:
         """已领取、仍会继续推进的任务数；需人工处理和已结束的不占在手。"""
@@ -871,7 +941,6 @@ class Dispatcher:
     def status_sentence(self) -> str:
         pools = self.pools_book.snapshot()
         containers = pools["containers"]
-        sessions = pools["sessions"]
         in_hand = self.in_hand_count()
         prefix = {
             "paused": "已暂停",
@@ -881,11 +950,12 @@ class Dispatcher:
             "idle": "空闲",
             "running": "运行中",
         }[self._effective_state(self.queue.all_items())]
+        demand = self.container_demand()
         parts = [
             prefix,
-            f"容器 {containers['used']}/{containers['limit']}",
-            f"会话 {sessions['used']}/{sessions['limit']}",
-            f"在手 {in_hand}/{self.effective_in_hand}",
+            "任务优先" if self.tasks_first else "容器优先",
+            f"容器 {demand['used']}/{containers['limit']}",
+            f"任务 {in_hand}/{self.effective_in_hand}" if self.tasks_first else f"任务 {in_hand}",
         ]
         waiting = sum(
             1
@@ -896,17 +966,20 @@ class Dispatcher:
             parts.append(f"等待继续 {waiting}")
         hold = self.holds.active()[0] if self.holds.active() else None
         if hold:
-            if hold.next_at:
-                parts.append(f"{hold.reason}，{(hold.next_at[11:16] if len(hold.next_at) >= 16 else '稍后')} 复测")
+            when = hold.next_at[11:16] if len(hold.next_at) >= 16 else "稍后"
+            parts.append(f"{hold.reason}，{when} 自动复测")
+        elif self.desired_state == "running":
+            cooldown = max(20, self.config.create_cooldown_seconds)
+            elapsed = self.clock.wall().timestamp() - self.last_created_at
+            countdown = max(0, int(cooldown - max(0.0, elapsed))) if self.last_created_at else 0
+            if self.tasks_first and in_hand >= self.effective_in_hand:
+                parts.append("任务已满，等待在手任务结束")
+            elif not self.tasks_first and demand["used"] + 1 > containers["limit"]:
+                parts.append("容器已满，等待容器释放")
+            elif countdown:
+                parts.append(f"建题冷却 {countdown} 秒")
             else:
-                parts.append(f"{hold.reason}，需要人工处理")
-        else:
-            decision = self.explain().get("decision")
-            if isinstance(decision, dict) and decision.get("allowed"):
-                spacing = max(10, self.config.launch_spacing_seconds)
-                elapsed = self.clock.wall().timestamp() - self.last_launch_at
-                countdown = max(0, int(spacing - elapsed)) if self.last_launch_at else 0
-                parts.append(f"{countdown} 秒后启动下一题" if countdown else "可以启动下一题")
+                parts.append("可以建下一题")
         return " · ".join(parts)
 
     def _effective_state(self, items: list[DispatchItem]) -> str:
@@ -995,37 +1068,13 @@ class Dispatcher:
             ),
         )
 
-    def _derived_in_hand(self) -> int:
-        containers = max(1, self.effective_container_limit)
-        rows = self.repo.query(
-            "SELECT authoring_s, running_s, delivering_s, recording_s, exporting_s FROM dispatch_outcomes ORDER BY finished_at DESC LIMIT 20"
-        )
-        values = [float(row.get("running_s") or 0) for row in rows]
-        if len(rows) < 5 or not values or statistics.median(values) <= 0:
-            raw = containers + 2
-        else:
-            authoring = statistics.median(float(row.get("authoring_s") or 0) for row in rows)
-            running = max(1, statistics.median(values))
-            other = statistics.median(
-                float(row.get("delivering_s") or 0)
-                + float(row.get("recording_s") or 0)
-                + float(row.get("exporting_s") or 0)
-                for row in rows
-            )
-            raw = round(containers * (authoring + running + other) / running + 0.499)
-        preset = self.preset
-        if preset == "careful":
-            return containers
-        if preset == "balanced":
-            return min(2 * containers + 1, max(containers + 1, round(((min(3 * containers, max(containers + 1, raw))) + containers) / 2 + 0.499)))
-        return min(3 * containers, max(containers + 1, raw))
-
     def _configure_pools(self) -> None:
+        agents = self.effective_session_limit
         self.pools_book.configure(
             containers=self.effective_container_limit,
-            sessions=self.effective_session_limit,
-            authoring=self.config.authoring,
-            delivering=self.config.delivering,
+            sessions=agents,
+            authoring=agents,
+            delivering=agents,
             recording=self.config.recording,
         )
 
@@ -1117,28 +1166,6 @@ class Dispatcher:
         while not self._stopping:
             async with self.health.beat(name):
                 await self._retry_due()
-            await asyncio.sleep(interval)
-
-    async def _elastic_loop(self, name: str, interval: float) -> None:
-        while not self._stopping:
-            async with self.health.beat(name):
-                if self.config.elastic.enabled and self._fact_snapshot is not None:
-                    files = list((self.paths.skill_logs).glob("**/stdout.jsonl"))[-100:]
-                    stall = self.elastic.scan_delay_seconds(files)
-                    pool = self.pools_book.snapshot()["containers"]
-                    action = await self.elastic.adjust(
-                        stall_seconds=stall,
-                        full=int(pool["used"]) >= int(pool["limit"]),
-                        waiting=bool(self.queue.ordered()),
-                    )
-                    if action:
-                        self._configure_pools()
-                        self.repo.add_event(
-                            f"elastic.{action}",
-                            f"弹性容器上限调整为 {self.effective_container_limit}",
-                            actor="dispatch",
-                            details={"stall": round(stall, 1), "effective": self.effective_container_limit},
-                        )
             await asyncio.sleep(interval)
 
     async def _retry_due(self) -> None:
@@ -1288,6 +1315,18 @@ class Dispatcher:
                 return {"ok": False, "message": str(exc)}
         return {"ok": True, "message": "录屏服务可用"}
 
+    def _close_legacy_quarantine(self) -> None:
+        """旧版本把失败题放进“待处理”等人决定；现在统一按失败结束，交给自动清理补新题。"""
+        for item in self.queue.all_items(include_terminal=False):
+            if item.status == "quarantined":
+                self.queue.update(
+                    item.task_id,
+                    status="failed",
+                    wait_code="gave_up",
+                    wait_text=item.wait_text or "失败已记录",
+                    wait_until="",
+                )
+
     def _migrate_queue(self) -> None:
         if self.queue.all_items():
             return
@@ -1312,8 +1351,8 @@ class Dispatcher:
     def _save_state(self) -> None:
         self.state = {
             "desired_state": self.desired_state,
-            "preset": self.preset,
             "plan": self.plan,
+            "last_created_at": self.last_created_at,
             "updated_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
         }
         write_json(self.state_file, self.state)
@@ -1367,6 +1406,29 @@ class Dispatcher:
     def _publish(self) -> None:
         self.bus.publish("dispatch.updated", {"seq": self.bus.sequence})
         self.bus.publish("autopilot.updated", {"active": sum(1 for item in self.queue.all_items() if item.active)})
+
+
+NEEDS_CONTAINER = frozenset({"", "created", "prepared", "prompt_ready", "running"})
+
+
+def _task_run_state(task_root: Path) -> tuple[str, str, float]:
+    """(state.status, 最近一次 attempt 的容器名, state.json mtime)；读不到时按“还需要容器”。"""
+    path = task_root / "monitor" / "state.json"
+    try:
+        stat = path.stat()
+        data = read_json(path, {})
+    except OSError:
+        return "", "", 0.0
+    if not isinstance(data, dict):
+        return "", "", stat.st_mtime
+    attempts = data.get("attempts") if isinstance(data.get("attempts"), list) else []
+    container = ""
+    if attempts and isinstance(attempts[-1], dict):
+        container = str(attempts[-1].get("container") or "")
+    session = data.get("sessionRun")
+    if isinstance(session, dict) and session.get("container"):
+        container = str(session["container"])
+    return str(data.get("status") or ""), container, stat.st_mtime
 
 
 def _parse_dt(value: str) -> datetime | None:

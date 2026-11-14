@@ -1871,57 +1871,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/dispatch/queue/{task_id}/retry": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Retry */
-        post: operations["retry_api_dispatch_queue__task_id__retry_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/dispatch/queue/{task_id}/quarantine": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Quarantine */
-        post: operations["quarantine_api_dispatch_queue__task_id__quarantine_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/dispatch/queue/{task_id}/ignore": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Ignore */
-        post: operations["ignore_api_dispatch_queue__task_id__ignore_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/dispatch/queue/{task_id}/release": {
         parameters: {
             query?: never;
@@ -1933,23 +1882,6 @@ export interface paths {
         put?: never;
         /** Release */
         post: operations["release_api_dispatch_queue__task_id__release_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/dispatch/queue/{task_id}/keep": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Keep */
-        post: operations["keep_api_dispatch_queue__task_id__keep_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2749,13 +2681,6 @@ export interface components {
             /** Sub Direction */
             sub_direction?: string | null;
         };
-        /** DispatchElasticPatch */
-        DispatchElasticPatch: {
-            /** Enabled */
-            enabled?: boolean | null;
-            /** Ceiling */
-            ceiling?: number | null;
-        };
         /** DispatchInterruptRequest */
         DispatchInterruptRequest: {
             /** Task Ids */
@@ -2768,27 +2693,16 @@ export interface components {
         };
         /** DispatchLimitsRequest */
         DispatchLimitsRequest: {
-            /** Preset */
-            preset?: ("throughput" | "balanced" | "careful" | "custom") | null;
+            /** Mode */
+            mode?: ("containers" | "tasks") | null;
             /** Containers */
             containers?: number | null;
-            /** Sessions */
-            sessions?: number | null;
-            /** Authoring */
-            authoring?: number | null;
-            /** Delivering */
-            delivering?: number | null;
-            /** Recording */
-            recording?: number | null;
-            /** In Hand */
-            in_hand?: number | null;
-            /** Launch Spacing Seconds */
-            launch_spacing_seconds?: number | null;
-            /** Session Spacing Seconds */
-            session_spacing_seconds?: number | null;
+            /** Max Tasks */
+            max_tasks?: number | null;
+            /** Create Cooldown Seconds */
+            create_cooldown_seconds?: number | null;
             /** Keep Awake */
             keep_awake?: boolean | null;
-            elastic?: components["schemas"]["DispatchElasticPatch"] | null;
         };
         /** DispatchMoveRequest */
         DispatchMoveRequest: {
@@ -6877,131 +6791,7 @@ export interface operations {
             };
         };
     };
-    retry_api_dispatch_queue__task_id__retry_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                task_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": Record<string, never>;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    quarantine_api_dispatch_queue__task_id__quarantine_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                task_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": Record<string, never>;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    ignore_api_dispatch_queue__task_id__ignore_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                task_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": Record<string, never>;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     release_api_dispatch_queue__task_id__release_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                task_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": Record<string, never>;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    keep_api_dispatch_queue__task_id__keep_post: {
         parameters: {
             query?: never;
             header?: never;

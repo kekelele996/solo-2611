@@ -147,8 +147,8 @@ def test_derive_job_status_for_managed_states() -> None:
     assert derive_job_status(state) == "aborted"
 
 
-def test_start_failure_has_independent_limit() -> None:
-    policy = RecoveryPolicy(DispatchRetrySettings(max_total_attempts=20))
+def test_start_failure_requeues_until_the_total_cap() -> None:
+    policy = RecoveryPolicy(DispatchRetrySettings(max_total_attempts=4))
     item = DispatchItem(task_id="task")
     failure = Failure(
         kind="run.start_failed",
@@ -163,9 +163,13 @@ def test_start_failure_has_independent_limit() -> None:
     item.attempts["run.start_failed"] = 1
     second = policy.decide(item, failure)
     assert second.action == "retry"
-    item.attempts["run.start_failed"] = 2
+    # 单类失败不再有独立上限，也不会隔离；只看累计次数。
+    item.attempts["run.start_failed"] = 5
     third = policy.decide(item, failure)
-    assert third.action == "quarantine"
+    assert third.action == "retry" and third.status == "backoff"
+    item.total_attempts = 3
+    last = policy.decide(item, failure)
+    assert last.action == "give_up" and last.status == "failed"
 
 
 @pytest.mark.asyncio

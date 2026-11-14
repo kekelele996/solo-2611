@@ -49,14 +49,7 @@ class GuardRunner:
                     item,
                     kind="attempt_inflation",
                     reason=f"尝试计数达到 {item.total_attempts}，疑似异常膨胀",
-                    action="隔离并告警",
-                )
-            if item.status == "quarantined" and not item.last_failure:
-                self._hit(
-                    item,
-                    kind="manual_review",
-                    reason="任务已隔离但没有可展示的失败证据",
-                    action="保留并等待人工补证据",
+                    action="结束该题并自动补新题",
                 )
         return list(self.hits.values())
 
@@ -69,8 +62,7 @@ class GuardRunner:
         if hit.kind == "attempt_inflation":
             self.queue.update(
                 hit.task_id,
-                status="quarantined",
-                keep=True,
+                status="failed",
                 wait_code="guard.attempt_inflation",
                 wait_text=hit.reason,
             )

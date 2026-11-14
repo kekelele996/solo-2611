@@ -121,7 +121,7 @@ class DispatchQueue:
             existing.engineering_id = engineering_id or existing.engineering_id
             existing.priority = max(existing.priority, priority)
             if front:
-                existing.position = self._next_position(front=True)
+                existing.position = self.next_position(front=True)
             return self.upsert(existing)
         return self.upsert(
             DispatchItem(
@@ -131,7 +131,7 @@ class DispatchQueue:
                 project_id=project_id,
                 engineering_id=engineering_id,
                 priority=priority,
-                position=self._next_position(front=front),
+                position=self.next_position(front=front),
             )
         )
 
@@ -153,17 +153,6 @@ class DispatchQueue:
         item.wait_code = ""
         item.wait_text = ""
         item.wait_until = ""
-        return self.upsert(item)
-
-    def ignore(self, task_id: str) -> DispatchItem | None:
-        """Close a failed item without retrying; the failure reason stays visible."""
-        item = self.get(task_id)
-        if item is None:
-            return None
-        item.status = "removed"
-        item.wait_code = "ignored"
-        item.wait_until = ""
-        item.not_before = ""
         return self.upsert(item)
 
     def clear_finished(self) -> int:
@@ -230,7 +219,7 @@ class DispatchQueue:
             count += 1
         return count
 
-    def _next_position(self, *, front: bool = False) -> float:
+    def next_position(self, *, front: bool = False) -> float:
         if front:
             row = self.repo.query_one("SELECT MIN(position) AS value FROM dispatch_items")
             value = float((row or {}).get("value") or 0.0)

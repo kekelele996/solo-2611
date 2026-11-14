@@ -28,6 +28,23 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 CLAUDE_LAUNCH_CALL_TIMEOUT_SECONDS = 300
+# 会话停在“启动 / 送入题面”阶段的兜底：技能自身最多重启 Claude 几次，整段通常十几分钟内结束。
+# 超过 STARTUP_RESUME_SECONDS 仍没送达且监督器已死，先接回一次；超过 STARTUP_ABORT_SECONDS 仍未送达，
+# 判定卡在启动页，终止会话并换题（启动失败不计入工程冷却）。
+TERMINAL_RUN_FAILURES = frozenset(
+    {
+        "run.continues_exhausted",
+        "run.timeout",
+        "run.no_progress",
+        "run.hold_timeout",
+        "run.unresponsive",
+        "run.incomplete",
+        "run.session_lost",
+    }
+)
+STARTUP_STATES = frozenset({"launching", "prompt_delivery"})
+STARTUP_RESUME_SECONDS = 900
+STARTUP_ABORT_SECONDS = 1500
 MANAGED_ACTIVE_STATES = {
     "launching",
     "prompt_delivery",
@@ -88,7 +105,7 @@ class RunScheduler:
         self._stopping = False
         self._last_log_publish: dict[str, float] = {}
         self._retry_tasks: set[asyncio.Task[None]] = set()
-        self._waiting_since: dict[str, float] = {}
+        self._startup_resumed: set[str] = set()
         self.intake: Any = None
         self.ledger: Any = None
 
@@ -451,11 +468,12 @@ class RunScheduler:
                 self._write_session_shadow(task_id, status)
                 self._sync_session_state(task_id, run, status, seen_events)
                 session_state = str(status.get("sessionState") or "")
+                if await self._guard_startup(task_id, run, status) == "aborted":
+                    run.phase = "failed"
+                    return
                 if session_state == "waiting_continue":
                     run.phase = "waiting"
-                    await self._account_waiting_continue(task_id, status)
                 elif session_state in {"holding", "manual_input"}:
-                    self._waiting_since.pop(task_id, None)
                     run.phase = "blocked"
                     if session_state == "holding" and str(status.get("lastKind") or "") == "auth":
                         await self._trip_auth_breaker(task_id, "会话等待鉴权处理")
@@ -513,7 +531,6 @@ class RunScheduler:
                     )
                     return
                 else:
-                    self._waiting_since.pop(task_id, None)
                     run.phase = "running"
         except asyncio.CancelledError:
             self.repo.add_event(
@@ -542,7 +559,6 @@ class RunScheduler:
             )
         finally:
             self.active.pop(task_id, None)
-            self._waiting_since.pop(task_id, None)
             (self.paths.slots / f"{task_id}.json").unlink(missing_ok=True)
             if self.dispatcher is not None and self.dispatcher.v3_enabled:
                 if run.phase == "done":
@@ -556,6 +572,58 @@ class RunScheduler:
                 LOGGER.exception("post-run reconcile failed")
             self.bus.publish("queue.updated", self.queue_snapshot())
             self.bus.publish("task.updated", {"task_id": task_id, "phase": run.phase})
+
+    async def _guard_startup(self, task_id: str, run: ActiveRun, status: dict[str, Any]) -> str:
+        """兜底卡在 Claude Code 启动页、题面始终没送进去的会话。返回 ''/'resumed'/'aborted'。"""
+        if str(status.get("status") or "") not in STARTUP_STATES:
+            self._startup_resumed.discard(task_id)
+            return ""
+        delivery = status.get("promptDelivery") if isinstance(status.get("promptDelivery"), dict) else {}
+        if str((delivery or {}).get("status") or "") == "confirmed":
+            return ""
+        elapsed = _elapsed(str(status.get("startedAt") or ""), "") or (time.time() - run.started_at)
+        if elapsed < STARTUP_RESUME_SECONDS:
+            return ""
+        root = str(run.entry.task_root)
+        if not status.get("supervisorAlive") and task_id not in self._startup_resumed:
+            self._startup_resumed.add(task_id)
+            resumed = await self.gateway.call(["resume", "--task-root", root], timeout=60, task_id=task_id)
+            self.repo.add_event(
+                "session.startup_resumed",
+                f"{run.entry.task_name} 启动 {int(elapsed // 60)} 分钟仍未送达题面，监督器已退出，已尝试接回",
+                level="warn",
+                actor="scheduler",
+                task_id=task_id,
+                details={"code": resumed.code, "delivery": delivery or {}},
+            )
+            return "resumed"
+        if elapsed < STARTUP_ABORT_SECONDS:
+            return ""
+        aborted = await self.gateway.call(
+            ["abort", "--task-root", root, "--reason", "prompt_delivery_stuck", "--by", "auto"],
+            timeout=120,
+            task_id=task_id,
+        )
+        self._startup_resumed.discard(task_id)
+        detail = (
+            f"Claude Code 启动 {int(elapsed // 60)} 分钟仍停在启动页，题面没有写入轨迹；"
+            "已终止会话并换题（不计入工程冷却）"
+        )
+        self.repo.add_event(
+            "session.startup_stuck",
+            detail,
+            level="error",
+            actor="scheduler",
+            task_id=task_id,
+            details={"abort_code": aborted.code, "delivery": delivery or {}, "elapsed": round(elapsed)},
+        )
+        await self._record_run_failure(
+            task_id,
+            kind="run.start_failed",
+            detail=detail,
+            status={**status, "status": "aborted", "abort": {"reason": "prompt_delivery_stuck", "detail": detail}},
+        )
+        return "aborted"
 
     async def _recover_launch_result(self, task_id: str, task_root: Path) -> dict[str, Any] | None:
         """Adopt a managed session when the launcher timed out after tmux started."""
@@ -584,35 +652,6 @@ class RunScheduler:
             if attempt < 2:
                 await asyncio.sleep(2)
         return None
-
-    async def _account_waiting_continue(
-        self,
-        task_id: str,
-        status: dict[str, Any],
-    ) -> None:
-        if self.dispatcher is None or not self.dispatcher.v3_enabled:
-            return
-        started = self._waiting_since.setdefault(task_id, time.monotonic())
-        stalled = time.monotonic() - started
-        if stalled < 600:
-            return
-        pool = self.dispatcher.pools_book.snapshot()["containers"]
-        action = await self.dispatcher.elastic.adjust(
-            stall_seconds=stalled,
-            full=int(pool["used"]) >= int(pool["limit"]),
-            waiting=True,
-            severe=str(status.get("lastKind") or "") == "rate_limited",
-        )
-        if action:
-            self.dispatcher._configure_pools()
-            self.repo.add_event(
-                f"elastic.{action}",
-                f"等待继续持续 {int(stalled)} 秒，弹性容器上限调整为 "
-                f"{self.dispatcher.effective_container_limit}",
-                actor="scheduler",
-                task_id=task_id,
-                details={"kind": status.get("lastKind"), "stall": int(stalled)},
-            )
 
     async def _execute_print(self, run: ActiveRun) -> None:
         """Long-lived compatibility path for the explicit print rollback."""
@@ -908,6 +947,7 @@ class RunScheduler:
         detail: str,
         status: dict[str, Any],
     ) -> None:
+        """运行失败只做两件事：写错误日志，交给调度决定排到队尾重跑还是结束换新题。"""
         self.repo.add_event(
             "run.failed",
             detail,
@@ -916,6 +956,9 @@ class RunScheduler:
             task_id=task_id,
             details={"kind": kind, "session": status},
         )
+        # 会话已经结束（被放弃、超时、无进展等）时这道题不能原样重跑：结束它并归还工程，
+        # 由持续补位在队尾补新题。
+        terminal = str(status.get("status") or "") == "aborted" or kind in TERMINAL_RUN_FAILURES
         if self.dispatcher is not None and self.dispatcher.v3_enabled:
             _, decision, _ = await self.dispatcher.on_failure(
                 task_id,
@@ -927,28 +970,14 @@ class RunScheduler:
                     trace_tail="",
                 ),
                 actor="scheduler",
+                final=terminal,
             )
-            if kind == "run.start_failed" and decision.action == "quarantine":
-                self.repo.set_job_status(
-                    task_id,
-                    "start_failed",
-                    notes="启动失败次数已用尽；可人工重新排队，不计入工程冷却",
-                )
-            elif kind == "run.start_failed" and decision.action == "retry":
+            if kind == "run.start_failed" and decision.action == "retry":
                 retry = asyncio.create_task(
-                    self._retry_start_failed(task_id, max(30, decision.delay_seconds))
+                    self._retry_start_failed(task_id, max(1, decision.delay_seconds))
                 )
                 self._retry_tasks.add(retry)
                 retry.add_done_callback(self._retry_tasks.discard)
-        terminal = str(status.get("status") or "") == "aborted" or kind in {
-            "run.continues_exhausted",
-            "run.timeout",
-            "run.no_progress",
-            "run.hold_timeout",
-            "run.unresponsive",
-            "run.incomplete",
-            "run.session_lost",
-        }
         if terminal:
             reason = kind.removeprefix("run.")
             self.repo.set_job_status(task_id, "aborted", notes=detail)
@@ -959,10 +988,6 @@ class RunScheduler:
                     await self.intake.terminal_session(task_id, reason=reason)
                 except Exception:
                     LOGGER.exception("terminal session release failed: %s", task_id)
-        self.bus.publish(
-            "toast",
-            {"level": "error", "message": detail[:500], "task_id": task_id},
-        )
 
     async def _retry_start_failed(self, task_id: str, delay: int) -> None:
         await asyncio.sleep(delay)
@@ -998,7 +1023,6 @@ class RunScheduler:
                 scope=["global"],
                 reason_code="gateway.auth",
                 reason=detail,
-                auto=False,
             )
             return
         waiting = list(self.queue)

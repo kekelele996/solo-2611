@@ -4786,126 +4786,6 @@
         }
       }
     },
-    "/api/dispatch/queue/{task_id}/retry": {
-      "post": {
-        "summary": "Retry",
-        "operationId": "retry_api_dispatch_queue__task_id__retry_post",
-        "parameters": [
-          {
-            "name": "task_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Task Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "title": "Response Retry Api Dispatch Queue  Task Id  Retry Post"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/dispatch/queue/{task_id}/quarantine": {
-      "post": {
-        "summary": "Quarantine",
-        "operationId": "quarantine_api_dispatch_queue__task_id__quarantine_post",
-        "parameters": [
-          {
-            "name": "task_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Task Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "title": "Response Quarantine Api Dispatch Queue  Task Id  Quarantine Post"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/dispatch/queue/{task_id}/ignore": {
-      "post": {
-        "summary": "Ignore",
-        "operationId": "ignore_api_dispatch_queue__task_id__ignore_post",
-        "parameters": [
-          {
-            "name": "task_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Task Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "title": "Response Ignore Api Dispatch Queue  Task Id  Ignore Post"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/dispatch/queue/{task_id}/release": {
       "post": {
         "summary": "Release",
@@ -4929,46 +4809,6 @@
                 "schema": {
                   "type": "object",
                   "title": "Response Release Api Dispatch Queue  Task Id  Release Post"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/dispatch/queue/{task_id}/keep": {
-      "post": {
-        "summary": "Keep",
-        "operationId": "keep_api_dispatch_queue__task_id__keep_post",
-        "parameters": [
-          {
-            "name": "task_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Task Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "title": "Response Keep Api Dispatch Queue  Task Id  Keep Post"
                 }
               }
             }
@@ -7151,36 +6991,6 @@
         ],
         "title": "CreateTaskRequest"
       },
-      "DispatchElasticPatch": {
-        "properties": {
-          "enabled": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Enabled"
-          },
-          "ceiling": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 8.0,
-                "minimum": 1.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ceiling"
-          }
-        },
-        "type": "object",
-        "title": "DispatchElasticPatch"
-      },
       "DispatchInterruptRequest": {
         "properties": {
           "task_ids": {
@@ -7202,22 +7012,20 @@
       },
       "DispatchLimitsRequest": {
         "properties": {
-          "preset": {
+          "mode": {
             "anyOf": [
               {
                 "type": "string",
                 "enum": [
-                  "throughput",
-                  "balanced",
-                  "careful",
-                  "custom"
+                  "containers",
+                  "tasks"
                 ]
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Preset"
+            "title": "Mode"
           },
           "containers": {
             "anyOf": [
@@ -7232,85 +7040,20 @@
             ],
             "title": "Containers"
           },
-          "sessions": {
+          "max_tasks": {
             "anyOf": [
               {
                 "type": "integer",
-                "maximum": 8.0,
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sessions"
-          },
-          "authoring": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 8.0,
+                "maximum": 50.0,
                 "minimum": 1.0
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Authoring"
+            "title": "Max Tasks"
           },
-          "delivering": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 8.0,
-                "minimum": 1.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Delivering"
-          },
-          "recording": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 16.0,
-                "minimum": 1.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Recording"
-          },
-          "in_hand": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 100.0,
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "In Hand"
-          },
-          "launch_spacing_seconds": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 3600.0,
-                "minimum": 10.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Launch Spacing Seconds"
-          },
-          "session_spacing_seconds": {
+          "create_cooldown_seconds": {
             "anyOf": [
               {
                 "type": "integer",
@@ -7321,7 +7064,7 @@
                 "type": "null"
               }
             ],
-            "title": "Session Spacing Seconds"
+            "title": "Create Cooldown Seconds"
           },
           "keep_awake": {
             "anyOf": [
@@ -7333,16 +7076,6 @@
               }
             ],
             "title": "Keep Awake"
-          },
-          "elastic": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/DispatchElasticPatch"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "type": "object",

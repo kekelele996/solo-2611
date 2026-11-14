@@ -61,7 +61,12 @@ class ProbeManager:
             return await self._probe_recording()
         if source == "skill_guard":
             return await self._probe_skill()
-        return ProbeResult(source, False, "该挂起来源没有自动探测器", {})
+        if source == "breaker":
+            return await self._probe_breaker()
+        # 旧版本留下、已没有探测器的挂起：无法复测就直接解除，不让调度一直停着等人。
+        released = self.holds.release(source, actor="probe")
+        message = "该挂起来源没有自动探测器，已自动解除" if released else "该挂起已不存在"
+        return ProbeResult(source, released is not None, message, {})
 
     async def run_due(self) -> list[ProbeResult]:
         results: list[ProbeResult] = []
@@ -95,6 +100,18 @@ class ProbeManager:
         elif "llm_guard" in self.holds.holds:
             self.holds.mark_probe("llm_guard", next_seconds=config.paused_probe_seconds, error=message)
         return ProbeResult("llm_guard", False, message or "网关不可用", detail)
+
+    async def _probe_breaker(self) -> ProbeResult:
+        """鉴权、额度、模型不匹配触发的熔断：用网关探测复测，恢复后自动解除。"""
+        if self.llm_probe is None:
+            return ProbeResult("breaker", False, "网关探测器尚未装配", {})
+        result = await self.llm_probe()
+        message = str(result.get("message") or "")
+        if result.get("ok"):
+            self.holds.release("breaker", actor="probe")
+            return ProbeResult("breaker", True, message or "网关已恢复", {})
+        self.holds.mark_probe("breaker", next_seconds=self.settings.llm_guard.paused_probe_seconds, error=message)
+        return ProbeResult("breaker", False, message or "网关仍不可用", {})
 
     async def _probe_docker(self) -> ProbeResult:
         facts = await self.facts.snapshot(force=True)
@@ -210,7 +227,6 @@ class ProbeManager:
                 scope=["recording"],
                 reason_code="recording.permission",
                 reason=message or "录屏能力不可用",
-                auto=False,
                 probe_seconds=300,
                 self_heal_seconds=900,
                 metadata={"error": message},
@@ -231,7 +247,6 @@ class ProbeManager:
             scope=["global"],
             reason_code="skill.unavailable",
             reason=message or "技能不可用",
-            auto=False,
             probe_seconds=60,
             metadata={"error": message},
         )

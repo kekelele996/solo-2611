@@ -1,12 +1,10 @@
 """Dispose of terminal failures without asking: clean up, return the claim, refill.
 
-A failed, blocked, or quarantined task used to wait for a human decision. Nothing useful comes of
-that wait, so the platform now removes the task's working data itself (to the
-trash by default), returns the engineering claim and closes the queue item;
-continuous refill then claims a fresh task at the back of the queue.
-
-Left alone on purpose: items a human quarantined or marked "keep", and tasks
-that were already exported or uploaded to SOLO2.
+A task that failed for good never waits for a human decision. The platform moves
+its working data to the trash (or deletes it), returns the engineering claim and
+closes the queue item; continuous refill then claims a fresh task at the back of
+the queue. Tasks that were already exported or uploaded to SOLO2 keep their data:
+only their queue item is closed.
 """
 
 from __future__ import annotations
@@ -14,8 +12,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
-from collections import deque
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
@@ -27,7 +23,6 @@ if TYPE_CHECKING:
     from solo_auto.context import AppContext
 
 LOGGER = logging.getLogger(__name__)
-MANUAL_QUARANTINE_TEXT = "人工隔离"
 ACTOR = "dispatch"
 LOOP_SECONDS = 20.0
 
@@ -35,8 +30,6 @@ LOOP_SECONDS = 20.0
 class AutoDisposer:
     def __init__(self, ctx: AppContext) -> None:
         self.ctx = ctx
-        self._recent: deque[float] = deque()
-        self._throttled_at = 0.0
         self._skipped: dict[str, str] = {}
 
     async def loop(self) -> None:
@@ -82,10 +75,15 @@ class AutoDisposer:
                     grace_seconds=config.grace_seconds,
                 )
             )
-            if not reason and task is not None:
-                reason = self._delivered_reason(task)
             if reason:
                 self._note_skip(task_id, reason)
+                continue
+            delivered = self._delivered_reason(task) if task is not None else ""
+            if delivered:
+                # 已交付的题保留现场，只把失败的队列项关掉，不再留在“待处理”。
+                if item is not None:
+                    self._close(item, f"失败已记录，{delivered}")
+                results.append({"task_id": task_id, "removed": False, "moved_to": ""})
                 continue
             if task is None:
                 # 任务已经不在平台上，只剩队列项：直接关闭。
@@ -93,11 +91,6 @@ class AutoDisposer:
                     self._close(item, "任务已不存在，自动关闭队列项")
                 results.append({"task_id": task_id, "removed": True, "moved_to": ""})
                 continue
-            if not self._within_rate(
-                config.max_per_hour,
-                backlog=item is None and self._is_historical_backlog(task),
-            ):
-                break
             plan = plan_purge(ctx, task)
             if plan["blockers"]:
                 self._note_skip(task_id, "；".join(plan["blockers"]))
@@ -113,7 +106,6 @@ class AutoDisposer:
                 message = getattr(error, "message", "") or f"{type(error).__name__}: {error}"
                 self._note_skip(task_id, f"自动清理失败：{message}")
                 continue
-            self._recent.append(time.monotonic())
             if item is not None:
                 self._close(item, "失败后已自动清理，由后续题目补位")
             else:
@@ -147,10 +139,6 @@ class AutoDisposer:
     # ---- decisions ---------------------------------------------------
 
     def _skip_reason(self, item: DispatchItem, *, grace_seconds: int) -> str:
-        if item.keep:
-            return "已标记保留"
-        if item.wait_text == MANUAL_QUARANTINE_TEXT:
-            return "人工隔离的题目不自动清理"
         job = self.ctx.autopilot.jobs.get(item.task_id)
         if job is not None and job.active:
             return "自动交付仍在进行"
@@ -176,13 +164,8 @@ class AutoDisposer:
         if job is not None and job.active:
             return "自动交付仍在进行"
         item = self.ctx.dispatcher.queue.get(task_id)
-        if item is not None:
-            if item.keep:
-                return "已标记保留"
-            if item.wait_text == MANUAL_QUARANTINE_TEXT:
-                return "人工隔离的题目不自动清理"
-            if item.status in {"queued", "launching", "active", "backoff", "interrupted"}:
-                return f"队列状态 {item.status} 不是终态失败"
+        if item is not None and item.status in {"queued", "launching", "active", "backoff", "interrupted"}:
+            return f"队列状态 {item.status} 不是终态失败"
         # Reconciler refreshes ``updated_at`` for every indexed task. A blocked
         # task that has no queue item must use its creation time for the grace
         # and backlog decisions, otherwise it can stay blocked forever.
@@ -202,28 +185,6 @@ class AutoDisposer:
         if isinstance(data, dict) and data.get("submissionId") not in (None, ""):
             return "已提交到 SOLO2，保留现场"
         return ""
-
-    def _within_rate(self, limit: int, *, backlog: bool = False) -> bool:
-        # A backlog left by an older build is not a live failure storm. Clean it
-        # in one sweep; the hourly breaker remains for newly failing tasks.
-        if backlog:
-            return True
-        now = time.monotonic()
-        while self._recent and now - self._recent[0] > 3600:
-            self._recent.popleft()
-        if len(self._recent) < limit:
-            return True
-        if now - self._throttled_at > 3600 or not self._throttled_at:
-            self._throttled_at = now
-            text = f"一小时内已自动清理 {len(self._recent)} 道失败题，达到上限 {limit}，暂停自动清理；请检查是否存在环境故障"
-            self.ctx.repo.add_event("task.auto_dispose_throttled", text, level="error", actor=ACTOR)
-            self.ctx.notifier.notify(title="solo-auto 失败题自动清理已暂停", status=f"一小时内 {len(self._recent)} 道")
-        return False
-
-    @staticmethod
-    def _is_historical_backlog(task: dict[str, Any]) -> bool:
-        age = _age_seconds(str(task.get("created_at") or task.get("updated_at") or ""))
-        return age is not None and age >= 3600
 
     def _note_skip(self, task_id: str, reason: str) -> None:
         if self._skipped.get(task_id) == reason or reason.startswith("等待 "):

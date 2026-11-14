@@ -2,7 +2,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CirclePause,
   CirclePlay,
-  ListRestart,
   LockKeyhole,
   MoreHorizontal,
   PauseCircle,
@@ -20,6 +19,7 @@ import { api } from "../api/client";
 import type {
   DispatchHold,
   DispatchLimitsRequest,
+  DispatchMode,
   DispatchPreviewItem,
   DispatchQueueItem,
   DispatchSnapshot,
@@ -33,17 +33,15 @@ import { errorText, formatDuration } from "../utils/display";
 import { formatDateTime } from "../utils/time";
 
 type QueueZone = "pending" | "processing" | "processed";
-type RowAction = "pin" | "retry" | "quarantine" | "ignore" | "release" | "keep" | "up" | "down";
+type RowAction = "pin" | "up" | "down";
+
+const MODES: Array<{ value: DispatchMode; label: string; hint: string }> = [
+  { value: "containers", label: "容器优先", hint: "保持运行中的容器数等于最大容器数，任务数随之浮动" },
+  { value: "tasks", label: "任务优先", hint: "保持在手任务数等于最大任务数，容器不够时排队" },
+];
 
 const NEXT_QUEUE_LIMIT = 20;
 const RECENT_DONE_LIMIT = 20;
-
-const PRESETS: Array<{ value: DispatchSnapshot["preset"]; label: string; hint: string }> = [
-  { value: "throughput", label: "跑满", hint: "容器优先，在手自适应" },
-  { value: "balanced", label: "均衡", hint: "日常推荐" },
-  { value: "careful", label: "稳妥", hint: "一进一出" },
-  { value: "custom", label: "自定义", hint: "按右侧手填参数" },
-];
 
 const STATE_LABEL: Record<DispatchSnapshot["effective_state"], string> = {
   running: "运行中",
@@ -129,23 +127,14 @@ export function DispatchPage() {
       action === "up" || action === "down"
         ? api.dispatchQueueAction(item.task_id, "move", action)
         : api.dispatchQueueAction(item.task_id, action),
-    onSuccess: (_, variables) => {
-      toast(variables.action === "ignore" ? "已忽略该失败，不再重试" : "队列已更新", "ok");
+    onSuccess: () => {
+      toast("队列已更新", "ok");
       refresh();
     },
     onError: (error) => toast(errorText(error), "error"),
   });
-  const holdAction = useMutation({
-    mutationFn: async ({ hold, action }: { hold: DispatchHold; action: "probe" | "release" }) => {
-      if (action === "probe") return api.dispatchProbeHold(hold.id);
-      const released = await api.dispatchReleaseHold(hold.id);
-      return {
-        source: released.source,
-        ok: released.ok,
-        message: "挂起已解除；相关残留会自动重新排队",
-        detail: {},
-      };
-    },
+  const holdProbe = useMutation({
+    mutationFn: (hold: DispatchHold) => api.dispatchProbeHold(hold.id),
     onSuccess: (result) => {
       toast(result.message, result.ok ? "ok" : "warn");
       refresh();
@@ -202,16 +191,7 @@ export function DispatchPage() {
         snapshot={snapshot}
         onState={(desired) => state.mutate(desired)}
         busy={state.isPending}
-        presetBusy={applyLimits.isPending}
         readonly={readonly}
-        onPreset={(preset) =>
-          applyLimits.mutate({
-            preset,
-            containers: snapshot.limits.containers,
-            in_hand: preset === "custom" ? snapshot.limits.in_hand : 0,
-            sessions: preset === "custom" ? snapshot.limits.sessions : 0,
-          })
-        }
       />
       {readonly ? (
         <div className="system-banner" role="status">
@@ -225,25 +205,24 @@ export function DispatchPage() {
       {snapshot.holds.length ? (
         <section className="dispatch-holds" aria-label="当前挂起">
           {snapshot.holds.map((hold) => (
-            <div className="dispatch-hold" key={hold.id} data-auto={hold.auto}>
+            <div className="dispatch-hold" key={hold.id}>
               <LockKeyhole size={16} />
               <div>
                 <strong>{hold.reason}</strong>
                 <span>
                   影响 {hold.scope.join("、")} ·{" "}
-                  {hold.next_at ? <>下次探测 <Countdown at={hold.next_at} /></> : "需要你处理"}
+                  {hold.next_at ? <>下次自动探测 <Countdown at={hold.next_at} /></> : "正在自动探测"}
                   {hold.last_error ? ` · ${hold.last_error}` : ""}
                 </span>
               </div>
               <Button
                 size="small"
                 variant="ghost"
-                loading={holdAction.isPending && holdAction.variables?.hold.id === hold.id && holdAction.variables.action === "probe"}
-                onClick={() => holdAction.mutate({ hold, action: "probe" })}
+                loading={holdProbe.isPending && holdProbe.variables?.id === hold.id}
+                onClick={() => holdProbe.mutate(hold)}
               >
                 立即探测
               </Button>
-              <Button size="small" onClick={() => holdAction.mutate({ hold, action: "release" })}>解除</Button>
             </div>
           ))}
         </section>
@@ -334,7 +313,7 @@ export function DispatchPage() {
               title="已处理"
               count={groups.processed.length}
               shown={processedItems.length}
-              caption="最近完成、失败或人工忽略的任务"
+              caption="最近完成或失败的任务"
             >
               {processedItems.map((item, index) => (
                 <QueueRow
@@ -350,7 +329,7 @@ export function DispatchPage() {
                 />
               ))}
               {!processedItems.length ? (
-                <LaneEmpty title="还没有处理结果" body="任务完成、失败或被忽略后会进入这里，默认展示最近 20 条。" />
+                <LaneEmpty title="还没有处理结果" body="任务完成或失败后会进入这里，默认展示最近 20 条。" />
               ) : null}
             </QueueLane>
           </div>
@@ -372,7 +351,7 @@ export function DispatchPage() {
                 setDraft={setDraft}
                 readonly={readonly}
                 applying={applyLimits.isPending}
-                onApply={() => applyLimits.mutate({ ...draft, preset: "custom" })}
+                onApply={() => applyLimits.mutate(draft)}
               />
             ) : null}
           </Panel>
@@ -408,7 +387,7 @@ export function DispatchPage() {
           <Panel title="近 24 小时">
             <div className="panel-body dispatch-metrics">
               <Metric label="完成" value={snapshot.throughput.completed} />
-              <Metric label="失败 / 隔离" value={`${snapshot.throughput.failed} / ${snapshot.throughput.quarantined}`} />
+              <Metric label="失败" value={snapshot.throughput.failed + snapshot.throughput.quarantined} />
               <Metric label="容器利用率" value={`${Math.round(snapshot.throughput.container_utilization * 100)}%`} />
               <Metric label="单题运行中位" value={formatMinutes(snapshot.throughput.medians_seconds.running_s ?? 0)} />
             </div>
@@ -449,16 +428,12 @@ function DispatchHeader({
   snapshot,
   onState,
   busy,
-  presetBusy,
   readonly,
-  onPreset,
 }: {
   snapshot: DispatchSnapshot;
   onState: (desired: "running" | "paused" | "draining") => void;
   busy: boolean;
-  presetBusy: boolean;
   readonly: boolean;
-  onPreset: (preset: DispatchSnapshot["preset"]) => void;
 }) {
   const running = snapshot.desired_state === "running";
   return (
@@ -478,22 +453,6 @@ function DispatchHeader({
         <p className="dispatch-sentence" data-state={snapshot.effective_state}>{snapshot.sentence}</p>
       </div>
       <div className="dispatch-head-actions">
-        <div className="dispatch-presets" role="radiogroup" aria-label="调度预设" aria-busy={presetBusy || undefined}>
-          {PRESETS.map((preset) => (
-            <button
-              type="button"
-              role="radio"
-              key={preset.value}
-              aria-checked={snapshot.preset === preset.value}
-              data-active={snapshot.preset === preset.value || undefined}
-              disabled={readonly || presetBusy}
-              title={preset.hint}
-              onClick={() => snapshot.preset !== preset.value && onPreset(preset.value)}
-            >
-              {preset.label}
-            </button>
-          ))}
-        </div>
         {running ? (
           <Button loading={busy} disabled={readonly} onClick={() => onState("paused")}><CirclePause size={14} /> 暂停</Button>
         ) : (
@@ -512,61 +471,76 @@ function DispatchHeader({
 }
 
 function CapacityStrip({ snapshot, inHand }: { snapshot: DispatchSnapshot; inHand: number }) {
+  const now = useNow();
   const pool = (name: string) => snapshot.pools[name] ?? { used: 0, limit: 0 };
-  const containers = pool("containers");
-  const sessions = pool("sessions");
-  const waiting = snapshot.queue.filter((item) => !item.active && !FINISHED.has(item.status)).length;
+  const creation = snapshot.creation;
+  const containerLimit = creation?.containers.limit ?? snapshot.limits.containers;
+  const containerUsed = creation?.containers.used ?? pool("containers").used;
+  const taskLimit = creation?.max_tasks ?? snapshot.limits.max_tasks;
+  const tasksFirst = (snapshot.limits.mode ?? "containers") === "tasks";
   const waitingContinue = snapshot.session_capacity?.waiting ?? 0;
-  const cells: Array<{ label: string; used: number; limit: number; note?: string; major?: boolean }> = [
+  const cooldownLeft = creation?.next_allowed_at
+    ? Math.max(0, Math.round((new Date(creation.next_allowed_at).getTime() - now) / 1000))
+    : 0;
+  const cooldown = creation?.cooldown_seconds ?? snapshot.limits.create_cooldown_seconds;
+  const containerNote = creation
+    ? `运行 ${creation.containers.live} · 待起 ${creation.containers.waiting + creation.containers.extra}`
+    : undefined;
+  const cells: Array<{ label: string; used: number; limit: number; note?: string; major?: boolean; tone?: string; unbounded?: boolean }> = [
+    { label: "容器", used: containerUsed, limit: containerLimit, major: true, note: containerNote },
+    tasksFirst
+      ? { label: "任务", used: inHand, limit: taskLimit, major: true }
+      : { label: "任务", used: inHand, limit: 0, major: true, unbounded: true, tone: "free", note: "容器优先，不限任务数" },
     {
-      label: "容器",
-      used: containers.used,
-      limit: containers.limit,
+      label: "建题冷却",
+      used: cooldownLeft,
+      limit: cooldown,
       major: true,
-      note: snapshot.elastic.enabled ? `弹性 ${snapshot.elastic.floor}–${snapshot.elastic.ceiling} · 按需创建` : undefined,
+      tone: cooldownLeft > 0 ? "full" : "free",
+      note: cooldownLeft > 0 ? `${cooldownLeft} 秒后可建下一题` : "冷却已结束",
     },
-    { label: "会话", used: sessions.used, limit: sessions.limit, major: true },
     {
       label: "等待继续",
       used: waitingContinue,
-      limit: containers.limit,
+      limit: containerLimit,
       note: waitingContinue ? "容器仍占名额，到达时间后自动发送“继续”" : "当前没有等待项",
     },
-    { label: "在手", used: inHand, limit: snapshot.limits.in_hand, major: true },
-    { label: "起草", used: pool("authoring").used, limit: pool("authoring").limit },
-    { label: "交付", used: pool("delivering").used, limit: pool("delivering").limit },
     { label: "录屏", used: pool("recording").used, limit: pool("recording").limit },
   ];
   return (
-    <section className="dispatch-capacity" aria-label="资源占用">
+    <section className="dispatch-capacity" aria-label="资源占用" data-mode={tasksFirst ? "tasks" : "containers"}>
       {cells.map((cell) => {
-        const tone = cell.used > cell.limit ? "over" : cell.limit > 0 && cell.used >= cell.limit ? "full" : "free";
+        const tone =
+          cell.tone ?? (cell.used > cell.limit ? "over" : cell.limit > 0 && cell.used >= cell.limit ? "full" : "free");
         return (
           <div key={cell.label} className="dispatch-capacity-cell" data-tone={tone} data-major={cell.major || undefined}>
             <span>{cell.label}</span>
             <strong className="mono">
-              {cell.used}<small>/{cell.limit}</small>
+              {cell.used}{cell.unbounded ? null : <small>/{cell.limit}</small>}
             </strong>
             <div className="dispatch-capacity-bar" aria-hidden="true">
               <i style={{ width: `${cell.limit ? Math.min(100, (cell.used / cell.limit) * 100) : 0}%` }} />
             </div>
-            <em>{tone === "over" ? "超出上限，收敛中" : tone === "full" ? "已满" : cell.note ?? `空闲 ${Math.max(0, cell.limit - cell.used)}`}</em>
+            <em>
+              {cell.tone
+                ? cell.note
+                : tone === "over"
+                  ? "超出上限，收敛中"
+                  : tone === "full"
+                    ? "已满"
+                    : cell.note ?? `空闲 ${Math.max(0, cell.limit - cell.used)}`}
+            </em>
           </div>
         );
       })}
-      {containers.available > 0 && sessions.used >= sessions.limit ? (
+      {creation && !creation.allowed && snapshot.desired_state === "running" ? (
         <p className="dispatch-capacity-notice" role="status">
-          容器还有 {containers.available} 个空位；当前会话已满 {sessions.used}/{sessions.limit}，新任务会等待会话释放。
+          暂不建新题：{creation.text}
         </p>
       ) : null}
       {waitingContinue ? (
         <p className="dispatch-capacity-notice" role="status">
           {snapshot.session_capacity?.label}；等待期间容器继续占用名额，不按卡死处理。
-        </p>
-      ) : null}
-      {containers.available > 0 && waiting === 0 ? (
-        <p className="dispatch-capacity-notice" role="status">
-          当前没有等待任务，剩余 {containers.available} 个容器位按需保留，不会预建空容器。
         </p>
       ) : null}
     </section>
@@ -664,7 +638,6 @@ function QueueRow({
       className="dispatch-queue-row"
       data-status={item.status}
       data-zone={zone}
-      data-keep={item.keep || undefined}
       data-next={pending && rank === 1 && !needs || undefined}
     >
       <span className="dispatch-queue-index mono">{String(rank).padStart(2, "0")}</span>
@@ -672,13 +645,13 @@ function QueueRow({
         <div className="dispatch-queue-status">
           <StatusDot
             state={item.active ? "running" : needs ? "blocked" : item.status === "done" ? "exported" : zone === "processed" ? "idle" : "queued"}
-            label={needs ? "需处理" : STAGE_LABEL[item.stage] ?? item.stage}
+            label={needs ? "已失败" : STAGE_LABEL[item.stage] ?? item.stage}
             pulse={item.active}
           />
           {pending && !needs ? <span>下一道工程</span> : null}
           {needs ? (
             <span data-alert>
-              {item.keep || item.wait_text === "人工隔离" ? "门禁或运行异常" : "运行失败，稍后自动清理并补位"}
+              运行失败，稍后自动清理并补位
             </span>
           ) : null}
         </div>
@@ -699,8 +672,8 @@ function QueueRow({
                     : ` · ${item.engineering_id || "工程信息同步中"}`}
           </span>
         ) : zone === "processed" ? (
-          <span className="dispatch-queue-note" title={item.wait_code === "ignored" ? item.wait_text : undefined}>
-            {item.status === "done" ? "已完成" : item.wait_code === "ignored" ? "已人工忽略" : item.status === "failed" ? "执行失败" : "已结束"}
+          <span className="dispatch-queue-note" title={item.status === "failed" ? item.wait_text : undefined}>
+            {item.status === "done" ? "已完成" : item.status === "failed" ? "执行失败，已自动补新题" : "已结束"}
             {" · "}{formatDateTime(item.updated_at)}
           </span>
         ) : (
@@ -710,7 +683,7 @@ function QueueRow({
         )}
       </div>
       <div className="dispatch-queue-meta mono">
-        {pending && until ? <span>退避 <Countdown at={until} /></span> : null}
+        {pending && until ? <span>排队重跑 <Countdown at={until} /></span> : null}
         {pending && !until && eta ? <span>预计 <Countdown at={eta} /></span> : null}
         {item.desktop_recovery_attempts ? (
           <span title={item.desktop_recovery_error || item.autopilot_detail || "正在补按发送，不会重新创建任务"}>
@@ -718,17 +691,11 @@ function QueueRow({
           </span>
         ) : null}
         {item.total_attempts > 1 ? <span>尝试 {item.total_attempts}</span> : null}
-        {item.keep ? <Badge tone="info">保留</Badge> : null}
       </div>
       <div className="dispatch-queue-actions">
         {zone === "processing" ? (
           <Button className="dispatch-live-link" size="small" variant="ghost" onClick={onTrace} title="核心代码执行轨迹">
             <Radio size={12} /> 执行轨迹
-          </Button>
-        ) : null}
-        {pending && (needs || item.status === "backoff") ? (
-          <Button size="small" variant={needs ? "primary" : "secondary"} loading={busy} disabled={readonly} onClick={() => onAction("retry")}>
-            <ListRestart size={12} /> 重试
           </Button>
         ) : null}
         {zone !== "processed" ? (
@@ -747,20 +714,6 @@ function QueueRow({
                     下移<small>延后一位处理</small>
                   </button>
                 </>
-              ) : null}
-              <button type="button" disabled={readonly || busy} onClick={() => onAction("keep")}>
-                {item.keep ? "解除保留" : "保留"}
-                <small>{item.keep ? "允许清理该题" : "结束后不自动清理"}</small>
-              </button>
-              {needs ? (
-                <button type="button" disabled={readonly || busy} onClick={() => onAction("ignore")}>
-                  忽略<small>不再重试，移到已处理</small>
-                </button>
-              ) : null}
-              {pending && !needs ? (
-                <button type="button" disabled={readonly || busy} onClick={() => onAction("quarantine")}>
-                  隔离<small>移出自动调度并保留现场，不会被自动清理</small>
-                </button>
               ) : null}
               {!item.active ? (
                 <button type="button" onClick={onExplain}>
@@ -792,44 +745,63 @@ function LimitForm({
 }) {
   const baseline = limitDraft(snapshot);
   const dirty = JSON.stringify(draft) !== JSON.stringify(baseline);
-  const elasticOn = Boolean(draft.elastic?.enabled);
+  const containers = draft.containers ?? snapshot.limits.containers;
+  const maxTasks = draft.max_tasks ?? snapshot.limits.max_tasks;
+  const cooldown = draft.create_cooldown_seconds ?? snapshot.limits.create_cooldown_seconds;
+  const mode = draft.mode ?? snapshot.limits.mode ?? "containers";
+  const tasksFirst = mode === "tasks";
   return (
     <fieldset className="dispatch-limit-form panel-body" disabled={readonly}>
-      <LimitNumber label="容器数" hint="写回技能 maxContainers" value={draft.containers ?? snapshot.limits.containers} min={1} max={8} onChange={(containers) => setDraft({ ...draft, containers })} />
-      <label className="dispatch-limit-row">
-        <span>弹性扩容</span>
-        <span className="dispatch-limit-inline">
-          <input
-            type="checkbox"
-            checked={elasticOn}
-            onChange={(event) => {
-              const enabled = event.target.checked;
-              setDraft({
-                ...draft,
-                elastic: { ...draft.elastic, enabled },
-                ...(enabled ? { sessions: 0, in_hand: 0 } : {}),
-              });
-            }}
-          />
-          <input
-            className="compact-number"
-            type="number"
-            min={draft.containers ?? 1}
-            max={8}
-            disabled={!elasticOn}
-            value={draft.elastic?.ceiling ?? snapshot.elastic.ceiling}
-            onChange={(event) => setDraft({ ...draft, elastic: { ...draft.elastic, ceiling: Number(event.target.value) } })}
-            aria-label="弹性上限"
-          />
-        </span>
-        <small>{elasticOn ? `当前 ${snapshot.elastic.effective}` : "关闭"}</small>
-      </label>
-      <AutoLimit label="会话并发" value={draft.sessions ?? 0} autoValue={snapshot.limits.sessions} onChange={(sessions) => setDraft({ ...draft, sessions })} />
-      <AutoLimit label="在手上限" value={draft.in_hand ?? 0} autoValue={snapshot.limits.in_hand} onChange={(in_hand) => setDraft({ ...draft, in_hand })} />
-      <LimitNumber label="启动间隔" suffix="秒" value={draft.launch_spacing_seconds ?? 45} min={10} max={3600} onChange={(launch_spacing_seconds) => setDraft({ ...draft, launch_spacing_seconds })} />
-      <LimitNumber label="录屏并发" value={draft.recording ?? 1} min={1} max={16} onChange={(recording) => setDraft({ ...draft, recording })} />
+      <div className="dispatch-limit-row dispatch-mode-row">
+        <span>调度模式</span>
+        <div className="dispatch-mode" role="radiogroup" aria-label="调度模式">
+          {MODES.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              role="radio"
+              aria-checked={mode === option.value}
+              data-active={mode === option.value || undefined}
+              title={option.hint}
+              onClick={() => setDraft({ ...draft, mode: option.value })}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <LimitNumber
+        label="最大容器数"
+        hint={tasksFirst ? "任务优先时仍是容器的物理上限，多出来的题排队等容器" : "建题只看这个数：容器占用加 1 不超过它"}
+        value={containers}
+        min={1}
+        max={8}
+        onChange={(value) => setDraft({ ...draft, containers: value })}
+      />
+      <LimitNumber
+        label="最大任务数"
+        hint={tasksFirst ? "建题只看这个数：已建题、未结束的任务总数上限" : "容器优先模式不使用此值，切到任务优先后生效"}
+        value={maxTasks}
+        min={1}
+        max={50}
+        inactive={!tasksFirst}
+        onChange={(value) => setDraft({ ...draft, max_tasks: value })}
+      />
+      <LimitNumber
+        label="建题冷却"
+        hint="两次建题之间至少间隔的秒数，重启后接着计时"
+        suffix="秒"
+        value={cooldown}
+        min={20}
+        max={3600}
+        onChange={(value) => setDraft({ ...draft, create_cooldown_seconds: value })}
+      />
       <p className="dispatch-limit-note">
-        会话、在手填 0 表示随负载自动计算。开启弹性时会自动切到 0，避免只扩容器却被会话或在手上限卡住。
+        {tasksFirst
+          ? "任务优先：在手任务数小于最大任务数、距上次建题已满冷却，就建下一题；容器占满时题目排队等容器。"
+          : "容器优先：容器占用（运行中 + 已建题待起容器）加 1 不超过最大容器数、距上次建题已满冷却，就建下一题；不限任务数。"}
+        {tasksFirst && maxTasks < containers ? " 最大任务数小于最大容器数时，容器跑不满。" : ""}
+        {" 每次只建一题。"}
       </p>
       <div className="dispatch-limit-actions" data-dirty={dirty || undefined}>
         <span>{dirty ? "有未应用的修改" : ""}</span>
@@ -915,6 +887,7 @@ function LimitNumber({
   max,
   suffix,
   hint,
+  inactive,
   onChange,
 }: {
   label: string;
@@ -923,23 +896,14 @@ function LimitNumber({
   max: number;
   suffix?: string;
   hint?: string;
+  inactive?: boolean;
   onChange: (value: number) => void;
 }) {
   return (
-    <label className="dispatch-limit-row" title={hint}>
+    <label className="dispatch-limit-row" title={hint} data-inactive={inactive || undefined}>
       <span>{label}</span>
-      <input className="compact-number" type="number" min={min} max={max} value={value} onChange={(event) => onChange(Number(event.target.value))} />
-      <small>{suffix ?? ""}</small>
-    </label>
-  );
-}
-
-function AutoLimit({ label, value, autoValue, onChange }: { label: string; value: number; autoValue: number; onChange: (value: number) => void }) {
-  return (
-    <label className="dispatch-limit-row">
-      <span>{label}</span>
-      <input className="compact-number" type="number" min={0} max={100} value={value} onChange={(event) => onChange(Number(event.target.value))} />
-      <small className={value ? "" : "auto-chip"}>{value ? "手填" : `自动 ${autoValue}`}</small>
+      <input className="compact-number" type="number" aria-label={label} min={min} max={max} value={value} onChange={(event) => onChange(Number(event.target.value))} />
+      <small>{inactive ? "未启用" : suffix ?? ""}</small>
     </label>
   );
 }
@@ -1047,20 +1011,10 @@ function fillPreviewQueue(
 
 function limitDraft(snapshot: DispatchSnapshot): DispatchLimitsRequest {
   return {
-    preset: snapshot.preset,
+    mode: snapshot.limits.mode ?? "containers",
     containers: snapshot.limits.containers,
-    sessions: snapshot.settings.sessions as number,
-    authoring: snapshot.settings.authoring as number,
-    delivering: snapshot.settings.delivering as number,
-    recording: snapshot.limits.recording,
-    in_hand: snapshot.settings.in_hand as number,
-    launch_spacing_seconds: snapshot.limits.launch_spacing_seconds,
-    session_spacing_seconds: snapshot.settings.session_spacing_seconds as number,
-    keep_awake: snapshot.keep_awake,
-    elastic: {
-      enabled: snapshot.elastic.enabled,
-      ceiling: snapshot.elastic.ceiling,
-    },
+    max_tasks: snapshot.limits.max_tasks,
+    create_cooldown_seconds: snapshot.limits.create_cooldown_seconds,
   };
 }
 

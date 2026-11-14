@@ -232,37 +232,13 @@ class Solo2Settings(BaseModel):
         return value.strip().rstrip("/")
 
 
-class DispatchElasticSettings(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    enabled: bool = False
-    ceiling: int = Field(default=6, ge=1, le=8)
-    window_seconds: int = Field(default=300, ge=60, le=3600)
-    stall_percent: float = Field(default=3.0, ge=0, le=100)
-    severe_attempt: int = Field(default=6, ge=1, le=100)
-    step_up_seconds: int = Field(default=300, ge=30, le=3600)
-    cooldown_seconds: int = Field(default=600, ge=60, le=7200)
-    stable_seconds: int = Field(default=1800, ge=300, le=14400)
-
-
 class DispatchRetrySettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    # 运行失败只记日志、排到队尾重跑；同一题累计失败到这个次数才放弃，自动清理并补新题。
     max_total_attempts: int = Field(default=8, ge=1, le=100)
-    backoff_seconds: list[int] = Field(default_factory=lambda: [60, 180, 600])
-    jitter: float = Field(default=0.2, ge=0, le=1)
-    unknown_retries: int = Field(default=1, ge=0, le=10)
     engineering_cooldown_failures: int = Field(default=2, ge=1, le=20)
     engineering_cooldown_hours: int = Field(default=72, ge=1, le=720)
-
-    @field_validator("backoff_seconds")
-    @classmethod
-    def _backoff(cls, value: list[int]) -> list[int]:
-        if not value:
-            raise ValueError("退避序列不能为空")
-        if any(item < 1 for item in value):
-            raise ValueError("退避时间必须大于 0")
-        return value
 
 
 class DispatchGuardSettings(BaseModel):
@@ -317,8 +293,6 @@ class DispatchDisposeSettings(BaseModel):
     grace_seconds: int = Field(default=30, ge=0, le=86400)
     # False 移入回收站（可恢复），True 直接删除。
     permanent: bool = False
-    # 一小时内自动清理超过这个数量就停下并提醒，避免环境故障时连续烧题。
-    max_per_hour: int = Field(default=6, ge=1, le=100)
 
 
 class DispatchRefillSettings(BaseModel):
@@ -357,21 +331,20 @@ class DispatchSettings(BaseModel):
 
     engine: Literal["v3", "v2"] = "v3"
     enabled: bool = True
-    preset: Literal["throughput", "balanced", "careful", "custom"] = "balanced"
+    # 两种调度模式，可在调度页切换：
+    #   containers（容器优先，默认）：只看容器占用，占用 + 1 超过最大容器数时不建新题；不看最大任务数。
+    #   tasks（任务优先）：只看在手任务数，达到最大任务数时不建新题；容器仍受最大容器数约束，
+    #   多出来的题在容器门禁处排队等容器。
+    mode: Literal["containers", "tasks"] = "containers"
     containers: int = Field(default=4, ge=1, le=8)
-    sessions: int = Field(default=0, ge=0, le=8)
-    authoring: int = Field(default=2, ge=1, le=8)
-    delivering: int = Field(default=1, ge=1, le=8)
+    max_tasks: int = Field(default=5, ge=1, le=50)
+    create_cooldown_seconds: int = Field(default=180, ge=20, le=3600)
     recording: int = Field(default=1, ge=1, le=16)
-    in_hand: int = Field(default=0, ge=0, le=100)
-    launch_spacing_seconds: int = Field(default=45, ge=10, le=3600)
-    session_spacing_seconds: int = Field(default=20, ge=20, le=3600)
     startup_grace_seconds: int = Field(default=20, ge=0, le=300)
     phantom_seconds: int = Field(default=600, ge=30, le=7200)
     docker_timeout_seconds: int = Field(default=20, ge=1, le=300)
     docker_stale_seconds: int = Field(default=15, ge=1, le=300)
     keep_awake: bool = True
-    elastic: DispatchElasticSettings = Field(default_factory=DispatchElasticSettings)
     retry: DispatchRetrySettings = Field(default_factory=DispatchRetrySettings)
     guard: DispatchGuardSettings = Field(default_factory=DispatchGuardSettings)
     llm_guard: DispatchLLMGuardSettings = Field(default_factory=DispatchLLMGuardSettings)
@@ -380,14 +353,6 @@ class DispatchSettings(BaseModel):
     dispose: DispatchDisposeSettings = Field(default_factory=DispatchDisposeSettings)
     watchdog: DispatchWatchdogSettings = Field(default_factory=DispatchWatchdogSettings)
     window: DispatchWindowSettings = Field(default_factory=DispatchWindowSettings)
-
-    @model_validator(mode="after")
-    def _consistent_limits(self) -> DispatchSettings:
-        if self.in_hand and self.in_hand < self.containers:
-            raise ValueError("在手上限不能小于容器并发")
-        if self.elastic.enabled and self.elastic.ceiling < self.containers:
-            raise ValueError("弹性上限不能小于容器数")
-        return self
 
 
 class Settings(BaseSettings):
@@ -550,7 +515,6 @@ def config_toml(settings: Settings) -> str:
             "dispatch",
             settings.dispatch,
             exclude={
-                "elastic",
                 "retry",
                 "guard",
                 "llm_guard",
@@ -561,8 +525,6 @@ def config_toml(settings: Settings) -> str:
                 "window",
             },
         ),
-        "",
-        *_dump_table("dispatch.elastic", settings.dispatch.elastic),
         "",
         *_dump_table("dispatch.retry", settings.dispatch.retry),
         "",
@@ -589,25 +551,27 @@ def _migrated_dispatch(data: dict[str, Any]) -> dict[str, Any]:
     autopilot = cast(dict[str, Any], data.get("autopilot")) if isinstance(data.get("autopilot"), dict) else {}
     intake = cast(dict[str, Any], data.get("intake")) if isinstance(data.get("intake"), dict) else {}
     storage = cast(dict[str, Any], data.get("storage")) if isinstance(data.get("storage"), dict) else {}
-    containers = int(execution.get("max_containers") or 4)
-    authoring = int(autopilot.get("parallel_authoring") or 2)
-    delivering = int(autopilot.get("parallel_delivering") or 1)
-    sessions = authoring + delivering if {authoring, delivering} != {2, 1} else 0
+    containers = min(8, max(1, int(execution.get("max_containers") or 4)))
     in_hand = int(intake.get("max_in_hand") or 0)
-    if in_hand and in_hand < containers:
-        in_hand = containers
     return {
         "engine": "v3",
         "enabled": bool(autopilot.get("enabled", True)),
-        "preset": "custom" if sessions else "balanced",
         "containers": containers,
-        "authoring": authoring,
-        "delivering": delivering,
-        "sessions": min(8, sessions),
-        "in_hand": in_hand,
-        "elastic": {"ceiling": max(containers, min(8, containers + 2))},
+        "max_tasks": min(50, max(containers, in_hand)) if in_hand else min(50, containers + 1),
         "disk": {"floor_gb": float(storage.get("disk_floor_gb") or 30.0)},
     }
+
+
+def _upgrade_dispatch(dispatch: dict[str, Any]) -> None:
+    """旧版 [dispatch] 没有 max_tasks：按当时的在手上限换算一次，保存后旧键随之消失。"""
+    if dispatch.get("max_tasks"):
+        return
+    try:
+        containers = min(8, max(1, int(dispatch.get("containers") or 4)))
+        in_hand = int(dispatch.get("in_hand") or 0)
+    except (TypeError, ValueError):
+        return
+    dispatch["max_tasks"] = min(50, in_hand) if in_hand > 0 else min(50, containers + 1)
 
 
 def load_settings(paths: Paths) -> Settings:
@@ -631,6 +595,7 @@ def load_settings(paths: Paths) -> Settings:
     if migrated:
         data["dispatch"] = _migrated_dispatch(data)
     else:
+        _upgrade_dispatch(data["dispatch"])
         try:
             DispatchSettings.model_validate(data["dispatch"])
         except (TypeError, ValueError) as exc:

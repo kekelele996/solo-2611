@@ -246,61 +246,53 @@ async def test_failed_tasks_are_disposed_without_asking(
             if name == "queue-failed":
                 continue
             queue.enqueue(task_id, stage="chatgpt")
-            queue.update(task_id, status="quarantined", wait_code="quarantined", wait_text="连续失败")
+            # 旧版的“保留”标记和人工隔离不再阻止自动清理。
+            queue.update(task_id, status="failed", wait_code="gave_up", wait_text="人工隔离", keep=True)
         # 旧版本留下的 blocked 任务没有队列项，也必须被终态清理扫描到。
         ctx.repo.execute(
             "UPDATE tasks SET job_status='blocked', updated_at=? WHERE id=?",
             ("2026-11-13T00:00:00+00:00", ids["queue-failed"]),
         )
-        # 人工标记保留的题不动；已导出的题保留现场。
-        queue.update(ids["running-stale"], keep=True)
 
         results = await ctx.disposer.sweep()
-        assert {row["task_id"] for row in results} == {
-            ids["prompt-only"],
-            ids["queue-failed"],
-        }
-        assert not roots["prompt-only"].exists()
-        assert not roots["queue-failed"].exists()
-        assert Path(results[0]["moved_to"]).is_relative_to(ctx.paths.trash)
-        assert ctx.repo.get_task(ids["prompt-only"]) is None
-        assert ctx.repo.get_task(ids["queue-failed"]) is None
+        by_task = {row["task_id"]: row for row in results}
+        assert set(by_task) == set(ids.values())
+        for name in ("prompt-only", "running-stale", "queue-failed"):
+            assert not roots[name].exists()
+            assert ctx.repo.get_task(ids[name]) is None
+            assert Path(by_task[ids[name]]["moved_to"]).is_relative_to(ctx.paths.trash)
         closed = queue.get(ids["prompt-only"])
         assert closed is not None and closed.status == "removed" and closed.wait_code == "auto_disposed"
+        # 已导出的题保留现场，只关闭失败的队列项。
+        assert roots["exported"].is_dir()
+        assert by_task[ids["exported"]]["removed"] is False
+        exported = queue.get(ids["exported"])
+        assert exported is not None and exported.status == "removed"
         assert ticks == 1
-        assert roots["running-stale"].is_dir() and queue.get(ids["running-stale"]).status == "quarantined"
-        assert roots["exported"].is_dir() and queue.get(ids["exported"]).status == "quarantined"
-
-        # 人工隔离同样不自动清理；取消保留后才会处理。
-        queue.update(ids["running-stale"], keep=False, wait_text="人工隔离")
         assert await ctx.disposer.sweep() == []
-        queue.update(ids["running-stale"], wait_text="连续失败")
-        assert [row["task_id"] for row in await ctx.disposer.sweep()] == [ids["running-stale"]]
 
         ctx.dispatcher.config.dispose.enabled = False
-        queue.update(ids["exported"], status="quarantined")
+        queue.update(ids["exported"], status="failed")
         assert await ctx.disposer.sweep() == []
     finally:
         await ctx.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_auto_dispose_stops_after_hourly_limit(
+async def test_auto_dispose_has_no_hourly_cap(
     fixture_factory: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ctx, roots = await _context(tmp_path, monkeypatch, fixture_factory, ("prompt-only", "running-stale"))
     queue = ctx.dispatcher.queue
     ctx.dispatcher.config.dispose.grace_seconds = 0
-    ctx.dispatcher.config.dispose.max_per_hour = 1
     try:
         for root in roots.values():
             task_id = ctx.repo.get_task_by_root(root)["id"]
             queue.enqueue(task_id, stage="chatgpt")
-            queue.update(task_id, status="quarantined", wait_text="连续失败")
-        assert len(await ctx.disposer.sweep()) == 1
-        assert await ctx.disposer.sweep() == []
-        assert sum(1 for root in roots.values() if root.exists()) == 1
+            queue.update(task_id, status="failed", wait_text="累计失败 8 次，放弃该题")
+        assert len(await ctx.disposer.sweep()) == 2
+        assert not any(root.exists() for root in roots.values())
         events = [row["action"] for row in ctx.repo.query("SELECT action FROM events")]
-        assert "task.auto_dispose_throttled" in events
+        assert "task.auto_dispose_throttled" not in events
     finally:
         await ctx.shutdown()

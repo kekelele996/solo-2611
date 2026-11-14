@@ -70,7 +70,6 @@ class HoldRegistry:
         scope: Iterable[str],
         reason_code: str,
         reason: str,
-        auto: bool = True,
         probe_seconds: int | None = None,
         self_heal_seconds: int | None = None,
         caused_by_task: str = "",
@@ -82,7 +81,7 @@ class HoldRegistry:
             existing.scope = _unique(scope)
             existing.reason_code = reason_code
             existing.reason = reason
-            existing.auto = auto
+            existing.auto = True
             existing.last_error = str((metadata or {}).get("error") or "")
             existing.caused_by_task = caused_by_task
             existing.metadata = metadata or {}
@@ -100,7 +99,7 @@ class HoldRegistry:
             reason_code=reason_code,
             reason=reason,
             since=_iso(now),
-            auto=auto,
+            auto=True,
             next_at=_iso(now + timedelta(seconds=probe_seconds)) if probe_seconds is not None else "",
             count=1,
             last_error=str((metadata or {}).get("error") or ""),
@@ -155,7 +154,8 @@ class HoldRegistry:
         result: list[Hold] = []
         for hold in self.holds.values():
             next_at = _parse(hold.next_at)
-            if hold.auto and (next_at is None or next_at <= current):
+            # 所有挂起都自动复测，没有“等人处理”的挂起。
+            if next_at is None or next_at <= current:
                 result.append(hold)
         return result
 
@@ -197,6 +197,7 @@ class HoldRegistry:
                 continue
             if hold.source in DEPRECATED_HOLD_SOURCES:
                 continue
+            hold.auto = True
             self.holds[hold.source] = hold
         self.history = [
             item for item in data.get("history") or [] if isinstance(item, dict)

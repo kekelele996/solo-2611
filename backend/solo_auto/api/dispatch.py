@@ -219,78 +219,12 @@ async def move(task_id: str, payload: DispatchMoveRequest, ctx: AppContext = Dep
     return {"ok": True, "snapshot": ctx.dispatcher.snapshot()}
 
 
-@router.post("/queue/{task_id}/retry")
-async def retry(task_id: str, ctx: AppContext = Depends(context)) -> dict[str, Any]:
-    item = ctx.dispatcher.queue.get(task_id)
-    if item is None:
-        raise ApiError(404, "DISPATCH_ITEM_NOT_FOUND", "任务不在调度队列")
-    from_stage = item.stage if item.stage not in {"pending", "running"} else ""
-    try:
-        await ctx.autopilot.retry(task_id, from_stage=from_stage)
-    except ApiError as exc:
-        if exc.code not in {"AUTOPILOT_JOB_NOT_FOUND"}:
-            raise
-    ctx.dispatcher.queue.update(
-        task_id,
-        status="queued",
-        not_before="",
-        wait_code="",
-        wait_text="",
-        wait_until="",
-        last_failure={},
-        repeat_signature="",
-    )
-    return {"ok": True, "snapshot": ctx.dispatcher.snapshot()}
-
-
-@router.post("/queue/{task_id}/quarantine")
-async def quarantine(task_id: str, ctx: AppContext = Depends(context)) -> dict[str, Any]:
-    item = ctx.dispatcher.queue.update(
-        task_id,
-        status="quarantined",
-        wait_code="quarantined",
-        wait_text="人工隔离",
-        wait_until="",
-    )
-    if item is None:
-        raise ApiError(404, "DISPATCH_ITEM_NOT_FOUND", "任务不在调度队列")
-    return {"ok": True, "snapshot": ctx.dispatcher.snapshot()}
-
-
-@router.post("/queue/{task_id}/ignore")
-async def ignore(task_id: str, ctx: AppContext = Depends(context)) -> dict[str, Any]:
-    item = ctx.dispatcher.queue.get(task_id)
-    if item is None:
-        raise ApiError(404, "DISPATCH_ITEM_NOT_FOUND", "任务不在调度队列")
-    if item.status != "quarantined":
-        raise ApiError(409, "DISPATCH_ITEM_NOT_FAILED", "只有失败待处理的任务可以忽略")
-    ctx.autopilot.ignore(task_id)
-    ctx.dispatcher.queue.ignore(task_id)
-    ctx.dispatcher.guards.drop(task_id)
-    ctx.repo.add_event(
-        "dispatch.ignored",
-        f"已忽略失败：{item.wait_text or '未记录原因'}",
-        actor="user",
-        task_id=task_id,
-    )
-    return {"ok": True, "snapshot": ctx.dispatcher.snapshot()}
-
-
 @router.post("/queue/{task_id}/release")
 async def release(task_id: str, ctx: AppContext = Depends(context)) -> dict[str, Any]:
     item = ctx.dispatcher.queue.remove(task_id)
     if item is None:
         raise ApiError(404, "DISPATCH_ITEM_NOT_FOUND", "任务不在调度队列")
     return {"ok": True, "snapshot": ctx.dispatcher.snapshot()}
-
-
-@router.post("/queue/{task_id}/keep")
-async def keep(task_id: str, ctx: AppContext = Depends(context)) -> dict[str, Any]:
-    item = ctx.dispatcher.queue.get(task_id)
-    if item is None:
-        raise ApiError(404, "DISPATCH_ITEM_NOT_FOUND", "任务不在调度队列")
-    ctx.dispatcher.queue.update(task_id, keep=not item.keep)
-    return {"ok": True, "keep": not item.keep, "snapshot": ctx.dispatcher.snapshot()}
 
 
 @router.get("/plan")

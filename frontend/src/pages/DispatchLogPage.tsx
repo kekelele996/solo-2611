@@ -7,7 +7,7 @@ import type { DispatchLogRow } from "../api/types";
 import { Button, EmptyState, ErrorPanel, LoadingLines, Panel } from "../components/ui";
 import { formatDateTime } from "../utils/time";
 
-const FAMILIES = ["", "dispatch", "gate", "hold", "probe", "retry", "guard", "elastic", "capacity", "limit", "recovery", "watchdog", "refill", "intent"];
+const FAMILIES = ["", "dispatch", "gate", "hold", "probe", "retry", "guard", "capacity", "limit", "recovery", "watchdog", "refill", "intent"];
 const LEVELS = ["", "info", "warn", "error"];
 
 export function DispatchLogPage() {

@@ -4817,34 +4817,9 @@ kbd {
   gap: 8px;
 }
 
-.dispatch-presets {
-  display: inline-flex;
-  padding: 2px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--surface-2);
-}
 
-.dispatch-presets button {
-  min-height: 28px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--ink-3);
-  font-size: 12px;
-}
 
-.dispatch-presets button:hover:not(:disabled) {
-  color: var(--ink);
-}
 
-.dispatch-presets button[data-active] {
-  background: var(--surface);
-  color: var(--ink);
-  font-weight: 600;
-  box-shadow: 0 0 0 1px var(--line);
-}
 
 .dispatch-capacity {
   display: grid;
@@ -4949,11 +4924,6 @@ kbd {
   color: var(--warn);
 }
 
-.dispatch-hold[data-auto="false"] {
-  border-color: color-mix(in srgb, var(--danger) 48%, var(--line));
-  background: var(--danger-bg);
-  color: var(--danger);
-}
 
 .dispatch-hold > div {
   display: grid;
@@ -5387,6 +5357,44 @@ kbd {
   padding: 2px 6px;
   border-radius: var(--r-sm);
   background: var(--surface-3);
+}
+
+.dispatch-mode-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.dispatch-mode {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+
+.dispatch-mode button {
+  min-height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.dispatch-mode button:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.dispatch-mode button[data-active] {
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+.dispatch-limit-row[data-inactive] > span,
+.dispatch-limit-row[data-inactive] > .compact-number {
+  opacity: 0.55;
 }
 
 .dispatch-limit-note {

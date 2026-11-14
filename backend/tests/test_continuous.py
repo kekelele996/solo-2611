@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 import pytest
 
+from solo_auto.dispatch.gates import GateDecision
 from solo_auto.events.bus import EventBus
 from solo_auto.pipeline.autopilot import Job
 from solo_auto.pipeline.breaker import Breaker
@@ -123,6 +124,12 @@ async def _continuous_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fixtu
     ctx.dispatcher.config.refill.refill_while_paused = True
     monkeypatch.setattr(IntakeService, "max_in_hand", property(lambda self: 10))
     monkeypatch.setattr(ctx.staging, "list", lambda: [])
+    # 这组用例只验证每日上限、空题源退避等计划逻辑；建题节奏由 test_creation_gate 单独覆盖。
+    monkeypatch.setattr(
+        ctx.dispatcher,
+        "creation_decision",
+        lambda **_: GateDecision("intake", "create", True),
+    )
 
     async def fake_stage(_source: Any, project_id: str, engineering_id: str, *_: Any, **__: Any) -> dict[str, Any]:
         return {"projectId": project_id, "engineeringId": engineering_id, "name": engineering_id, "claimId": "c"}
