@@ -49,6 +49,32 @@ class FakeGateway:
         return True
 
 
+class RecoveryGateway(FakeGateway):
+    def __init__(self, gate: asyncio.Event) -> None:
+        super().__init__(gate)
+        self.calls: list[list[str]] = []
+
+    async def call(self, argv: list[str], **_: Any) -> SkillResult:
+        self.calls.append(argv)
+        if argv[:1] == ["resume"]:
+            return SkillResult(code=0, duration=0, data={"ok": True, "status": "running"})
+        return await super().call(argv)
+
+    async def run_status(self, _task_root: Path, *, task_id: str | None = None) -> SkillResult:
+        return SkillResult(
+            code=0,
+            duration=0,
+            data={
+                "status": "running",
+                "supervisorAlive": False,
+                "containerRunning": True,
+                "tmuxAlive": True,
+                "attempt": 2,
+                "taskId": task_id,
+            },
+        )
+
+
 def _make_task(tmp_path: Path, repo: Repository, number: int) -> tuple[str, Path]:
     root = tmp_path / "tasks" / f"task-{number}"
     state = {
@@ -154,6 +180,28 @@ async def test_duplicate_enqueue_is_rejected(tmp_path: Path) -> None:
     await scheduler.enqueue(task_id)
     with pytest.raises(ApiError, match="已在队列"):
         await scheduler.enqueue(task_id)
+    repo.close()
+
+
+@pytest.mark.asyncio
+async def test_launch_timeout_adopts_live_session_and_resumes_supervisor(tmp_path: Path) -> None:
+    paths = app_paths(tmp_path / "app")
+    repo = Repository(paths.database)
+
+    async def probe(_: str) -> bool:
+        return False
+
+    gateway = RecoveryGateway(asyncio.Event())
+    scheduler = RunScheduler(
+        paths=paths,
+        gateway=gateway,  # type: ignore[arg-type]
+        repo=repo,
+        reconciler=Reconciler(repo, paths, tmp_path / "tasks", container_probe=probe),
+        bus=EventBus(),
+    )
+    recovered = await scheduler._recover_launch_result("task-1", tmp_path / "tasks" / "task-1")
+    assert recovered is not None and recovered["status"] == "running"
+    assert gateway.calls and gateway.calls[0][:1] == ["resume"]
     repo.close()
 
 

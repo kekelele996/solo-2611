@@ -10,15 +10,31 @@ import pytest
 
 from solo_auto.app import create_app
 from solo_auto.dispatch.classify import Evidence, FailureClassifier
-from solo_auto.dispatch.facts import DockerFacts, FactsSnapshot
+from solo_auto.dispatch.facts import DockerFacts, FactsSnapshot, _managed_container_names
 from solo_auto.dispatch.gates import evaluate_container_gates, evaluate_session_gates
 from solo_auto.dispatch.holds import HoldRegistry
 from solo_auto.dispatch.policy import RecoveryPolicy
 from solo_auto.dispatch.pools import PoolBook
 from solo_auto.dispatch.queue import DispatchItem, DispatchQueue
 from solo_auto.gateway.skill import SkillGateway
-from solo_auto.settings import DispatchSettings, app_paths, load_settings, save_settings
+from solo_auto.settings import DispatchSettings, ExecutionSettings, app_paths, load_settings, save_settings
 from solo_auto.store.repo import Repository
+
+
+def test_docker_facts_count_legacy_prefix_without_a_label() -> None:
+    names = _managed_container_names(
+        "solo2611-legacy-01-abcd\t\n"
+        "custom-labelled\ttrue\n"
+        "project-hub-api-1\t\n"
+        "custom-app\tfalse\n"
+    )
+    assert names == {"solo2611-legacy-01-abcd", "custom-labelled"}
+
+
+def test_execution_keeps_three_hour_session_and_stale_floor() -> None:
+    execution = ExecutionSettings(run_timeout_seconds=7200, stale_after_seconds=5400)
+    assert execution.run_timeout_seconds == 10800
+    assert execution.stale_after_seconds == 10800
 
 
 def test_legacy_settings_migrate_once_and_round_trip(

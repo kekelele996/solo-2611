@@ -870,6 +870,14 @@ class Autopilot:
         self._stage(job, "exporting", "机器门禁通过，自动确认并导出")
         if job.reconfirm_required or not final.steps[9].ok:
             check = await self.feedback.check(job.task_id)
+            if check.get("local_review_status") in {"pending", "rejected"}:
+                message = (
+                    "Feedback 与轨迹结论出入较大，等待本地核验"
+                    if check.get("local_review_status") == "pending"
+                    else "Feedback 与轨迹结论核验未通过"
+                )
+                self._stage(job, "exporting", message)
+                return
             if not check["ok"]:
                 reasons = [str(item) for item in check["errors"]] or ["Feedback 检查未通过"]
                 await self._launch(job, "delivering", root, reasons)

@@ -19,7 +19,7 @@ start_attempts = 2
 silent_seconds = 1200
 no_progress_seconds = 1200
 fatal_hold_minutes = 30
-stale_after_seconds = 5400
+stale_after_seconds = 10800
 
 [storage]
 disk_floor_gb = 30.0
@@ -97,6 +97,12 @@ timeout_seconds = 30
 floor_gb = 30.0
 resume_factor = 1.2
 emergency_gb = 10.0
+
+[dispatch.dispose]
+enabled = true
+grace_seconds = 30
+permanent = false
+max_per_hour = 6
 
 [dispatch.refill]
 mode = "target"

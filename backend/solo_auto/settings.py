@@ -65,7 +65,7 @@ class ExecutionSettings(BaseModel):
     silent_seconds: int = Field(default=1200, ge=60)
     no_progress_seconds: int = Field(default=1200, ge=60)
     fatal_hold_minutes: int = Field(default=30, ge=1, le=1440)
-    stale_after_seconds: int = Field(default=90 * 60, ge=60)
+    stale_after_seconds: int = Field(default=3 * 60 * 60, ge=60)
 
     @model_validator(mode="before")
     @classmethod
@@ -94,6 +94,16 @@ class ExecutionSettings(BaseModel):
             data["start_attempts"] = min(2, max(1, int(data.get("start_attempts", 2))))
         except (TypeError, ValueError):
             data["start_attempts"] = 2
+        try:
+            run_timeout = max(10800, int(data.get("run_timeout_seconds") or 10800))
+            data["run_timeout_seconds"] = run_timeout
+            data["stale_after_seconds"] = max(
+                run_timeout,
+                int(data.get("stale_after_seconds") or run_timeout),
+            )
+        except (TypeError, ValueError):
+            data["run_timeout_seconds"] = 10800
+            data["stale_after_seconds"] = 10800
         return data
 
     @field_validator("attempts")
@@ -303,8 +313,8 @@ class DispatchDisposeSettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     enabled: bool = True
-    # 进入隔离后等这么久再清理，留出查看失败原因或点“保留”的时间。
-    grace_seconds: int = Field(default=120, ge=0, le=86400)
+    # 进入终态失败后短暂等待落盘就清理；不需要人工确认，也别等满一个补位周期。
+    grace_seconds: int = Field(default=30, ge=0, le=86400)
     # False 移入回收站（可恢复），True 直接删除。
     permanent: bool = False
     # 一小时内自动清理超过这个数量就停下并提醒，避免环境故障时连续烧题。

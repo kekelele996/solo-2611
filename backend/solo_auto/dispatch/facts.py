@@ -11,6 +11,19 @@ from pathlib import Path
 
 from solo_auto.dispatch.faults import FaultController
 
+MANAGED_PREFIX = "solo2611-"
+
+
+def _managed_container_names(text: str) -> set[str]:
+    """Count labelled containers and legacy names even if a label was lost."""
+    names: set[str] = set()
+    for raw in (text or "").splitlines():
+        name, _, label = raw.partition("\t")
+        name = name.strip()
+        if name and (name.startswith(MANAGED_PREFIX) or label.strip().lower() == "true"):
+            names.add(name)
+    return names
+
 
 @dataclass(slots=True)
 class DockerFacts:
@@ -89,10 +102,8 @@ class FactsCollector:
             proc = await asyncio.create_subprocess_exec(
                 "docker",
                 "ps",
-                "--filter",
-                "label=solo2611=true",
                 "--format",
-                "{{.Names}}",
+                '{{.Names}}\t{{.Label "solo2611"}}',
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -114,7 +125,9 @@ class FactsCollector:
                 error=stderr.decode("utf-8", errors="replace").strip() or "docker ps failed",
                 degraded=degraded is not None,
             )
-        values = frozenset(stdout.decode("utf-8", errors="replace").split())
+        values = frozenset(
+            _managed_container_names(stdout.decode("utf-8", errors="replace"))
+        )
         return DockerFacts(known=True, healthy=True, containers=values, observed_at=time.monotonic())
 
     async def _degraded_probe(self) -> set[str] | None:
@@ -123,14 +136,18 @@ class FactsCollector:
                 "docker",
                 "ps",
                 "--format",
-                "{{.Names}}",
+                '{{.Names}}\t{{.Label "solo2611"}}',
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=self.timeout_seconds)
         except (OSError, TimeoutError):
             return None
-        return set(stdout.decode("utf-8", errors="replace").split()) if proc.returncode == 0 else None
+        return (
+            _managed_container_names(stdout.decode("utf-8", errors="replace"))
+            if proc.returncode == 0
+            else None
+        )
 
     def _disk_free(self) -> float:
         spec = self.faults.get("disk.free")

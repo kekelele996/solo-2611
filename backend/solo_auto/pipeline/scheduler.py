@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +27,17 @@ if TYPE_CHECKING:
     from solo_auto.dispatch.kernel import Dispatcher
 
 LOGGER = logging.getLogger(__name__)
+CLAUDE_LAUNCH_CALL_TIMEOUT_SECONDS = 300
+MANAGED_ACTIVE_STATES = {
+    "launching",
+    "prompt_delivery",
+    "prompt_sent",
+    "running",
+    "continuing",
+    "holding",
+    "manual_input",
+    "closing",
+}
 
 
 @dataclass(slots=True)
@@ -372,23 +384,36 @@ class RunScheduler:
         try:
             started = await self.gateway.call(
                 ["run", "--task-root", str(run.entry.task_root)],
-                timeout=15,
+                timeout=CLAUDE_LAUNCH_CALL_TIMEOUT_SECONDS,
                 task_id=task_id,
             )
             if started.code != 0 or not started.data:
-                raise RuntimeError(
-                    started.err.strip()
-                    or started.out.strip()
-                    or f"技能启动失败，exit={started.code}"
+                recovered = await self._recover_launch_result(task_id, run.entry.task_root)
+                if recovered is None:
+                    raise RuntimeError(
+                        started.err.strip()
+                        or started.out.strip()
+                        or f"技能启动失败，exit={started.code}"
+                    )
+                started_data = recovered
+                self.repo.add_event(
+                    "run.launch_recovered",
+                    f"{run.entry.task_name} 的启动调用返回异常，但受管会话已成功接管",
+                    level="warn",
+                    actor="scheduler",
+                    task_id=task_id,
+                    details={"status": recovered},
                 )
-            run.attempt = int(started.data.get("attempt") or 0)
+            else:
+                started_data = started.data
+            run.attempt = int(started_data.get("attempt") or started_data.get("attemptIndex") or 0)
             run.phase = "running"
             self.repo.add_event(
                 "run.started.managed",
                 f"{run.entry.task_name} 已发起受管会话",
                 actor="scheduler",
                 task_id=task_id,
-                details=started.data,
+                details=started_data,
             )
             while True:
                 await asyncio.sleep(2)
@@ -523,12 +548,42 @@ class RunScheduler:
                 if run.phase == "done":
                     self.dispatcher.on_success(task_id, stage="running")
                 self.dispatcher.release_container(task_id, success=run.phase == "done")
+            with suppress(Exception):
+                await self.gateway.call(["terminal-sweep"], timeout=30, task_id=task_id)
             try:
                 await self.reconciler.run()
             except Exception:
                 LOGGER.exception("post-run reconcile failed")
             self.bus.publish("queue.updated", self.queue_snapshot())
             self.bus.publish("task.updated", {"task_id": task_id, "phase": run.phase})
+
+    async def _recover_launch_result(self, task_id: str, task_root: Path) -> dict[str, Any] | None:
+        """Adopt a managed session when the launcher timed out after tmux started."""
+        for attempt in range(3):
+            status_result = await self.gateway.run_status(task_root, task_id=task_id)
+            status = status_result.data if status_result.code == 0 else None
+            if isinstance(status, dict):
+                state = str(status.get("status") or "")
+                alive = bool(
+                    status.get("supervisorAlive")
+                    or status.get("containerRunning")
+                    or status.get("tmuxAlive")
+                )
+                if state in MANAGED_ACTIVE_STATES and alive:
+                    if not status.get("supervisorAlive"):
+                        resumed = await self.gateway.call(
+                            ["resume", "--task-root", str(task_root)],
+                            timeout=60,
+                            task_id=task_id,
+                        )
+                        if resumed.code != 0:
+                            return None
+                    return status
+                if state == "accepted":
+                    return status
+            if attempt < 2:
+                await asyncio.sleep(2)
+        return None
 
     async def _account_waiting_continue(
         self,

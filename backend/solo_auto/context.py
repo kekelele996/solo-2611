@@ -196,6 +196,7 @@ class AppContext:
             trash=self.trash,
             settings=self.settings.slim,
             bus=self.bus,
+            gateway=self.gateway,
         )
         self.prompt_templates = self.autopilot.prompt_templates
         self.preflight = Preflight(

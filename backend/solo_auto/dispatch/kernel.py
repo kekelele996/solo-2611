@@ -114,6 +114,7 @@ class Dispatcher:
         self._stopping = False
         self._event_signatures: dict[str, str] = {}
         self._last_capacity_sample = 0.0
+        self._last_limit_sync = 0.0
         self._probe_next_at = self.clock.monotonic() + self.config.llm_guard.probe_seconds
         self._probe_next_docker = self.clock.monotonic()
         self._start_id = ""
@@ -1081,6 +1082,10 @@ class Dispatcher:
         while not self._stopping:
             async with self.health.beat(name):
                 await self._refresh_waits()
+                current = self.clock.monotonic()
+                if current - self._last_limit_sync >= 60:
+                    self._last_limit_sync = current
+                    await self.sync_skill_limit(sync=True)
             await asyncio.sleep(interval)
 
     async def _probe_loop(self, name: str, interval: float) -> None:

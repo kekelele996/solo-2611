@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from solo_auto.events.bus import EventBus
+from solo_auto.gateway.skill import SkillGateway
 from solo_auto.pipeline.reconcile import Reconciler
 from solo_auto.pipeline.trash import TrashService
 from solo_auto.settings import Paths, SlimSettings
@@ -26,6 +27,7 @@ class Janitor:
         trash: TrashService,
         settings: SlimSettings,
         bus: EventBus,
+        gateway: SkillGateway,
     ) -> None:
         self.paths = paths
         self.repo = repo
@@ -33,17 +35,26 @@ class Janitor:
         self.trash = trash
         self.settings = settings
         self.bus = bus
+        self.gateway = gateway
         self._task: asyncio.Task[None] | None = None
+        self._terminal_task: asyncio.Task[None] | None = None
+        self._terminal_error = ""
 
     async def start(self) -> None:
         if self._task is None:
             self._task = asyncio.create_task(self._loop())
+        if self._terminal_task is None:
+            self._terminal_task = asyncio.create_task(self._terminal_loop())
 
     async def stop(self) -> None:
         if self._task is not None:
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
+        if self._terminal_task is not None:
+            self._terminal_task.cancel()
+            await asyncio.gather(self._terminal_task, return_exceptions=True)
+            self._terminal_task = None
 
     async def _loop(self) -> None:
         while True:
@@ -57,6 +68,46 @@ class Janitor:
                     actor="janitor",
                 )
             await asyncio.sleep(3600)
+
+    async def _terminal_loop(self) -> None:
+        """Reap windows left by an older skill or a killed supervisor."""
+        while True:
+            try:
+                result = await self.gateway.call(["terminal-sweep"], timeout=30)
+                data = result.data or {}
+                if result.code != 0:
+                    error = result.err.strip() or f"terminal-sweep exit={result.code}"
+                    if error != self._terminal_error:
+                        self._terminal_error = error
+                        self.repo.add_event(
+                            "terminal.sweep_failed",
+                            error[:500],
+                            level="warn",
+                            actor="janitor",
+                        )
+                elif data.get("closed"):
+                    self._terminal_error = ""
+                    self.repo.add_event(
+                        "terminal.swept",
+                        f"已清理 {int(data.get('closed') or 0)} 个已结束会话的残留终端窗口",
+                        actor="janitor",
+                        details=data,
+                    )
+                else:
+                    self._terminal_error = ""
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                if error != self._terminal_error:
+                    self._terminal_error = error
+                    self.repo.add_event(
+                        "terminal.sweep_failed",
+                        error[:500],
+                        level="warn",
+                        actor="janitor",
+                    )
+            await asyncio.sleep(60)
 
     def tick(self) -> dict[str, Any]:
         return {

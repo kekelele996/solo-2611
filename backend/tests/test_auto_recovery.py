@@ -227,23 +227,47 @@ async def test_failed_tasks_are_disposed_without_asking(
 ) -> None:
     names = ("prompt-only", "running-stale", "exported")
     ctx, roots = await _context(tmp_path, monkeypatch, fixture_factory, names)
+    roots["queue-failed"] = fixture_factory("prompt-only", tmp_path / "tasks" / "queue-failed")
+    await ctx.reconciler.run()
     ids = {name: ctx.repo.get_task_by_root(root)["id"] for name, root in roots.items()}
     queue = ctx.dispatcher.queue
     ctx.dispatcher.config.dispose.grace_seconds = 0
+    ticks = 0
+    original_tick = ctx.intake.tick
+
+    async def counted_tick() -> None:
+        nonlocal ticks
+        ticks += 1
+        await original_tick()
+
+    monkeypatch.setattr(ctx.intake, "tick", counted_tick)
     try:
-        for task_id in ids.values():
+        for name, task_id in ids.items():
+            if name == "queue-failed":
+                continue
             queue.enqueue(task_id, stage="chatgpt")
             queue.update(task_id, status="quarantined", wait_code="quarantined", wait_text="连续失败")
+        # 旧版本留下的 blocked 任务没有队列项，也必须被终态清理扫描到。
+        ctx.repo.execute(
+            "UPDATE tasks SET job_status='blocked', updated_at=? WHERE id=?",
+            ("2026-11-13T00:00:00+00:00", ids["queue-failed"]),
+        )
         # 人工标记保留的题不动；已导出的题保留现场。
         queue.update(ids["running-stale"], keep=True)
 
         results = await ctx.disposer.sweep()
-        assert [row["task_id"] for row in results] == [ids["prompt-only"]]
+        assert {row["task_id"] for row in results} == {
+            ids["prompt-only"],
+            ids["queue-failed"],
+        }
         assert not roots["prompt-only"].exists()
+        assert not roots["queue-failed"].exists()
         assert Path(results[0]["moved_to"]).is_relative_to(ctx.paths.trash)
         assert ctx.repo.get_task(ids["prompt-only"]) is None
+        assert ctx.repo.get_task(ids["queue-failed"]) is None
         closed = queue.get(ids["prompt-only"])
         assert closed is not None and closed.status == "removed" and closed.wait_code == "auto_disposed"
+        assert ticks == 1
         assert roots["running-stale"].is_dir() and queue.get(ids["running-stale"]).status == "quarantined"
         assert roots["exported"].is_dir() and queue.get(ids["exported"]).status == "quarantined"
 

@@ -51,6 +51,7 @@ COMMANDS = {
     "bundle",
     "repo",
     "cleanup",
+    "terminal-sweep",
 }
 
 

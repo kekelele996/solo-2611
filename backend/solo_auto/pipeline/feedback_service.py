@@ -128,7 +128,7 @@ class FeedbackService:
             task_id=task_id,
         )
         data = result.data or {}
-        if result.code not in {0, 2}:
+        if result.code not in {0, 2, 4}:
             raise ApiError(
                 500,
                 "FEEDBACK_CHECK_FAILED",
@@ -145,6 +145,9 @@ class FeedbackService:
             "score": data.get("score"),
             "errors": data.get("errors") or [],
             "warnings": data.get("warnings") or [],
+            "local_review_required": bool(data.get("localReviewRequired")),
+            "local_review_status": str(data.get("localReviewStatus") or "not_required"),
+            "local_review": data.get("localReview") or {},
             "stderr": result.err,
             "exit_code": result.code,
         }
