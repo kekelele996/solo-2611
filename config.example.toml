@@ -14,6 +14,7 @@ max_containers = 4
 run_timeout_seconds = 10800
 attempts = 1
 run_mode = "supervised"
+open_terminal_on_run = false
 continue_max = 2
 start_attempts = 2
 silent_seconds = 1200
@@ -35,39 +36,72 @@ auto_submit = true
 poll_interval_seconds = 300
 poll_timeout_seconds = 86400
 
+[autopilot]
+enabled = true
+agent_mode = "chatgpt"
+agent_bin = ""
+agent_args = []
+chatgpt_folder_id = ""
+chatgpt_push_helper = ""
+chatgpt_timeout_seconds = 1800
+task_timeout_seconds = 21600
+orphan_quiet_seconds = 900
+usage_limit_cooldown_seconds = 1800
+restricted = false
+stage_timeout_seconds = 3600
+stage_attempts = 2
+run_attempts = 1
+parallel_authoring = 2
+parallel_delivering = 1
+stop_kills_containers = true
+
+[autopilot.breaker]
+same_kind_failures = 3
+audit_reject_rate = 0.2
+audit_reject_window = 10
+auto_reset_minutes = 30
+
+[audit]
+mode = "sample"
+sample_rate = 0.3
+stratify_by = "task_type"
+
+[intake]
+max_in_hand = 0
+exclude_tags = []
+
+[trash]
+retention_days = 7
+
+[slim]
+enabled = false
+after_days = 3
+patterns = ["node_modules", ".venv", "dist", "build", "target", "__pycache__"]
+
+[notify]
+macos = true
+
+[solo2]
+base_url = "https://solo2.jzxhnh.com/app"
+username = ""
+timeout_seconds = 30.0
+
 [dispatch]
 engine = "v3"
 enabled = true
-preset = "balanced"
+mode = "containers"
 containers = 4
-sessions = 0
-authoring = 2
-delivering = 1
+max_tasks = 5
+create_cooldown_seconds = 180
 recording = 1
-in_hand = 0
-launch_spacing_seconds = 45
-session_spacing_seconds = 20
 startup_grace_seconds = 20
 phantom_seconds = 600
 docker_timeout_seconds = 20
 docker_stale_seconds = 15
 keep_awake = true
 
-[dispatch.elastic]
-enabled = false
-ceiling = 6
-window_seconds = 300
-stall_percent = 3.0
-severe_attempt = 6
-step_up_seconds = 300
-cooldown_seconds = 600
-stable_seconds = 1800
-
 [dispatch.retry]
 max_total_attempts = 8
-backoff_seconds = [60, 180, 600]
-jitter = 0.2
-unknown_retries = 1
 engineering_cooldown_failures = 2
 engineering_cooldown_hours = 72
 
@@ -76,7 +110,7 @@ mode = "observe"
 run_overtime_factor = 1.25
 no_progress_minutes = 30
 budget_authoring_minutes = 90
-budget_delivering_minutes = 120
+budget_delivering_minutes = 180
 budget_recording_minutes = 20
 budget_exporting_minutes = 15
 zombie_grace_minutes = 5
@@ -98,12 +132,6 @@ floor_gb = 30.0
 resume_factor = 1.2
 emergency_gb = 10.0
 
-[dispatch.dispose]
-enabled = true
-grace_seconds = 30
-permanent = false
-max_per_hour = 6
-
 [dispatch.refill]
 mode = "target"
 target = 0
@@ -111,6 +139,11 @@ daily_claim_cap = 30
 allow_reuse = false
 engineering_usage_limit = 1
 refill_while_paused = false
+
+[dispatch.dispose]
+enabled = true
+grace_seconds = 30
+permanent = false
 
 [dispatch.watchdog]
 check_seconds = 30
