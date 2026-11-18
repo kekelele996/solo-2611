@@ -6,7 +6,10 @@ import hashlib
 import json
 import shutil
 import zipfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from solo_auto.errors import ApiError
@@ -31,8 +34,11 @@ class StagingManager:
         detail: dict[str, Any],
         claim_id: str,
         project_name: str = "",
+        *,
+        storage_id: str = "",
+        extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        directory = self.directory(engineering_id)
+        directory = self.directory(storage_id or engineering_id)
         if directory.exists():
             shutil.rmtree(directory)
         directory.mkdir(parents=True)
@@ -56,6 +62,7 @@ class StagingManager:
             "name": str(detail.get("name") or engineering_id),
             "versionId": str(detail.get("version_id") or detail.get("versionId") or detail.get("version_number") or ""),
             "claimId": claim_id,
+            "stagingId": storage_id or engineering_id,
             "zipSha256": actual_sha,
             "expectedSha256": expected_sha,
             "tags": detail.get("tags") or detail.get("tag_ids") or [],
@@ -65,6 +72,7 @@ class StagingManager:
             "stagingPath": str(directory),
             "sourcePath": str(source_dir),
             "source_kind": "project_hub",
+            **(extra or {}),
         }
         (directory / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return meta
@@ -87,14 +95,15 @@ class StagingManager:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise ApiError(404, "STAGING_NOT_FOUND", f"暂存区不存在：{staging_id}") from exc
-        if not isinstance(meta, dict) or not Path(str(meta.get("sourcePath") or "")).is_dir():
+        if not isinstance(meta, dict) or Path(str(meta.get("sourcePath") or "")).resolve() != directory.resolve() / "source" or not (directory / "source").is_dir():
             raise ApiError(422, "STAGING_BROKEN", f"暂存区源码目录缺失：{staging_id}")
         return meta
 
-    def attach_task(self, staging_id: str, task_root: Path) -> None:
+    def attach_task(self, staging_id: str, task_root: Path, *, extra: dict[str, Any] | None = None) -> None:
         directory = self.directory(staging_id)
         meta_path = directory / "meta.json"
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta.update(extra or {})
         meta["taskRoot"] = str(task_root)
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         task_meta_dir = self.paths.run / "task-meta"
@@ -106,6 +115,20 @@ class StagingManager:
 
     def remove(self, engineering_id: str) -> None:
         shutil.rmtree(self.directory(engineering_id), ignore_errors=True)
+
+    @contextmanager
+    def verified_source(self, staging_id: str, digest: str) -> Iterator[Path]:
+        directory = self.directory(staging_id)
+        with TemporaryDirectory(prefix=".init-", dir=directory) as temp, (directory / "source.zip").open("rb") as source:
+            # Hash and extract the same private copy, independent of the editable staged tree.
+            archive = Path(temp) / "source.zip"
+            with archive.open("wb") as copy:
+                shutil.copyfileobj(source, copy)
+            if sha256_file(archive) != digest:
+                raise ApiError(409, "TASK_SOURCE_REVIEW", "暂存工程 ZIP 与领取摘要不一致")
+            fresh = Path(temp).resolve() / "source"
+            self._safe_extract(archive, fresh)
+            yield fresh
 
     def _safe_extract(self, archive: Path, destination: Path) -> None:
         destination.mkdir(parents=True, exist_ok=True)

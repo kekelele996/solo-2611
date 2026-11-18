@@ -37,11 +37,11 @@ class Reconciler:
         self.gateway = gateway
         self._run_lock = asyncio.Lock()
 
-    async def run(self) -> int:
+    async def run(self, *, resume_sessions: bool = True) -> int:
         async with self._run_lock:
-            return await self._reconcile()
+            return await self._reconcile(resume_sessions=resume_sessions)
 
-    async def _reconcile(self) -> int:
+    async def _reconcile(self, *, resume_sessions: bool) -> int:
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
         roots = sorted(path.parent.parent for path in self.tasks_dir.glob("*/monitor/state.json"))
         indexed = set(roots)
@@ -84,17 +84,20 @@ class Reconciler:
                 continue
             state = envelope.state
             task_id = str(previous["id"]) if previous else self.repo.task_id_for_root(root)
+            binding = self.repo.query_one("SELECT dropped_at, drop_reason FROM dispatch_claim_owners WHERE task_id=?", (task_id,))
+            dropped = bool(binding and binding["dropped_at"])
             session_status: dict[str, Any] = {}
             session_lost = False
             if (
                 self.gateway is not None
+                and not dropped
                 and state.status == "running"
                 and state.sessionRun is not None
             ):
                 status_result = await self.gateway.run_status(root, task_id=task_id)
                 if status_result.code == 0 and status_result.data:
                     session_status = status_result.data
-                    if session_status.get("supervisorAlive") is not True:
+                    if resume_sessions and session_status.get("supervisorAlive") is not True:
                         resumed = await self.gateway.call(
                             ["resume", "--task-root", str(root)],
                             timeout=60,
@@ -147,12 +150,14 @@ class Reconciler:
                 job_status = str(previous["job_status"])
             if session_lost or session_status.get("status") == "session_lost":
                 job_status = "blocked"
+            if dropped:
+                job_status = "archived"
             meta = staging_by_root.get(str(root)) or _read_json(self.paths.run / "task-meta" / f"{root.name}.json")
             record = _record_for_state(task_id, root, state, job_status, meta, ack)
             if record.get("session_id") and session_counts.get(str(record["session_id"]), 0) > 1:
                 record["session_id"] = None
             old_status = str(previous.get("job_status")) if previous else None
-            notes = str(previous.get("notes") or "") if previous else None
+            notes = str(binding["drop_reason"]) if dropped and binding else str(previous.get("notes") or "") if previous else None
             self.repo.upsert_task(record, notes=notes)
             self.repo.replace_steps(task_id, [step.as_dict() for step in eval_result.steps])
             if state.sessionRun is not None and state.sessionRun.attemptIndex:
@@ -212,7 +217,7 @@ def _record_for_state(
         "source_kind": str(meta.get("source_kind") or state.source.kind or "local_dir"),
         "engineering_id": str(meta.get("engineeringId") or ""),
         "project_id": str(meta.get("projectId") or ""),
-        "claim_id": str(meta.get("claimId") or ""),
+        "claim_id": str(meta.get("claimKey") or meta.get("claimId") or ""),
         "domain": str(fields.get("所属领域") or ""),
         "sub_direction": str(fields.get("子方向") or ""),
         "task_type": str(fields.get("任务类型") or ""),

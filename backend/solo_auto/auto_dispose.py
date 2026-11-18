@@ -65,6 +65,8 @@ class AutoDisposer:
             )
         )
         for task_id in dict.fromkeys(task_ids):
+            if ctx.routing.stopping(task_id):
+                continue
             item = queue_items.get(task_id)
             task = ctx.repo.get_task(task_id)
             reason = (

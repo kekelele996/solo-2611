@@ -17,6 +17,6 @@ async def test_credentials(token: str | None) -> dict[str, Any]:
         account = body.get("login") if isinstance(body, dict) else None
         if not isinstance(account, str) or not account:
             return {"ok": False, "message": "GitHub 未返回账号，身份未核验", "detail": {}}
-        return {"ok": True, "message": f"GitHub 连接成功：{account}", "detail": {}}
+        return {"ok": True, "message": f"GitHub 连接成功：{account}", "detail": {"account": account}}
     except (ValueError, httpx.HTTPError):
         return {"ok": False, "message": "GitHub 连接失败，请检查网络或凭据格式", "detail": {}}

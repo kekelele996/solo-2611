@@ -72,6 +72,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/system/accounts/profiles/{profile_id}/engineering-pools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Engineering Pools */
+        get: operations["get_engineering_pools_api_system_accounts_profiles__profile_id__engineering_pools_get"];
+        /** Save Engineering Pools */
+        put: operations["save_engineering_pools_api_system_accounts_profiles__profile_id__engineering_pools_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/accounts/profiles/{profile_id}/engineering-pools/projects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List Standby Projects */
+        post: operations["list_standby_projects_api_system_accounts_profiles__profile_id__engineering_pools_projects_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/system/accounts/profiles": {
         parameters: {
             query?: never;
@@ -3272,6 +3307,56 @@ export interface components {
             /** Webhook Url */
             webhook_url?: string | null;
         };
+        /** PoolSource */
+        PoolSource: {
+            /**
+             * Standby Use Primary Source
+             * @default false
+             */
+            standby_use_primary_source: boolean;
+            /**
+             * Standby Source Address
+             * @default
+             */
+            standby_source_address: string;
+            /**
+             * Standby Source User
+             * @default
+             */
+            standby_source_user: string;
+            /**
+             * Standby Source Password
+             * @default
+             */
+            standby_source_password: string;
+        };
+        /** PoolUpdate */
+        PoolUpdate: {
+            /**
+             * Standby Use Primary Source
+             * @default false
+             */
+            standby_use_primary_source: boolean;
+            /**
+             * Standby Source Address
+             * @default
+             */
+            standby_source_address: string;
+            /**
+             * Standby Source User
+             * @default
+             */
+            standby_source_user: string;
+            /**
+             * Standby Source Password
+             * @default
+             */
+            standby_source_password: string;
+            /** Primary Project Id */
+            primary_project_id: string;
+            /** Standby Project Id */
+            standby_project_id: string;
+        };
         /** PrivacyRecheckRequest */
         PrivacyRecheckRequest: {
             /** Task Ids */
@@ -3676,6 +3761,8 @@ export interface components {
         SubmissionConfigPatch: {
             /** Auto Submit */
             auto_submit?: boolean | null;
+            /** Daily New Limit */
+            daily_new_limit?: number | null;
             /** Poll Interval Seconds */
             poll_interval_seconds?: number | null;
             /** Poll Timeout Seconds */
@@ -3837,6 +3924,107 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    get_engineering_pools_api_system_accounts_profiles__profile_id__engineering_pools_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_engineering_pools_api_system_accounts_profiles__profile_id__engineering_pools_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PoolUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_standby_projects_api_system_accounts_profiles__profile_id__engineering_pools_projects_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PoolSource"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
             };
         };
     };

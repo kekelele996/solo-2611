@@ -23,10 +23,12 @@ class ProjectHubClient:
         secrets: SecretStore,
         *,
         transport: httpx.AsyncBaseTransport | None = None,
+        password: str | None = None,
     ) -> None:
         self.settings = settings
         self.secrets = secrets
-        self._csrf = secrets.get("projecthub.csrf") or ""
+        self._password = password
+        self._csrf = (secrets.get("projecthub.csrf") or "") if password is None else ""
         self._persisted_csrf = self._csrf
         self._client = httpx.AsyncClient(
             base_url=settings.base_url,
@@ -37,7 +39,7 @@ class ProjectHubClient:
             # 工程台是本机/内网服务，必须绕过 Clash 等系统代理；GitHub 客户端单独使用代理。
             trust_env=False,
         )
-        cookies = secrets.get_json("projecthub.cookies", {})
+        cookies = secrets.get_json("projecthub.cookies", {}) if password is None else {}
         self._cookie_signature = json.dumps(cookies, sort_keys=True) if isinstance(cookies, dict) else ""
         if isinstance(cookies, dict):
             for name, value in cookies.items():
@@ -57,7 +59,7 @@ class ProjectHubClient:
 
     async def login(self, username: str | None = None, password: str | None = None) -> dict[str, Any]:
         user = username if username is not None else self.settings.username
-        secret = password if password is not None else self.secrets.get("projecthub.password")
+        secret = password if password is not None else self._saved_password()
         if not user or not secret:
             raise SourceAuthError("工程台用户名或密码未配置")
         response = await self._request(
@@ -77,6 +79,16 @@ class ProjectHubClient:
         )
         self._persist_session()
         return cast(dict[str, Any], data)
+
+    async def verify_identity(self) -> None:
+        await self._ensure_session()
+        payload = _json(await self._request("GET", "/api/v1/auth/me"))
+        user = payload.get("user") if isinstance(payload, dict) else None
+        if not isinstance(user, dict) or not self.settings.username or user.get("username") != self.settings.username:
+            raise SourceAuthError("工程台登录身份和配置账号不一致")
+
+    def _saved_password(self) -> str | None:
+        return self.secrets.get("projecthub.password") if self._password is None else self._password
 
     async def list_projects(self, *, refresh: bool = False) -> list[dict[str, Any]]:
         await self._ensure_session()
@@ -209,7 +221,7 @@ class ProjectHubClient:
     async def _ensure_session(self) -> None:
         if self._client.cookies.jar:
             return
-        if self.settings.username and self.secrets.get("projecthub.password"):
+        if self.settings.username and self._saved_password():
             await self.login()
             return
         raise SourceAuthError("工程台会话已失效，请重新登录")
@@ -240,6 +252,8 @@ class ProjectHubClient:
             self._client.cookies.clear()
             try:
                 await self.login()
+                if csrf and method not in {"GET", "HEAD"} and self._csrf:
+                    headers["X-CSRF-Token"] = self._csrf
                 response = await self._client.request(method, path, headers=headers, **kwargs)
             except SourceAuthError:
                 raise
@@ -266,6 +280,8 @@ class ProjectHubClient:
         raise ApiError(response.status_code, "SOURCE_ERROR", f"{action} 失败：{message}")
 
     def _persist_session(self) -> None:
+        if self._password is not None:
+            return
         cookies = {cookie.name: cookie.value for cookie in self._client.cookies.jar}
         signature = json.dumps(cookies, sort_keys=True)
         if signature == self._cookie_signature and self._persisted_csrf == self._csrf:

@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from solo_auto.errors import ApiError
 from solo_auto.pipeline.prompt_history import PROMPT_FILE
 from solo_auto.store.repo import Repository
 
@@ -149,10 +150,7 @@ class ProjectMemory:
         )
         if not engineering_id:
             engineering_id = _safe(str(task.get("task_name") or task_id), task_id)
-        project_key = _safe(project_id, "unassigned")
-        engineering_key = _safe(engineering_id, task_id)
-        project_dir = self.root / project_key
-        engineering_dir = project_dir / "engineering" / engineering_key
+        project_dir, engineering_dir = self._directories(task_id, project_id, engineering_id)
         engineering_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(project_dir, 0o700)
         os.chmod(engineering_dir, 0o700)
@@ -173,8 +171,7 @@ class ProjectMemory:
         record = self.sync_task(task_id)
         if not record:
             return []
-        project_dir = self.root / _safe(record["projectId"], "unassigned")
-        engineering_dir = project_dir / "engineering" / _safe(record["engineeringId"], task_id)
+        project_dir, engineering_dir = self._directories(task_id, record["projectId"], record["engineeringId"])
         history = self._prompt_records(engineering_dir / "prompts.jsonl")
         task_context = Path(str(record.get("taskRoot") or "")) / "monitor" / "context-pack.md"
         lines = [
@@ -203,8 +200,7 @@ class ProjectMemory:
         record = self.sync_task(task_id)
         if not record:
             return {}
-        project_dir = self.root / _safe(record["projectId"], "unassigned")
-        engineering_dir = project_dir / "engineering" / _safe(record["engineeringId"], task_id)
+        project_dir, engineering_dir = self._directories(task_id, record["projectId"], record["engineeringId"])
         sources = {
             "project": project_dir / "project.md",
             "analysis": engineering_dir / "analysis.md",
@@ -330,6 +326,15 @@ class ProjectMemory:
             "exportedAt": str(task.get("exported_at") or ""),
         }
 
+    def _directories(self, task_id: str, project_id: str, engineering_id: str) -> tuple[Path, Path]:
+        scope = self.repo.task_account_scope(task_id)
+        project = self.root / "accounts" / scope if scope else self.root / _safe(project_id, "unassigned")
+        engineering = hashlib.sha256(engineering_id.encode()).hexdigest() if scope else _safe(engineering_id, task_id)
+        directory = project / "engineering" / engineering
+        if scope and directory.resolve() != self.root.resolve() / directory.relative_to(self.root):
+            raise ApiError(409, "TASK_SOURCE_REVIEW", "项目上下文目录与核验账号不一致")
+        return project, directory
+
     def _engineering_records(
         self,
         project_id: str,
@@ -338,11 +343,14 @@ class ProjectMemory:
         fallback: dict[str, Any],
     ) -> list[dict[str, Any]]:
         rows = self.repo.query(
-            "SELECT id FROM tasks WHERE engineering_id = ? OR id = ? ORDER BY created_at",
-            (engineering_id, fallback["taskId"]),
+            "SELECT id FROM tasks WHERE (engineering_id = ? AND coalesce(project_id,'') = ?) OR id = ? ORDER BY created_at",
+            (engineering_id, project_id, fallback["taskId"]),
         )
         records: dict[str, dict[str, Any]] = {}
+        scope = self.repo.task_account_scope(fallback["taskId"])
         for row in rows:
+            if self.repo.task_account_scope(str(row["id"])) != scope:
+                continue
             task = self.repo.get_task(str(row["id"]))
             if task:
                 record = self._task_record(task, project_id=project_id, engineering_id=engineering_id)
@@ -365,7 +373,8 @@ class ProjectMemory:
             "",
         ]
         for engineering_id, name in sorted(engineering.items()):
-            path = Path("engineering") / _safe(engineering_id, "unassigned") / "analysis.md"
+            _, directory = self._directories(latest["taskId"], project_id, engineering_id)
+            path = directory.relative_to(project_dir) / "analysis.md"
             lines.append(f"- [{name or engineering_id}]({path.as_posix()})")
         _write_text(project_dir / "project.md", "\n".join(lines).rstrip() + "\n")
 

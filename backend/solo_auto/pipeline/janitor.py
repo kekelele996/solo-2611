@@ -73,6 +73,12 @@ class Janitor:
         cutoff = datetime.now().astimezone() - timedelta(days=self.settings.after_days)
         removed: list[dict[str, Any]] = []
         for task in self.repo.query("SELECT * FROM tasks WHERE exported_at IS NOT NULL"):
+            binding = self.repo.query_one("SELECT dropped_at FROM dispatch_claim_owners WHERE task_id=?", (task["id"],))
+            if binding and binding["dropped_at"]:
+                continue
+            receipt = Path(task["task_root"]) / "monitor/submission/quota-deferred.json"
+            if receipt.is_file():
+                continue
             try:
                 exported = datetime.fromisoformat(str(task.get("exported_at") or ""))
             except ValueError:

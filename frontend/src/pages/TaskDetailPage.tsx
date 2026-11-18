@@ -15,6 +15,7 @@ import { api } from "../api/client";
 import { PurgeModal } from "../components/PurgeModal";
 import type { Step, TaskDetail } from "../api/types";
 import { useHotkeys } from "../hooks/useHotkeys";
+import { formatDateTime } from "../utils/time";
 import {
   ArtifactsTab,
   ExportTab,
@@ -208,6 +209,11 @@ export function TaskDetailPage() {
       ) : null}
       <TabBar tabs={tabs} value={tab} onChange={setTab} label="任务详情标签页" />
       <div className="task-tab-content">
+        {detail.account_dispatch && <div className="system-banner" role="status">
+          <strong>{detail.account_dispatch.role === "primary" ? "主号" : "副号"} · {detail.account_dispatch.project}</strong>
+          {detail.account_dispatch.reason && <span>{detail.account_dispatch.reason}</span>}
+          {detail.account_dispatch.retry_at && <time dateTime={detail.account_dispatch.retry_at}>{formatDateTime(detail.account_dispatch.retry_at)}</time>}
+        </div>}
         {tab === "overview" ? (
           <>
             <SessionPanel task={detail} onAbort={() => setAbandonOpen(true)} />

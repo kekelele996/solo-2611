@@ -25,6 +25,7 @@ from solo_auto.store.state import load_state
 
 if TYPE_CHECKING:
     from solo_auto.dispatch.kernel import Dispatcher
+    from solo_auto.pipeline.account_dispatch import AccountDispatch
 
 LOGGER = logging.getLogger(__name__)
 CLAUDE_LAUNCH_CALL_TIMEOUT_SECONDS = 300
@@ -108,6 +109,7 @@ class RunScheduler:
         self._startup_resumed: set[str] = set()
         self.intake: Any = None
         self.ledger: Any = None
+        self.routing: AccountDispatch | None = None
 
     def attach_recovery(self, *, intake: Any = None, ledger: Any = None) -> None:
         self.intake = intake
@@ -164,6 +166,8 @@ class RunScheduler:
         if not task:
             raise ApiError(404, "TASK_NOT_FOUND", f"任务不存在：{task_id}")
         root = Path(task["task_root"])
+        if self.routing:
+            self.routing.audit(task_id, root)
         envelope = load_state(root)
         if not envelope.compatible or envelope.state is None:
             raise ApiError(409, "TASK_STATE_INCOMPATIBLE", envelope.error or "任务状态不可读")
@@ -176,7 +180,7 @@ class RunScheduler:
             raise ApiError(409, "SESSION_ALREADY_ACCEPTED", "该题已有被接受的会话")
         entry = QueueEntry(task_id, str(task["task_name"]), root, pinned=pinned)
         self.queue.append(entry)
-        self.queue.sort(key=lambda item: (not item.pinned, item.enqueued_at))
+        self.queue.sort(key=lambda item: (self.routing.priority(item.task_id) if self.routing else 0, not item.pinned, item.enqueued_at))
         self.repo.add_event("run.queued", f"{entry.task_name} 已入队", actor="user", task_id=task_id)
         self.bus.publish("queue.updated", self.queue_snapshot())
         state_value = "running" if task_id in self.active else "queued"
@@ -219,6 +223,18 @@ class RunScheduler:
             if entry.task_id == task_id:
                 return index
         return None
+
+    async def quiesce(self, task_id: str) -> None:
+        if self.queue_position(task_id) is not None:
+            await self.stop_task(task_id)
+        run = self.active.get(task_id)
+        if run and run.task:
+            run.task.cancel()
+            await asyncio.gather(run.task, return_exceptions=True)
+            self.active.pop(task_id, None)
+            (self.paths.slots / f"{task_id}.json").unlink(missing_ok=True)
+            if self.dispatcher and self.dispatcher.v3_enabled:
+                self.dispatcher.release_container(task_id)
 
     def queue_snapshot(self) -> dict[str, Any]:
         return {
@@ -370,19 +386,11 @@ class RunScheduler:
             await asyncio.sleep(2)
 
     async def _tick(self) -> None:
+        if not self.queue or self._stopping:
+            return
+        facts = None
         if self.dispatcher is not None and self.dispatcher.v3_enabled:
-            if not self.queue:
-                return
             facts = await self.dispatcher.facts.snapshot()
-            # 探测期间用户可以移出或置顶任务。按此刻的队首申请名额并立即出队。
-            if not self.queue or self._stopping:
-                return
-            if len(self.queue) > 1:
-                priorities = self.dispatcher.queue.manual_priorities()
-                self.queue.sort(key=lambda item: (not item.pinned, -priorities.get(item.task_id, 0), item.enqueued_at))
-            decision = self.dispatcher.reserve_container(self.queue[0].task_id, facts)
-            if not decision.allowed:
-                return
         else:
             await self.refresh_limit()
             containers = await _running_containers()
@@ -392,9 +400,26 @@ class RunScheduler:
                 return
             if not containers and not self.active and not await _docker_ok():
                 return
-            if not self.queue or self._stopping:
+        if not self.queue or self._stopping:
+            return
+        priorities = self.dispatcher.queue.manual_priorities() if self.dispatcher and facts else {}
+        self.queue.sort(key=lambda item: (self.routing.priority(item.task_id) if self.routing else 0,
+                                          not item.pinned, -priorities.get(item.task_id, 0), item.enqueued_at))
+        entry = next((item for item in self.queue if not self.routing or not self.routing.stopping(item.task_id)), None)
+        if entry is None:
+            return
+        if self.routing:
+            try:
+                self.routing.audit(entry.task_id, entry.task_root)
+            except ApiError as error:
+                await self.stop_task(entry.task_id)
+                self.repo.set_job_status(entry.task_id, "blocked", notes=error.message)
                 return
-        entry = self.queue.pop(0)
+        if self.dispatcher and facts:
+            decision = self.dispatcher.reserve_container(entry.task_id, facts)
+            if not decision.allowed:
+                return
+        self.queue.remove(entry)
         run = ActiveRun(entry=entry, started_at=time.time())
         self.active[entry.task_id] = run
         self._write_slot(entry, "starting")

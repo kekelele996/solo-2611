@@ -47,6 +47,7 @@ async def test_workbench_owns_one_submission_watcher(tmp_path: Path, saved: dict
     pilot.repo = Mock()
     pilot.prompt_history = Mock()
     pilot.ledger = Mock()
+    pilot.routing = None
     pilot.review_tasks = {}
     pilot._changed = Mock()
     job = Job("id", "题目")
@@ -81,6 +82,7 @@ async def test_daily_quota_wait_survives_tick_and_resumes_original_task(tmp_path
     pilot.paused = False
     pilot.submission = SubmissionSettings()
     pilot.dispatcher = None
+    pilot.routing = None
     pilot.ledger = None
     pilot.prompt_history = Mock()
     pilot.repo = Mock()

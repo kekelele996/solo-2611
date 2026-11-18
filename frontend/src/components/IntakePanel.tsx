@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { WandSparkles } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../api/client";
@@ -57,7 +57,7 @@ export function IntakePanel() {
       });
     },
     onSuccess: () => {
-      toast(`已转为持续生产：题库循环复用，每日最多领取 ${CONTINUOUS_DAILY_CAP} 次`, "ok");
+      toast("已转为持续生产", "ok");
       void queryClient.invalidateQueries();
     },
     onError: (error) => toast(errorText(error), "error"),
@@ -91,6 +91,7 @@ export function IntakePanel() {
   const continuous = plan?.mode === "continuous";
   const counts = data?.counts;
   const daily = data?.daily;
+  const pool = data?.engineering_pool;
   const progress = !plan
     ? 0
     : continuous
@@ -123,11 +124,11 @@ export function IntakePanel() {
               项目来源：{plan.project_name || plan.project_id}
             </span>
             <span className="dispatch-plan-meta">
-              {continuous ? `今日领取 ${daily?.claimed ?? 0}/${daily?.cap ?? 0}` : `完成 ${counts?.completed ?? 0}/${plan.target}`}
+              {continuous ? `今日领取 ${daily?.claimed ?? 0}${pool ? "" : `/${daily?.cap ?? 0}`}` : `完成 ${counts?.completed ?? 0}/${plan.target}`}
               {" · "}进行中 {counts?.active ?? 0} · 失败 {counts?.failed ?? 0}
               {counts?.recoverable ? ` · 可恢复 ${counts.recoverable}` : ""}
             </span>
-            <div className="intake-progress"><span style={{ width: `${progress}%` }} /></div>
+            {(!continuous || !pool) && <div className="intake-progress"><span style={{ width: `${progress}%` }} /></div>}
             <span className="dispatch-plan-meta">
               {continuous
                 ? "题库循环复用，同工程不出雷同题"
@@ -136,7 +137,7 @@ export function IntakePanel() {
                   : "样本不足 3 题，不估算完成时间"}
             </span>
             <span className="dispatch-plan-meta">
-              默认轮转该项目全部题目
+              {pool ? "每个账号按提交额度从自己的工程池领题" : "默认轮转该项目全部题目"}
               {data?.disabled_count ? `，已禁用 ${data.disabled_count} 题` : ""} · <Link className="dispatch-link" to="/source">去题源管理 →</Link>
             </span>
             {plan.status === "paused" && plan.pause_reason ? <p className="danger-text">{plan.pause_reason}</p> : null}
@@ -153,7 +154,7 @@ export function IntakePanel() {
                   转为持续生产
                 </Button>
               ) : null}
-              {continuous ? (
+              {continuous && !pool ? (
                 <Button
                   size="small"
                   onClick={() => {
@@ -226,6 +227,8 @@ export function PlanModal({
   onCreated: () => void;
 }) {
   const { toast } = useToast();
+  const intake = useQuery({ queryKey: ["intake"], queryFn: api.intake, enabled: open });
+  const pool = intake.data?.engineering_pool;
   const projects = useQuery({ queryKey: ["projects"], queryFn: () => api.projects(), enabled: open });
   // 默认用题源页当前选中的项目，该项目下的题全部参与轮转。
   const [projectId, setProjectId] = useState(() => {
@@ -242,14 +245,14 @@ export function PlanModal({
   const [language, setLanguage] = useState("");
   const [maxUses, setMaxUses] = useState(0);
   const [excludeDelivered, setExcludeDelivered] = useState(false);
-  useEffect(() => {
-    const items = projects.data?.items ?? [];
-    if (items.length && !items.some((project) => project.id === projectId)) setProjectId(items[0].id);
-  }, [projectId, projects.data?.items]);
+  const projectOptions = (projects.data?.items ?? []).filter(item => item.id !== intake.data?.standby_engineering_pool?.project_id);
+  const selectedProject = projectOptions.find(item => item.id === projectId)?.id
+    ?? projectOptions.find(item => item.id === pool?.project_id)?.id
+    ?? projectOptions[0]?.id ?? "";
   const create = useMutation({
     mutationFn: () =>
       api.createIntake({
-        project_id: projectId,
+        project_id: selectedProject,
         mode,
         target: mode === "target" ? target : 0,
         daily_cap: dailyCap,
@@ -271,17 +274,17 @@ export function PlanModal({
       footer={
         <>
           <Button onClick={onClose}>取消</Button>
-          <Button variant="primary" disabled={!projectId || (mode === "target" ? target < 1 : dailyCap < 1)} loading={create.isPending} onClick={() => create.mutate()}>
+          <Button variant="primary" disabled={!selectedProject || (mode === "target" ? target < 1 : !pool && dailyCap < 1)} loading={create.isPending} onClick={() => create.mutate()}>
             下达计划
           </Button>
         </>
       }
     >
       <div className="form-grid">
-        <Field label="项目" hint="默认是题源页当前选中的项目，项目下的题都可以用">
-          <select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
-            <option value="">请选择项目</option>
-            {projects.data?.items.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+        <Field label="主号项目池">
+          <select value={selectedProject} onChange={(event) => setProjectId(event.target.value)}>
+            <option value="" disabled>请选择项目</option>
+            {projectOptions.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
           </select>
         </Field>
         <Field label="模式" hint="持续生产不设终点，重启后自动续跑">
@@ -294,7 +297,7 @@ export function PlanModal({
           <Field label="目标题数">
             <input type="number" min={1} max={15} value={target} onChange={(event) => setTarget(Number(event.target.value))} />
           </Field>
-        ) : (
+        ) : !pool && (
           <Field label="每日领取上限" hint="达到后停止领取，次日 00:00 自动继续">
             <input type="number" min={1} max={10000} value={dailyCap} onChange={(event) => setDailyCap(Number(event.target.value))} />
           </Field>

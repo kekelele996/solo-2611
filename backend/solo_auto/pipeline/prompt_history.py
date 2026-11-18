@@ -57,9 +57,13 @@ class PromptHistory:
         engineering_id = self._engineering_id(task_id)
         if not engineering_id:
             return []
+        task = self.repo.get_task(task_id) or {}
+        project_id = str(task.get("project_id") or "")
+        scope = self.repo.task_account_scope(task_id)
         found: dict[str, PriorPrompt] = {}
         for record in self._records():
-            if record.get("engineering_id") == engineering_id and record.get("task_id") != task_id:
+            if (record.get("engineering_id") == engineering_id and record.get("task_id") != task_id
+                    and str(record.get("account_scope") or "") == scope and self._record_project_id(record) == project_id):
                 prior = PriorPrompt(
                     task_id=str(record.get("task_id") or ""),
                     task_name=str(record.get("task_name") or ""),
@@ -71,10 +75,12 @@ class PromptHistory:
                     found[prior.task_id] = prior
         rows = self.repo.query(
             "SELECT id, task_name, task_root, sub_direction, task_type FROM tasks "
-            "WHERE engineering_id = ? AND id != ? ORDER BY created_at",
-            (engineering_id, task_id),
+            "WHERE engineering_id = ? AND coalesce(project_id,'') = ? AND id != ? ORDER BY created_at",
+            (engineering_id, project_id, task_id),
         )
         for row in rows:
+            if self.repo.task_account_scope(str(row["id"])) != scope:
+                continue
             text = _read_prompt(Path(str(row["task_root"])))
             if text:
                 found[str(row["id"])] = PriorPrompt(
@@ -133,6 +139,7 @@ class PromptHistory:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             record = {
                 "engineering_id": engineering_id,
+                "account_scope": self.repo.task_account_scope(task_id),
                 "project_id": str(task.get("project_id") or ""),
                 "created_at": str(task.get("created_at") or ""),
                 **asdict(prior),
@@ -153,7 +160,7 @@ class PromptHistory:
                     added += 1
             return added
 
-    def project_library(self, project_id: str) -> list[dict[str, Any]]:
+    def project_library(self, project_id: str, *, scope: str | None = None) -> list[dict[str, Any]]:
         """Return every used prompt attributed to one project, including purged tasks."""
         if not project_id:
             return []
@@ -182,7 +189,7 @@ class PromptHistory:
                 return engineering_names.get(engineering_id) or fallback or engineering_id
 
             for record in self._records():
-                if self._record_project_id(record) != project_id:
+                if self._record_project_id(record) != project_id or (scope is not None and str(record.get("account_scope") or "") != scope):
                     continue
                 text = str(record.get("text") or "").strip()
                 if not text:
@@ -224,6 +231,8 @@ class PromptHistory:
                 (project_id,),
             )
             for row in rows:
+                if scope is not None and self.repo.task_account_scope(str(row["id"])) != scope:
+                    continue
                 text = _read_prompt(Path(str(row["task_root"])))
                 if not text:
                     continue
@@ -264,11 +273,12 @@ class PromptHistory:
         candidate_text: str = "",
         exclude_task_id: str = "",
         limit: int = 50,
+        scope: str | None = None,
     ) -> dict[str, Any]:
         """Return one engineering's prompt history with optional similarity checks."""
         items = [
             item
-            for item in self.project_library(project_id)
+            for item in self.project_library(project_id, scope=scope)
             if item.get("engineeringId") == engineering_id
             and (not exclude_task_id or item.get("taskId") != exclude_task_id)
         ]

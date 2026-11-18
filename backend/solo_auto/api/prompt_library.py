@@ -113,5 +113,6 @@ async def dedupe_prompts(
         candidate_text=payload.text,
         exclude_task_id=exclude_task_id,
         limit=payload.limit,
+        scope=ctx.repo.task_account_scope(task_id) if task_id else None,
     )
     return {"ok": True, "taskId": task_id, **result}

@@ -83,8 +83,7 @@ AUTOPILOT: BLOCKED <一句话原因>
 
 边界：
 - 不修改技能目录或平台文件，不使用强制通过、允许缺项或绕过门禁的参数。
-- SOLO2 账号、认证会话和平台地址只能从本地工作台读取；用户名使用工作台配置的用户，
-  不得硬编码、猜测或复用历史会话。
+- SOLO2 用户名以当前任务绑定为准。认证会话和平台地址由工作台管理。
 - 当前会话不调用 export、submit、submission-status 或 repair。
 - 不伪造轨迹、截图、录屏、Feedback、分数或命令输出。
 - 遇到可恢复错误时按技能规则修正后继续；真实失败时保留证据并停止。
@@ -117,6 +116,16 @@ PRE_BRIEF_HASHES = {
 
 # 8e2834d7 出厂的桌面模板仍会直接提交和轮询，需要与当前工作台同步。
 HISTORICAL_CHATGPT_TEMPLATE = "a104c6018e7a237ff99b8903bd218e5567abb3f3c59b7adb5c6729d4d65ea24b"
+PRE_ACCOUNT_CHATGPT_TEMPLATE = "dfb2330db17d2f6d7d84c4d0146c751277a4b3377b3854e7887518675da0eef7"
+
+
+def solo2_account_instruction(username: str) -> str:
+    return (
+        f"本任务绑定的 SOLO2 用户名为 `{username}`。工作台提交和返修时只允许使用此用户名。"
+        "若本任务的 SOLO2 会话返回其他用户名，立即停止并返回 "
+        "`AUTOPILOT: BLOCKED SOLO2 用户名与任务绑定不符`。"
+        "此账号约束优先于模板和历史记录，禁止写入正式题面。"
+    )
 
 
 class PromptTemplates:
@@ -132,7 +141,7 @@ class PromptTemplates:
             active = self.root / f"{stage}.md"
             old_defaults = {LEGACY_DEFAULT_HASHES[stage], PRIOR_TEMPLATE_HASHES[stage], RECORDING_TEMPLATE_HASHES[stage], PRE_BRIEF_HASHES[stage]}
             if stage == "chatgpt":
-                old_defaults.add(HISTORICAL_CHATGPT_TEMPLATE)
+                old_defaults.update((HISTORICAL_CHATGPT_TEMPLATE, PRE_ACCOUNT_CHATGPT_TEMPLATE))
             if not active.is_file() or hashlib.sha256(active.read_bytes()).hexdigest() in old_defaults:
                 active.write_text(text, encoding="utf-8")
 

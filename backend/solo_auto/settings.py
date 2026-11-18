@@ -145,6 +145,7 @@ class SubmissionSettings(BaseModel):
     model_config = ConfigDict(extra="ignore", validate_assignment=True)
 
     auto_submit: bool = True
+    daily_new_limit: int = Field(default=70, ge=1, le=10000)
     poll_interval_seconds: int = Field(default=300, ge=10, le=3600)
     poll_timeout_seconds: int = Field(default=600, ge=60, le=604800)
 

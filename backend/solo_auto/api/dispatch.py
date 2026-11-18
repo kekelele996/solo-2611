@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query, Request
 
 from solo_auto.api.dependencies import context
-from solo_auto.api.profiles import standby_record, submission_quota_directory
+from solo_auto.api.profiles import serialize_account_changes
 from solo_auto.api.types import (
     DispatchInterruptRequest,
     DispatchLimitsRequest,
@@ -23,6 +20,7 @@ from solo_auto.api.types import (
 )
 from solo_auto.context import AppContext
 from solo_auto.errors import ApiError
+from solo_auto.pipeline.account_dispatch import shanghai_now
 
 
 async def require_v3_engine(request: Request, ctx: AppContext = Depends(context)) -> None:
@@ -39,19 +37,24 @@ async def snapshot(
     metrics: bool = Query(default=True),
     ctx: AppContext = Depends(context),
 ) -> dict[str, Any]:
-    day = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
-    record = standby_record(ctx)
-    primary = {"account": ctx.settings.solo2.username, "domain": ctx.settings.solo2.locked_domain,
-               "quota_directory": submission_quota_directory(ctx, ctx.settings.solo2.username)}
-    standby = ({"account": str(record['username']), "domain": str(record.get('domain') or ''),
-                "quota_directory": submission_quota_directory(ctx, str(record['username']))}
-               if record and record.get('username') and record.get('username') != ctx.settings.solo2.username else None)
-    primary_marker = (Path(primary["quota_directory"]) / day).is_file()
-    standby_marker = bool(standby and (Path(standby["quota_directory"]) / day).is_file())
-    return {**ctx.dispatcher.snapshot(compact=compact, metrics=metrics),
-            "submission_quota": {"open": not (primary_marker and (not standby or standby_marker)), "date": day, "limit": 70,
-                                 "primary": {**primary, "open": not primary_marker},
-                                 "standby": None if standby is None else {**standby, "open": not standby_marker}}}
+    primary, standby = (ctx.routing.quota(role, include_positions=True) for role in ("primary", "standby"))
+    selected, reason = (ctx.routing.selection(primary=primary, standby=standby) if ctx.routing.enabled else
+                        ("", "请在题源页核对主号项目和副号项目池"))
+    positions = primary.pop("estimated_positions") | standby.pop("estimated_positions")
+    for quota in (primary, standby):
+        for item in quota["deferred"]:
+            item["estimated_submission"] = positions.get(item["task_id"])
+    data = ctx.dispatcher.snapshot(compact=compact, metrics=metrics)
+    task_roles = {row["task_id"]: row["owner"] for row in ctx.routing.owner_rows() if row["task_id"]}
+    for item in data.get("queue", []):
+        item["account_role"] = task_roles.get(item.get("task_id"), "")
+        item["estimated_submission"] = positions.get(item.get("task_id"))
+    return {**data, "submission_quota": {
+        "open": primary["open"] or bool(standby["account"] and standby["open"]),
+        "date": shanghai_now().date().isoformat(), "limit": ctx.settings.submission.daily_new_limit,
+        "primary": primary, "standby": standby if standby["account"] else None,
+        "selected": selected, "reason": reason, "pools_configured": ctx.routing.enabled,
+    }}
 
 
 @router.post("/state")
@@ -107,7 +110,7 @@ async def explain(task_id: str = "", ctx: AppContext = Depends(context)) -> dict
 
 @router.get("/upcoming")
 async def upcoming(limit: int = Query(default=20, ge=1, le=50), ctx: AppContext = Depends(context)) -> dict[str, Any]:
-    items = ctx.dispatcher.upcoming(limit)
+    items = [item for item in ctx.dispatcher.upcoming(limit) if not ctx.routing.stopping(item["task_id"])]
     if len(items) < limit and ctx.intake.plan:
         items.extend(await ctx.intake.preview_candidates(limit - len(items), background=True))
     return {"items": items}
@@ -247,12 +250,14 @@ async def get_plan(ctx: AppContext = Depends(context)) -> dict[str, Any]:
     return {"plan": ctx.dispatcher.plan, "intake": ctx.intake.snapshot()}
 
 
-@router.put("/plan")
+@router.put("/plan", dependencies=[Depends(serialize_account_changes)])
 async def put_plan(payload: DispatchPlanRequest, ctx: AppContext = Depends(context)) -> dict[str, Any]:
     if payload.mode == "continuous" and payload.daily_claim_cap < 1:
         raise ApiError(422, "DAILY_CAP_REQUIRED", "持续生产必须设置每日领取上限")
     if payload.mode == "target" and payload.target < 1:
         raise ApiError(422, "TARGET_REQUIRED", "目标模式必须设置目标题数")
+    if len(payload.project_ids) == 1:
+        ctx.routing.check_project_groups(payload.project_ids[0], str(ctx.routing.config.get("standby_project_id") or ""))
     ctx.dispatcher.plan = payload.model_dump()
     ctx.dispatcher._save_state()
     ctx.settings.dispatch.refill.mode = payload.mode

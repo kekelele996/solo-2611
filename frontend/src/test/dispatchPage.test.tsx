@@ -211,6 +211,52 @@ describe("dispatch page", () => {
 
   afterEach(cleanup);
 
+  it("lists each retained submission and shows why standby gets new work", async () => {
+    vi.mocked(api.dispatch).mockResolvedValue({ ...SNAPSHOT, submission_quota: {
+      open: true, date: "2026-11-18", limit: 70, selected: "standby", pools_configured: true,
+      reason: "主号今日提交已超额，副号从专属工程池领题",
+      primary: { account: "first", domain: "数据工程", open: false, platform_closed: true, submitted: 64, reserved: 0,
+        remaining: 0, project: "主号专属项目", deferred: ["retained-1", "retained-2"].map((id, index) => ({
+          task_id: id, task_name: `待续交工程 ${index + 1}`, retry_at: "2026-11-19T00:00:00+08:00",
+          project: "主号专属项目", reason: "已留存本地",
+        })) },
+      standby: { account: "second", domain: "安全", open: true, submitted: 39, reserved: 0, remaining: 31, project: "副号专属项目" },
+    } });
+    renderPage();
+    const retained = within(await screen.findByRole("list", { name: "主号待续交项目" }));
+    expect(retained.getByRole("link", { name: "待续交工程 1" })).toHaveAttribute("href", "/tasks/retained-1");
+    expect(retained.getByRole("link", { name: "待续交工程 2" })).toHaveAttribute("href", "/tasks/retained-2");
+    expect(screen.getByText("主号今日提交已超额，副号从专属工程池领题")).toBeVisible();
+    expect(screen.getByText(/已提交 39 · 在途预留 0 · 预计可用 31/)).toBeVisible();
+  });
+
+  it("keeps task numbers stable as accepted counts and submission estimates change", async () => {
+    const task = SNAPSHOT.queue[0];
+    const running = { ...task, task_id: "task-running", task_name: "正在处理的工程", active: true, status: "active" };
+    const queued = { ...task, task_id: "task-queued", task_name: "排队中的工程" };
+    const response = (submitted: number, discarded: number): DispatchSnapshot => ({
+      ...SNAPSHOT,
+      queue: [{ ...running, account_role: "primary", estimated_submission: submitted + 1 },
+        { ...queued, account_role: "primary", estimated_submission: submitted + 2 }],
+      submission_quota: { open: true, date: "2026-11-18", limit: 70, standby: null,
+        primary: { account: "first", domain: "数据工程", open: true, submitted, discarded, reserved: 2,
+          remaining: Math.max(0, 70 - submitted - 2) } },
+    });
+    vi.mocked(api.dispatch).mockResolvedValue(response(69, 0));
+    renderPage();
+
+    const runningId = await screen.findByText("任务编号 task-running");
+    const queuedId = screen.getByText("任务编号 task-queued");
+    expect(runningId.parentElement).toHaveTextContent("预计第 70 条");
+    expect(queuedId.parentElement).toHaveTextContent("预计第 71 条 · 超出今日上限");
+    vi.mocked(api.dispatch).mockResolvedValue(response(67, 2));
+    fireEvent.click(screen.getByRole("button", { name: "刷新队列" }));
+
+    expect(await screen.findByText("已扣除今日废弃 2 条")).toBeVisible();
+    expect(runningId.parentElement).toHaveTextContent("预计第 68 条");
+    expect(queuedId.parentElement).toHaveTextContent("预计第 69 条");
+  });
+
   it("renders the state sentence, scoped hold and queue reason", async () => {
     renderPage();
     const title = await screen.findByRole("heading", { name: "任务队列" });

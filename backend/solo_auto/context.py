@@ -19,6 +19,7 @@ from solo_auto.events.bus import EventBus
 from solo_auto.gateway.skill import SkillGateway
 from solo_auto.instance_lock import InstanceLock
 from solo_auto.logging_setup import configure_logging
+from solo_auto.pipeline.account_dispatch import AccountDispatch, shanghai_now
 from solo_auto.pipeline.audit import AuditService
 from solo_auto.pipeline.autopilot import Autopilot
 from solo_auto.pipeline.batch import BatchService
@@ -227,6 +228,8 @@ class AppContext:
             notifier=self.notifier,
         )
         self.scheduler.attach_recovery(intake=self.intake, ledger=self.ledger)
+        self.routing = AccountDispatch(self)
+        self.tasks.routing = self.intake.routing = self.scheduler.routing = self.autopilot.routing = self.routing
         self.dispatcher.attach_runtime(
             autopilot=self.autopilot,
             preflight=self.preflight,
@@ -247,8 +250,9 @@ class AppContext:
             return
         self.instance_lock.acquire()
         self.skill_version = await self.gateway.version()
-        await self.reconciler.run()
+        await self.reconciler.run(resume_sessions=False)
         self.ledger.backfill()
+        self.routing.restore_rejections(shanghai_now())
         if self.auto_start:
             loop = asyncio.get_running_loop()
             self.watcher.start(loop)
@@ -265,6 +269,7 @@ class AppContext:
             await self.autopilot.start()
             await self.janitor.start()
             await self.intake.start()
+            self.routing.start()
             self.config_watcher.start()
         self.repo.add_event(
             "system.started",
@@ -279,6 +284,7 @@ class AppContext:
         await self.config_watcher.stop()
         await self.autopilot.stop()
         await self.intake.shutdown()
+        await self.routing.shutdown()
         await self.janitor.stop()
         await self.notifier.close()
         await self.scheduler.stop()
@@ -415,6 +421,9 @@ class AppContext:
             return "unknown"
 
     async def release_profile_claim(self, meta: dict[str, Any]) -> None:
+        if meta.get("claimKey"):
+            await self.routing.release(meta)
+            return
         owner = str(meta.get("profileId") or "default")
         args = (str(meta["projectId"]), str(meta["engineeringId"]), str(meta["claimId"]))
         if owner == self.settings.active_profile:

@@ -10,9 +10,9 @@ import statistics
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from solo_auto.errors import ApiError, SourceAuthError
+from solo_auto.errors import ApiError, SourceAuthError, SourceOfflineError
 from solo_auto.events.bus import EventBus
 from solo_auto.pipeline.autopilot import Autopilot
 from solo_auto.pipeline.notify import Notifier
@@ -23,6 +23,9 @@ from solo_auto.settings import IntakeSettings, Paths, Settings
 from solo_auto.sources.project_hub import ProjectHubClient
 from solo_auto.sources.staging import StagingManager
 from solo_auto.store.repo import Repository
+
+if TYPE_CHECKING:
+    from solo_auto.pipeline.account_dispatch import AccountDispatch, Lane
 
 # 领取或建题失败的工程先冷却一段时间再参与轮转，避免一次偶发失败把它永久剔出题库。
 FAILED_CLAIM_COOLDOWN = timedelta(hours=6)
@@ -63,6 +66,7 @@ class IntakeService:
         self.ledger = ledger
         self.bus = bus
         self.notifier = notifier
+        self.routing: AccountDispatch | None = None
         self.state_file = self._plan_file(settings.active_profile)
         self.plan: dict[str, Any] | None = None
         self._loop_task: asyncio.Task[None] | None = None
@@ -123,9 +127,16 @@ class IntakeService:
             await asyncio.sleep(3)
 
     def snapshot(self) -> dict[str, Any]:
+        primary, name = self.routing.primary_project() if self.routing else ("", "")
+        standby = self.routing.lane("standby") if self.routing else None
+        pool_views = {
+            "engineering_pool": {"project_id": primary, "project_name": name} if primary and self.routing and self.routing.enabled else None,
+            "standby_engineering_pool": {"project_id": standby.route["projectId"], "project_name": standby.route["projectName"]} if standby else None,
+        }
         if not self.plan:
             return {
                 "plan": None,
+                **pool_views,
                 "counts": {
                     "target": 0,
                     "completed": 0,
@@ -159,6 +170,7 @@ class IntakeService:
         return {
             **self.plan,
             "plan": self.plan,
+            **pool_views,
             "counts": counts,
             "max_in_hand": self.max_in_hand,
             "eta": eta,
@@ -201,6 +213,7 @@ class IntakeService:
             raise ApiError(409, "INTAKE_ACTIVE", "已有进行中的生产计划")
         if not continuous and (target < 1 or target > 15):
             raise ApiError(400, "INTAKE_TARGET_INVALID", "单个项目的目标题数必须在 1–15 之间")
+        self._check_primary_project(project_id)
         projects = await self.source.list_projects()
         project = next((item for item in projects if str(item.get("id") or "") == project_id), None)
         if project is None:
@@ -240,6 +253,7 @@ class IntakeService:
         project_id = project_id.strip()
         if not project_id:
             raise ApiError(400, "PROJECT_REQUIRED", "刷新调度来源前必须选择项目")
+        self._check_primary_project(project_id)
         projects = await self.source.list_projects()
         project = next((item for item in projects if str(item.get("id") or "") == project_id), None)
         if project is None:
@@ -301,6 +315,10 @@ class IntakeService:
         if plan.get("status") == "running":
             await self.tick()
         return self.snapshot()
+
+    def _check_primary_project(self, project_id: str) -> None:
+        if self.routing:
+            self.routing.check_project_groups(project_id, str(self.routing.config.get("standby_project_id") or ""))
 
     async def _convert_to_continuous(
         self,
@@ -395,6 +413,10 @@ class IntakeService:
         plan["updated_at"] = _now()
         released: list[str] = []
         if release_unstarted:
+            if self.routing and self.routing.enabled:
+                for meta in self._staged():
+                    if meta.get("claimKey") and not meta.get("taskRoot"):
+                        self.routing.release_later(meta)
             for item in self.staging.list():
                 if str(item.get("projectId") or "") != str(plan["project_id"]) or item.get("taskRoot"):
                     continue
@@ -429,7 +451,7 @@ class IntakeService:
         if task is None:
             return {"released": False, "reason": "task_missing"}
         root = str(task.get("task_root") or "")
-        for meta in self.staging.list():
+        for meta in self._staged():
             if str(meta.get("taskRoot") or "") != root:
                 continue
             plan = self.plan or {}
@@ -456,6 +478,9 @@ class IntakeService:
 
     async def tick(self) -> None:
         async with self._lock:
+            routed = self.routing if self.routing and self.routing.enabled else None
+            if self.routing and (routed or self.routing.busy()):
+                await self.routing.maintain()
             plan = self.plan
             claims = self.repo.query("""SELECT DISTINCT COALESCE(c.task_id, t.id) AS task_id FROM claims c
                 LEFT JOIN tasks t ON t.claim_id = c.id WHERE c.released_at IS NULL""")
@@ -463,6 +488,9 @@ class IntakeService:
             if failed_ids:
                 await self._release_finished_claims({"task_ids": failed_ids})
             if not plan or plan.get("status") != "running":
+                return
+            if not routed and self.settings.solo2.username and self.settings.submission.auto_submit:
+                self._wait(plan, "请在题源页核对主号项目和绑定领域")
                 return
             if not self.settings.autopilot.enabled:
                 plan["status"] = "paused"
@@ -487,7 +515,7 @@ class IntakeService:
                 # 「题源暂无候选」由本计划自己按退避重查，其余挂起照常拦住补位。
                 retry_empty = self._empty_retry_due(plan)
                 if any(
-                    not (hold.reason_code == "source.empty" and retry_empty)
+                    hold.source != "source_guard" or (not routed and not (hold.reason_code == "source.empty" and retry_empty))
                     for hold in dispatcher.holds.active(scope="intake")
                 ):
                     return
@@ -502,7 +530,8 @@ class IntakeService:
                 self._save()
                 self.notifier.notify(title="solo-auto 生产计划", status=f"完成 {counts['completed']} 题")
                 return
-            if not continuous and len(plan.get("task_ids") or []) + len(plan.get("failed_claims") or []) >= int(
+            if not continuous and sum(1 for task_id in plan.get("task_ids") or []
+                                      if not routed or not routed.stopping(task_id)) + len(plan.get("failed_claims") or []) >= int(
                 plan.get("claim_limit") or 0
             ):
                 plan["status"] = "paused"
@@ -516,6 +545,9 @@ class IntakeService:
                     actor="intake",
                 )
                 self.notifier.notify(title="solo-auto 计划暂停", status="达到领取上限")
+                return
+            if routed:
+                await self._tick_routed(plan, counts)
                 return
             staged = self._pending_staged(plan)
             wanted = self.max_in_hand if continuous else min(self.max_in_hand, target - counts["completed"])
@@ -684,6 +716,97 @@ class IntakeService:
                     self._save()
             self.bus.publish("intake.updated", {"counts": self._counts(plan), "status": plan["status"]})
 
+    async def _tick_routed(self, plan: dict[str, Any], counts: dict[str, int]) -> None:
+        routing = self.routing
+        assert routing is not None
+        primary = routing.quota("primary")
+        if primary["open"] and primary["fresh"]:
+            try:
+                await routing.verify_primary_github()
+            except ApiError as exc:
+                self._wait(plan, exc.message)
+                return
+        role, reason = routing.selection(include_staged=True, primary=primary)
+        lane = routing.lane(role) if role else None
+        if not lane:
+            self._wait(plan, reason if not role else "主号工程台账号已变化，请重新核验工程池")
+            return
+        continuous = plan.get("mode") == "continuous"
+        wanted = self.max_in_hand if continuous else min(self.max_in_hand, int(plan["target"]) - counts["completed"])
+        staged = routing.staged(role)
+        staged_offset = int(staged is not None)
+        if counts["in_hand"] - staged_offset >= wanted:
+            self._wait(plan, "")
+            return
+        if self._creation_blocked(plan, in_hand=counts["in_hand"] - staged_offset, extra=counts["staged"] - staged_offset):
+            return
+        if shutil.disk_usage(self.paths.home).free / 1024**3 < self.settings.storage.disk_floor_gb:
+            self._wait(plan, "磁盘剩余空间低于建题阈值")
+            return
+        lane_plan = self._lane_plan(plan, lane)
+        if not staged and not self._empty_retry_due(lane_plan):
+            self._wait(plan, str(lane_plan.get("waiting_reason") or reason))
+            return
+        self._wait(plan, reason)
+        meta = staged
+        engineering_id = str(meta["engineeringId"]) if meta else ""
+        task_created = False
+        try:
+            if meta is None:
+                await lane.source.verify_identity()
+                candidates = await self._candidate_pool(lane_plan, lane=lane)
+                if not candidates:
+                    self._lane_wait(plan, lane_plan, role, "工程池暂无可领取工程")
+                    return
+                if routing.selection()[0] != role:
+                    return
+                engineering_id = _engineering_id(candidates[0])
+                self._mark_created(engineering_id)
+                meta = await routing.claim_engineering(lane, engineering_id)
+                self._count_claim(plan)
+                self._save()
+            if (row := routing.row(claim_key=meta["claimKey"])) and routing.drop_reason(row):
+                # 工程领取期间若跨日或收到超额通知，下一轮终止并归还原工程。
+                return
+            task = await self.tasks.create(staging_id=meta["stagingId"], task_name=meta["name"], staging=lane.staging, ledger=lane.ledger,
+                                           domain=lane.route["domain"])
+            task_created = True
+            task_id = str(task["task_id"])
+            plan["task_ids"].append(task_id)
+            plan["claimed_engineering_ids"].append(engineering_id)
+            plan.setdefault("account_wait", {}).pop(role, None)
+            self._save()
+            await self.autopilot.enroll([task_id])
+        except (ApiError, SourceAuthError, SourceOfflineError, OSError) as exc:
+            if task_created:
+                self.repo.add_event("intake.enroll_deferred", "已建题，稍后补接自动交付", level="warn", actor="intake")
+                return
+            if meta:
+                routing.release_later(meta)
+            message = exc.message if isinstance(exc, ApiError) else str(exc)
+            self._lane_wait(plan, lane_plan, role, message)
+            if engineering_id and isinstance(exc, ApiError) and exc.status_code not in {401, 403, 503}:
+                plan["failed_claims"].append({"role": role, "project_id": lane.route["projectId"], "engineering_id": engineering_id,
+                                               "code": exc.code, "message": message, "at": _now()})
+                self._save()
+        self.bus.publish("intake.updated", {"counts": self._counts(plan), "status": plan["status"]})
+
+    @staticmethod
+    def _lane_plan(plan: dict[str, Any], lane: Lane) -> dict[str, Any]:
+        return {**plan, "project_id": lane.route["projectId"], "project_name": lane.route["projectName"],
+                "failed_claims": [item for item in plan.get("failed_claims", [])
+                                  if item.get("role", "primary") == lane.route["role"]
+                                  and item.get("project_id", plan.get("project_id")) == lane.route["projectId"]],
+                "empty_retry_at": "", **plan.get("account_wait", {}).get(lane.route["role"], {})}
+
+    def _lane_wait(self, plan: dict[str, Any], lane_plan: dict[str, Any], role: str, message: str) -> None:
+        step = int(lane_plan.get("empty_step") or 0)
+        delay = EMPTY_BACKOFF_SECONDS[min(step, len(EMPTY_BACKOFF_SECONDS) - 1)]
+        retry_at = (datetime.now().astimezone() + timedelta(seconds=delay)).isoformat()
+        reason = f"{'主号' if role == 'primary' else '副号'}：{message}，{_clock(retry_at)} 自动重查"
+        plan.setdefault("account_wait", {})[role] = {"empty_step": step + 1, "empty_retry_at": retry_at, "waiting_reason": reason}
+        self._wait(plan, reason)
+
     def _creation_blocked(self, plan: dict[str, Any], *, in_hand: int, extra: int) -> bool:
         """容器优先建题门禁；不放行时把原因写进计划等待说明并返回 True。"""
         dispatcher = getattr(self.autopilot, "dispatcher", None)
@@ -726,9 +849,19 @@ class IntakeService:
         plan = self.plan
         if not plan or plan.get("status") not in {"running", "paused"}:
             return []
+        lane = None
+        if self.routing and self.routing.enabled:
+            role, _ = self.routing.selection()
+            lane = self.routing.lane(role) if role else None
+            if not lane:
+                return []
+            plan = self._lane_plan(plan, lane)
+        elif self.settings.solo2.username and self.settings.submission.auto_submit:
+            return []
         key = json.dumps(
             {
                 "project_id": plan.get("project_id"),
+                "account": lane.route if lane else None,
                 "filters": plan.get("filters") or {},
                 "exclude_delivered": plan.get("exclude_delivered"),
                 "max_uses": plan.get("max_uses"),
@@ -743,16 +876,16 @@ class IntakeService:
             self._preview_cache = []
             if background:
                 if self._preview_task is None or self._preview_task.done():
-                    self._preview_task = asyncio.create_task(self._refresh_preview_cache(key, dict(plan)))
+                    self._preview_task = asyncio.create_task(self._refresh_preview_cache(key, dict(plan), lane=lane))
                 return []
-            self._preview_cache = await self._candidate_pool(plan)
+            self._preview_cache = await self._candidate_pool(plan, lane=lane) if lane else await self._candidate_pool(plan)
             self._preview_cache_at = time.monotonic()
         candidates = self._preview_cache
         if not candidates:
             return []
         stats = {
             str(row["engineering_id"]): row
-            for row in self.ledger.engineering_stats(project_id=str(plan.get("project_id") or ""))
+            for row in (lane.ledger if lane else self.ledger).engineering_stats(project_id=str(plan.get("project_id") or ""))
         }
         preview: list[dict[str, Any]] = []
         cycle = 0
@@ -771,6 +904,7 @@ class IntakeService:
                         "task_name": str(item.get("name") or engineering_id),
                         "engineering_id": engineering_id,
                         "project_id": str(plan.get("project_id") or ""),
+                        **({"account_role": lane.route["role"]} if lane else {}),
                         "preview": True,
                         "cycle": cycle,
                         "used": int(usage.get("used") or 0),
@@ -785,9 +919,11 @@ class IntakeService:
             cycle += 1
         return preview
 
-    async def _refresh_preview_cache(self, key: str, plan: dict[str, Any]) -> None:
+    async def _refresh_preview_cache(self, key: str, plan: dict[str, Any], *, lane: Lane | None = None) -> None:
         try:
-            candidates = await self._candidate_pool(plan)
+            if lane:
+                await lane.source.verify_identity()
+            candidates = await self._candidate_pool(plan, lane=lane) if lane else await self._candidate_pool(plan)
         except Exception as exc:
             LOGGER.warning("preview candidate refresh failed: %s", exc)
             return
@@ -796,24 +932,24 @@ class IntakeService:
         self._preview_cache = candidates
         self._preview_cache_at = time.monotonic()
 
-    async def _candidate_pool(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
+    async def _candidate_pool(self, plan: dict[str, Any], *, lane: Lane | None = None) -> list[dict[str, Any]]:
         filters = dict(plan.get("filters") or {})
         page = 1
         failed = _cooling_failures(plan)
         active_staging = {
             str(item.get("engineeringId") or "")
-            for item in self.staging.list()
+            for item in (lane.staging if lane else self.staging).list()
             if str(item.get("projectId") or "") == str(plan.get("project_id"))
         }
         stats = {
             str(row["engineering_id"]): row
-            for row in self.ledger.engineering_stats(project_id=str(plan["project_id"]))
+            for row in (lane.ledger if lane else self.ledger).engineering_stats(project_id=str(plan["project_id"]))
         }
         excluded_tags = {str(tag) for tag in self.intake_settings.exclude_tags}
         disabled = set(self.repo.disabled_engineering(str(plan["project_id"])))
         candidates: list[dict[str, Any]] = []
         while page <= 20:
-            response = await self.source.list_engineering(
+            response = await (lane.source if lane else self.source).list_engineering(
                 str(plan["project_id"]),
                 q=str(filters.get("q") or ""),
                 language=str(filters.get("language") or ""),
@@ -869,11 +1005,15 @@ class IntakeService:
         tasks = self.repo.tasks_by_ids(ids)
         for task_id in ids:
             task = tasks.get(task_id) or {}
+            if self.routing and self.routing.stopping(task_id):
+                continue
             job = self.autopilot.jobs.get(task_id)
             status = platform_status(str(task["task_root"])) if task.get("task_root") else ""
+            deferred = bool(self.routing and not status and task.get("task_root")
+                            and self.routing.receipt(Path(task["task_root"])).get("status") == "quota_deferred")
             if status == "qc_passed":
                 completed += 1
-            elif job and job.active and job.awaiting_platform:
+            elif deferred or (job and job.active and (job.awaiting_platform or job.stage == "waiting_quota")):
                 awaiting += 1
             elif job and job.active:
                 active += 1
@@ -886,8 +1026,10 @@ class IntakeService:
                 recoverable += 1
         staged = sum(
             1
-            for item in self.staging.list()
-            if str(item.get("projectId") or "") == str(plan.get("project_id")) and not item.get("taskRoot")
+            for item in self._staged()
+            if (item.get("accountRoute") or (not (self.routing and self.routing.enabled)
+                and str(item.get("projectId") or "") == str(plan.get("project_id")))) and not item.get("taskRoot")
+            and (not item.get("claimKey") or self.routing is None or (row := self.routing.row(claim_key=item["claimKey"])) and row["claim_state"] == "held")
         )
         return {
             "target": int(plan.get("target") or 0),
@@ -973,12 +1115,14 @@ class IntakeService:
         plan_tasks = self.repo.tasks_by_ids(plan.get("task_ids") or [])
         tasks = {str(task["task_root"]): task for task in plan_tasks.values()}
         plan_task_roots = tasks.keys()
-        for meta in self.staging.list():
+        for meta in self._staged():
             # 任务可能来自计划切换前的项目；按任务根归还，避免旧项目工程长期占用。
             if not meta.get("taskRoot") or str(meta.get("taskRoot") or "") not in plan_task_roots:
                 continue
             task = tasks.get(str(meta.get("taskRoot") or ""))
             if not task:
+                continue
+            if self.routing and meta.get("accountRoute") and self.routing.receipt(Path(task["task_root"])).get("status") == "quota_deferred":
                 continue
             job = self.autopilot.job(str(task["id"]), compact=True)
             terminal_job = bool(job and job.get("stage") in {"done", "awaiting_audit", "failed", "stopped"})
@@ -987,6 +1131,9 @@ class IntakeService:
                 await self._release_staged_claim(meta, "任务已结束，已归还原工程供后续复题")
 
     async def _release_staged_claim(self, meta: dict[str, Any], event_message: str) -> bool:
+        if self.routing and meta.get("claimKey"):
+            self.routing.release_later(meta)
+            return False
         task = self.repo.get_task_by_root(Path(str(meta["taskRoot"]))) if meta.get("taskRoot") else None
         task_id = str(task["id"]) if task else None
         try:
@@ -1023,6 +1170,14 @@ class IntakeService:
             actor="intake", task_id=task_id,
         )
         return True
+
+    def _staged(self) -> list[dict[str, Any]]:
+        items = self.staging.list()
+        if self.routing and self.routing.enabled:
+            for role in ("primary", "standby"):
+                if lane := self.routing.lane(role):
+                    items.extend(lane.staging.list())
+        return items
 
     def _daily(self, plan: dict[str, Any]) -> dict[str, Any]:
         raw = plan.get("daily")
@@ -1117,7 +1272,9 @@ def _cooling_failures(plan: dict[str, Any]) -> set[str]:
 
 
 def _today() -> str:
-    return datetime.now().astimezone().date().isoformat()
+    from solo_auto.sources.solo2 import SHANGHAI
+
+    return datetime.now(SHANGHAI).date().isoformat()
 
 
 def _clock(value: str) -> str:

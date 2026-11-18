@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -130,6 +131,27 @@ CREATE TABLE IF NOT EXISTS claims (
   released_at TEXT,
   task_id TEXT REFERENCES tasks(id),
   zip_sha256 TEXT
+);
+CREATE TABLE IF NOT EXISTS dispatch_claim_owners (
+  claim_key TEXT PRIMARY KEY,
+  task_id TEXT UNIQUE,
+  owner TEXT NOT NULL,
+  meta TEXT NOT NULL,
+  claim_state TEXT NOT NULL DEFAULT 'held',
+  started_at TEXT NOT NULL DEFAULT '',
+  dropped_at TEXT NOT NULL DEFAULT '',
+  created_day TEXT NOT NULL,
+  drop_reason TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS dispatch_account_days (
+  binding_key TEXT PRIMARY KEY,
+  day TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS dispatch_quota_incidents (
+  account_key TEXT NOT NULL,
+  day TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  PRIMARY KEY (account_key, day)
 );
 CREATE TABLE IF NOT EXISTS autopilot_stages (
   id INTEGER PRIMARY KEY,
@@ -351,6 +373,7 @@ class Repository:
             },
         )
         self._ensure_columns("dispatch_capacity", {"waiting": "INTEGER DEFAULT 0"})
+        self._ensure_columns("dispatch_claim_owners", {"drop_reason": "TEXT NOT NULL DEFAULT ''"})
         self._connection.execute("PRAGMA user_version=4")
         if recovered:
             self._connection.execute(
@@ -387,6 +410,14 @@ class Repository:
     def query_one(self, sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
         rows = self.query(sql, params)
         return rows[0] if rows else None
+
+    def task_account_scope(self, task_id: str) -> str:
+        row = self.query_one("SELECT meta FROM dispatch_claim_owners WHERE task_id=?", (task_id,))
+        if not row:
+            return ""
+        route = json.loads(row["meta"])["accountRoute"]
+        identity = [route[key] for key in ("server", "account", "sourceAddress", "sourceAccount", "projectId")]
+        return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
 
     def execute(self, sql: str, params: tuple[Any, ...] | dict[str, Any] = ()) -> int:
         with self.transaction() as conn:

@@ -5,6 +5,8 @@ import type {
   ProfileDraft,
   StandbyCheck,
   StandbyDraft,
+  StandbySource,
+  EngineeringPools,
   AuditDetail,
   AuditRow,
   AutopilotRecovery,
@@ -156,6 +158,18 @@ export const api = {
   testStandby: (token: string, primaryId: string, draft: StandbyDraft) =>
     request<StandbyCheck>(`/api/system/accounts/profiles/${encodeURIComponent(primaryId)}/standby/test`, {
       method: "POST", headers: accountHeaders(token), body: JSON.stringify(draft),
+    }),
+  engineeringPools: (token: string, profile: string) =>
+    request<EngineeringPools>(`/api/system/accounts/profiles/${encodeURIComponent(profile)}/engineering-pools`, {
+      headers: accountHeaders(token),
+    }),
+  standbyProjects: (token: string, profile: string, source: StandbySource) =>
+    request<{ items: ProjectRow[] }>(`/api/system/accounts/profiles/${encodeURIComponent(profile)}/engineering-pools/projects`, {
+      method: "POST", headers: accountHeaders(token), body: JSON.stringify(source),
+    }),
+  saveEngineeringPools: (token: string, profile: string, draft: StandbySource & { primary_project_id: string; standby_project_id: string }) =>
+    request<EngineeringPools>(`/api/system/accounts/profiles/${encodeURIComponent(profile)}/engineering-pools`, {
+      method: "PUT", headers: accountHeaders(token), body: JSON.stringify(draft),
     }),
   activateProfile: (token: string, id: string) => request<ProfileCatalog>(`/api/system/accounts/profiles/${encodeURIComponent(id)}/activate`, {
     method: "POST", headers: accountHeaders(token),

@@ -180,6 +180,7 @@ class RecordingConfigPatch(BaseModel):
 
 class SubmissionConfigPatch(BaseModel):
     auto_submit: bool | None = None
+    daily_new_limit: int | None = Field(default=None, ge=1, le=10000)
     poll_interval_seconds: int | None = Field(default=None, ge=10, le=3600)
     poll_timeout_seconds: int | None = Field(default=None, ge=60, le=604800)
 

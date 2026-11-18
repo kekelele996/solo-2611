@@ -527,6 +527,10 @@ function SystemSettings({ token, onUnlock, onLock }: { token?: string; onUnlock:
         </Panel>
 
         <Panel title="自动交付">
+          <Field label="每个账号的每日提交上限" hint="北京时间 00:00 换日，只统计首次提交。">
+            <input type="number" min={1} max={10000} value={form.submission.daily_new_limit ?? 70}
+              onChange={(event) => update({ ...form, submission: { ...form.submission, daily_new_limit: Number(event.target.value) } })} />
+          </Field>
           <label className="check-inline">
             <input
               type="checkbox"

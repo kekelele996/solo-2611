@@ -66,6 +66,11 @@ export function useEvents(): void {
         schedule();
       });
     }
+    source.addEventListener("dispatch.quota", () => {
+      for (const key of ["dispatch", "dispatch-upcoming", "task"]) {
+        void queryClient.invalidateQueries({ queryKey: [key] });
+      }
+    });
     source.addEventListener("toast", (event) => {
       try {
         const payload = JSON.parse((event as MessageEvent<string>).data) as {

@@ -103,6 +103,15 @@ async def task_detail(task_id: str, ctx: AppContext = Depends(context)) -> dict[
     meta = _task_meta(ctx, root)
     task["source"] = meta
     task["platform_status"] = platform_status(str(root))
+    if binding := ctx.routing.row(task_id=task_id):
+        receipt = ctx.routing.receipt(root)
+        waiting = receipt.get("status") == "quota_deferred"
+        task["account_dispatch"] = {
+            "role": binding["owner"], "project": binding["meta"]["projectName"],
+            "reason": binding["drop_reason"] or (receipt.get("message") if waiting or receipt.get("status") == "quota_stopped" else "") or "",
+            "retry_at": str(receipt.get("retryAt") or "") if waiting and not binding["dropped_at"] else "",
+            "stopped": bool(binding["dropped_at"]),
+        }
     timings = ctx.repo.query("SELECT id, details FROM events WHERE task_id=? AND action='autopilot.stage_duration' ORDER BY id DESC", (task_id,))
     task["stage_history"] = ([{"id": row["id"], **json.loads(row["details"])} for row in timings]
                              if timings else ctx.repo.autopilot_stages(task_id))
@@ -454,6 +463,7 @@ async def run_log(
 @router.post("/tasks/{task_id}/run/interactive")
 async def interactive_run(task_id: str, ctx: AppContext = Depends(context)) -> dict[str, Any]:
     task = _task(ctx, task_id)
+    ctx.routing.audit(task_id, Path(task["task_root"]))
     result = await ctx.gateway.call(
         ["interactive", "--task-root", task["task_root"]],
         timeout=1800,

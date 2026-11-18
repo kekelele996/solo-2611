@@ -21,9 +21,10 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from solo_auto import account_profile, skill_profile
+from solo_auto.account_binding import origin, submission_quota_directory
 from solo_auto.api.account_view import require_access, trusted_skill
 from solo_auto.api.dependencies import context
-from solo_auto.api.profiles import serialize_account_changes, standby_credentials, submission_quota_directory
+from solo_auto.api.profiles import serialize_account_changes, standby_credentials
 from solo_auto.api.types import (
     ClaimRequest,
     ConfigPatchRequest,
@@ -153,7 +154,9 @@ async def diagnostics(ctx: AppContext = Depends(context)) -> dict[str, Any]:
 
 def _runtime_profile(ctx: AppContext) -> dict[str, Any]:
     limit = ctx.dispatcher.effective_container_limit if ctx.dispatcher.v3_enabled else ctx.settings.execution.max_containers
-    return skill_profile.runtime_profile(ctx.settings, limit)
+    profile = skill_profile.runtime_profile(ctx.settings, limit)
+    profile["submission"]["requireAccountClaim"] = bool(ctx.routing.enabled or (ctx.settings.solo2.username and ctx.settings.submission.auto_submit))
+    return profile
 
 
 @router.get("/system/skill/config")
@@ -161,6 +164,59 @@ async def skill_runtime(request: Request, ctx: AppContext = Depends(context)) ->
     if not trusted_skill(request):
         require_access(request, ctx)
     return _runtime_profile(ctx)
+
+
+@router.get("/system/skill/task-account", include_in_schema=False)
+async def skill_task_account(request: Request, task_root: str = "", claim_key: str = "", start: bool = False,
+                             source: str = "", tasks_dir: str = "",
+                             ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    if not trusted_skill(request):
+        raise ApiError(403, "LOCAL_ONLY", "任务归属仅向本机技能开放")
+    root = Path(task_root).resolve() if task_root else None
+    if root and root.parent != ctx.settings.tasks_dir.resolve():
+        raise ApiError(409, "TASK_SOURCE_REVIEW", "工作目录不在该工作台任务目录中")
+    route = ctx.routing.account_config(task_root=root, claim_key=claim_key)
+    if claim_key:
+        row = ctx.routing.row(claim_key=claim_key)
+        if (not row or row["claim_state"] != "held" or row["task_id"] or not source
+                or source != row["meta"].get("initSourcePath") or tasks_dir != str(ctx.settings.tasks_dir.resolve())
+                or ctx.routing.drop_reason(row)):
+            raise ApiError(409, "TASK_SOURCE_REVIEW", "领取凭证与本次初始化的源码目录不一致，或已退出调度")
+    if root and route:
+        ctx.routing.audit(ctx.repo.task_id_for_root(root), root, starting=start)
+    return {"route": route}
+
+
+class SubmissionSignal(BaseModel):
+    account: str
+    server: str
+    role: Literal["primary", "standby"]
+    observed_at: datetime | None = None
+
+
+@router.post("/system/skill/submission-capacity", include_in_schema=False)
+async def skill_submission_capacity(payload: SubmissionSignal, request: Request, force: bool = False,
+                                     ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    if not trusted_skill(request):
+        raise ApiError(403, "LOCAL_ONLY", "提交额度仅向本机技能开放")
+    if (payload.account, origin(payload.server)) != (ctx.routing.account(payload.role)[0], origin(ctx.settings.solo2.base_url)):
+        raise ApiError(409, "TASK_OWNER_CHANGED", "提交额度查询的账号不匹配")
+    await ctx.routing.refresh(payload.role, force=force)
+    result = ctx.routing.quota(payload.role)
+    if result["account"] != payload.account:
+        raise ApiError(409, "TASK_OWNER_CHANGED", "查询期间提交账号已切换")
+    return {key: result[key] for key in ("open", "fresh", "submitted", "limit", "error")}
+
+
+@router.post("/system/skill/submission-deferred", include_in_schema=False)
+async def skill_submission_deferred(payload: SubmissionSignal, request: Request,
+                                     ctx: AppContext = Depends(context)) -> dict[str, bool]:
+    if not trusted_skill(request):
+        raise ApiError(403, "LOCAL_ONLY", "额度回执仅接受本机技能通知")
+    if not payload.observed_at or payload.observed_at.tzinfo is None:
+        raise ApiError(422, "QUOTA_TIMESTAMP", "额度回执缺少北京时间")
+    ctx.routing.notify_deferred(payload.role, payload.observed_at, account=payload.account, server=payload.server)
+    return {"ok": True}
 
 
 @router.post("/system/skill/credential/{purpose}", include_in_schema=False)
@@ -194,6 +250,7 @@ async def get_config(request: Request, ctx: AppContext = Depends(context)) -> di
         return {
             "active_profile": ctx.settings.active_profile,
             "submission": {"auto_submit": ctx.settings.submission.auto_submit,
+                           "daily_new_limit": ctx.settings.submission.daily_new_limit,
                            "quota_directory": str(ctx.paths.run / "solo2-daily-quota")},
             "solo2": {
                 "username": ctx.settings.solo2.username,
@@ -282,6 +339,12 @@ async def patch_config(payload: ConfigPatchRequest, request: Request, ctx: AppCo
     account_patch = payload_data.get("solo2") or {}
     identity_changed = any(key in account_patch and account_patch[key] != getattr(ctx.settings.solo2, key)
                            for key in ("base_url", "username"))
+    source_patch = payload_data.get("source") or {}
+    owner_changed = identity_changed or any(
+        key in source_patch and source_patch[key] != getattr(ctx.settings.source, key) for key in ("base_url", "username")
+    ) or ("locked_domain" in account_patch and account_patch["locked_domain"] != ctx.settings.solo2.locked_domain)
+    if owner_changed and ctx.routing.busy():
+        raise ApiError(409, "ROUTED_TASKS_ACTIVE", "请先处理当前账号的在途任务及待归还工程")
     if identity_changed:
         payload_data.setdefault("secrets", {}).setdefault("solo2_password", "")
         account_patch.setdefault("locked_domain", "")
@@ -391,6 +454,8 @@ async def patch_config(payload: ConfigPatchRequest, request: Request, ctx: AppCo
         previous = ctx.source
         ctx.replace_source(ProjectHubClient(ctx.settings.source, ctx.secrets))
         await previous.close()
+    if owner_changed or "github_token" in (payload_data.get("secrets") or {}):
+        await ctx.routing.invalidate()
     execution = payload_data.get("execution")
     if isinstance(execution, dict):
         await ctx.scheduler.refresh_limit()
@@ -509,6 +574,10 @@ async def solo2_session(request: Request, ctx: AppContext = Depends(context)) ->
     expected = request.headers.get("x-account-profile")
     if expected and expected != ctx.settings.active_profile:
         raise ApiError(409, "PROFILE_CHANGED", "当前用户配置已切换，请重新预检")
+    payload = await request.json() if await request.body() else {}
+    if (payload.get("expected_account", ctx.settings.solo2.username) != ctx.settings.solo2.username
+            or payload.get("expected_server", origin(ctx.settings.solo2.base_url)) != origin(ctx.settings.solo2.base_url)):
+        raise ApiError(409, "PROFILE_CHANGED", "当前主号已切换，请重新预检")
     result = await ctx.solo2.login_session()
     if not result.get("ok"):
         raise ApiError(
@@ -780,6 +849,27 @@ async def claim(payload: ClaimRequest, ctx: AppContext = Depends(context)) -> di
     if not ctx.source_online:
         raise ApiError(503, "SOURCE_OFFLINE", "题源离线，禁止领取新工程")
     _require_disk(ctx)
+    if ctx.routing.enabled:
+        async with ctx.intake._lock:
+            if payload.project_id != ctx.routing.primary_project()[0]:
+                raise ApiError(409, "POOL_PROJECT_FORBIDDEN", "请从题源页当前的主号项目池领取工程")
+            await ctx.routing.verify_primary_github()
+            lane = ctx.routing.lane("primary")
+            if not lane or lane.route["projectId"] != payload.project_id:
+                raise ApiError(409, "POOL_PROJECT_FORBIDDEN", "请从已核验的主号专属工程池领取工程")
+            await ctx.routing.refresh("primary")
+            role, reason = ctx.routing.selection()
+            if role != "primary":
+                raise ApiError(409, "PRIMARY_QUOTA_UNAVAILABLE", reason)
+            try:
+                await lane.source.verify_identity()
+                meta = await ctx.routing.claim_engineering(lane, payload.engineering_id)
+            except (SourceAuthError, SourceOfflineError) as exc:
+                raise ApiError(409, "POOL_SOURCE_UNAVAILABLE", str(exc)) from exc
+            return {"claim_id": meta["claimKey"], "staging_id": meta["stagingId"], "staging_path": meta["stagingPath"],
+                    "sha256_verified": bool(meta["zipSha256"] == meta["expectedSha256"])}
+    if ctx.settings.solo2.username and ctx.settings.submission.auto_submit:
+        raise ApiError(409, "POOL_REQUIRED", "请先下达主号生产计划并核对题源项目")
     claimed: dict[str, Any] | None = None
     try:
         claimed = await ctx.source.claim(payload.project_id, payload.engineering_id)
@@ -841,6 +931,12 @@ async def release_claim(
     force: bool = False,
     ctx: AppContext = Depends(context),
 ) -> dict[str, Any]:
+    if row := ctx.routing.row(claim_key=claim_id):
+        async with ctx.intake._lock:
+            if row["task_id"]:
+                raise ApiError(409, "CLAIM_HAS_ACTIVE_TASK", "请在对应任务详情归档并归还工程")
+            await ctx.routing.release(row["meta"])
+            return {"ok": True, "claim_id": claim_id}
     meta = next((item for item in ctx.staging.list() if str(item.get("claimId")) == claim_id), None)
     if not meta:
         raise ApiError(404, "CLAIM_NOT_FOUND", f"领取记录不存在：{claim_id}")
@@ -876,18 +972,23 @@ async def release_claim(
 
 @router.get("/claims")
 async def claims(ctx: AppContext = Depends(context)) -> dict[str, Any]:
-    items = [item for item in ctx.staging.list() if not item.get("taskRoot")]
+    lane = ctx.routing.lane("primary")
+    staged = ctx.staging.list() + (lane.staging.list() if lane else [])
+    items = [{**item, "claimId": item.get("claimKey") or item["claimId"]} for item in staged if not item.get("taskRoot")]
     return {"items": items, "total": len(items), "page": 1, "page_size": len(items)}
 
 
 @router.get("/staging")
 async def staging(ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    lane = ctx.routing.lane("primary")
+    staged = ctx.staging.list() + (lane.staging.list() if lane else [])
     items = [
         {
             **item,
+            "claimId": item.get("claimKey") or item["claimId"],
             "size": _path_size(Path(str(item.get("stagingPath") or ""))),
         }
-        for item in ctx.staging.list()
+        for item in staged
     ]
     return {"items": items, "total": len(items)}
 
@@ -895,12 +996,12 @@ async def staging(ctx: AppContext = Depends(context)) -> dict[str, Any]:
 @router.post("/tasks", status_code=201, dependencies=[Depends(serialize_account_changes)])
 async def create_task(payload: CreateTaskRequest, ctx: AppContext = Depends(context)) -> dict[str, Any]:
     _require_disk(ctx)
-    return await ctx.tasks.create(
-        staging_id=payload.staging_id,
-        task_name=payload.task_name,
-        domain=payload.domain,
-        sub_direction=payload.sub_direction,
-    )
+    async with ctx.intake._lock:
+        lane = ctx.routing.lane("primary") if ctx.routing.row(claim_key=payload.staging_id) else None
+        return await ctx.tasks.create(
+            staging_id=payload.staging_id, task_name=payload.task_name, domain=payload.domain, sub_direction=payload.sub_direction,
+            staging=lane.staging if lane else None, ledger=lane.ledger if lane else None,
+        )
 
 
 def _read_starts(path: Path) -> list[dict[str, Any]]:

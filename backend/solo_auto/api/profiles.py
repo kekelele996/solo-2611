@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 from collections.abc import AsyncIterator
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -11,6 +10,8 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field, field_validator
 
+from solo_auto.account_binding import origin, standby_record
+from solo_auto.account_binding import standby_key as _standby_key
 from solo_auto.api.account_view import (
     Connection,
     PasswordTarget,
@@ -22,7 +23,7 @@ from solo_auto.api.account_view import (
 from solo_auto.api.dependencies import context
 from solo_auto.api.types import SecretConfigPatch
 from solo_auto.context import AppContext
-from solo_auto.errors import ApiError
+from solo_auto.errors import ApiError, SourceAuthError, SourceOfflineError
 from solo_auto.secrets import SecretStore
 from solo_auto.settings import AccountProfile, Solo2Settings, SourceSettings, save_settings
 from solo_auto.sources import github
@@ -88,6 +89,128 @@ class NewProfile(AccountProfile):
         return value.strip()
 
 
+class PoolSource(BaseModel):
+    standby_use_primary_source: bool = False
+    standby_source_address: str = Field(default='', max_length=2000)
+    standby_source_user: str = Field(default='', max_length=200)
+    standby_source_password: str = ''
+
+
+class PoolUpdate(PoolSource):
+    primary_project_id: str = Field(min_length=1, max_length=200, pattern=r'\S')
+    standby_project_id: str = Field(min_length=1, max_length=200)
+
+
+def _require_pool_settings(profile_id: str, request: Request, ctx: AppContext) -> None:
+    if profile_id != ctx.settings.active_profile:
+        raise ApiError(409, 'PROFILE_CHANGED', '当前用户配置已切换，请重新打开工程池设置')
+    if not ctx.account_access.unlocked(request.headers.get('x-account-view', ''), settings=True):
+        raise ApiError(403, 'ACCOUNT_LOCKED', '请先输入查看码解锁副号项目池')
+
+
+def _standby_pool_source(payload: PoolSource, ctx: AppContext) -> tuple[ProjectHubClient, str]:
+    if payload.standby_use_primary_source:
+        return ctx.source, ''
+    address = payload.standby_source_address.strip().rstrip('/')
+    user = payload.standby_source_user.strip()
+    if not user:
+        raise ApiError(422, 'POOL_SOURCE_USER', '请填写副号工程台账号')
+    try:
+        url = urlsplit(address)
+        if url.scheme not in {'http', 'https'} or not url.hostname or url.username or url.password or url.query or url.fragment:
+            raise ValueError
+        _ = url.port
+    except ValueError:
+        raise ApiError(422, 'SOURCE_URL', '请填写工程台的 HTTP 或 HTTPS 地址') from None
+    if origin(address) == origin(ctx.settings.source.base_url) and user == ctx.settings.source.username:
+        raise ApiError(422, 'POOL_ACCOUNT_OVERLAP', '主号和副号须使用各自的工程台账号')
+    saved = ctx.routing.config
+    same_source = (address, user) == (saved.get('standby_source_address'), saved.get('standby_source_user'))
+    password = payload.standby_source_password or (str(saved.get('standby_source_password') or '') if same_source else '')
+    if not password:
+        raise ApiError(422, 'POOL_SOURCE_PASSWORD', '请填写该副号的工程台密码')
+    return ProjectHubClient(SourceSettings(base_url=address, username=user), ctx.secrets, password=password), password
+
+
+async def _verified_projects(source: ProjectHubClient) -> dict[str, str]:
+    try:
+        await source.verify_identity()
+        projects = await source.list_projects(refresh=True)
+    except (SourceAuthError, SourceOfflineError) as exc:
+        raise ApiError(409, 'POOL_SOURCE_UNAVAILABLE', str(exc)) from exc
+    return {str(project['id']): str(project.get('name') or project['id']) for project in projects if project.get('id')}
+
+
+@router.get('/{profile_id}/engineering-pools')
+async def get_engineering_pools(profile_id: str, request: Request, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    _require_pool_settings(profile_id, request, ctx)
+    return ctx.routing.pool_view()
+
+
+@router.post('/{profile_id}/engineering-pools/projects', dependencies=[Depends(serialize_account_changes)])
+async def list_standby_projects(profile_id: str, payload: PoolSource, request: Request,
+                                ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    _require_pool_settings(profile_id, request, ctx)
+    source, _ = _standby_pool_source(payload, ctx)
+    try:
+        projects = await _verified_projects(source)
+    finally:
+        if source is not ctx.source:
+            await source.close()
+    primary, _ = ctx.routing.primary_project()
+    return {'items': [{'id': project_id, 'name': name} for project_id, name in projects.items() if project_id != primary]}
+
+
+@router.put('/{profile_id}/engineering-pools', dependencies=[Depends(serialize_account_changes)])
+async def save_engineering_pools(profile_id: str, payload: PoolUpdate, request: Request,
+                                 ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    _require_pool_settings(profile_id, request, ctx)
+    primary_project, _ = ctx.routing.primary_project()
+    if not primary_project or payload.primary_project_id != primary_project:
+        raise ApiError(409, 'POOL_PRIMARY_CHANGED', '主号项目池未设置或已变更，请核对题源页上的当前项目')
+    ctx.routing.check_project_groups(primary_project, payload.standby_project_id)
+    standby = standby_credentials(ctx)
+    if not standby or not ctx.settings.solo2.locked_domain:
+        raise ApiError(409, 'POOL_ACCOUNTS_REQUIRED', '请先设置主副号的 SOLO2、绑定领域和 GitHub 凭据')
+    if ctx.intake.updating_plan:
+        raise ApiError(409, 'INTAKE_BUSY', '正在领取工程，请稍后保存')
+    source, password = _standby_pool_source(payload, ctx)
+    try:
+        standby_projects, primary_github, standby_github = await asyncio.gather(
+            _verified_projects(source),
+            github.test_credentials(ctx.secrets.get('github.token')), github.test_credentials(standby.github_token),
+        )
+        standby_name = standby_projects.get(payload.standby_project_id)
+        if not standby_name:
+            raise ApiError(422, 'POOL_PROJECT_FORBIDDEN', '工程台账号无法读取所选的副号项目组')
+        primary_owner = str((primary_github.get('detail') or {}).get('account') or '')
+        standby_owner = str((standby_github.get('detail') or {}).get('account') or '')
+        if not primary_owner or not standby_owner or primary_owner.casefold() == standby_owner.casefold():
+            raise ApiError(422, 'POOL_GITHUB_IDENTITY', '请为主副号提供可登录且身份不同的 GitHub 凭据')
+        saved = dict(ctx.routing.config)
+        updated = {**saved,
+            'standby_project_id': payload.standby_project_id, 'standby_project_name': standby_name,
+            'standby_source_user': source.settings.username, 'standby_source_address': source.settings.base_url,
+            'standby_source_password': password, 'standby_account': standby.username, 'standby_github_owner': standby_owner,
+            'standby_use_primary_source': payload.standby_use_primary_source,
+        }
+        async with ctx.intake._lock:
+            if ctx.routing.primary_project()[0] != primary_project:
+                raise ApiError(409, 'POOL_PRIMARY_CHANGED', '主号项目池已变更，请刷新后再保存')
+            if ctx.routing.busy('standby') and any(saved.get(f'standby_{key}') != updated.get(f'standby_{key}')
+                                                   for key in ('project_id', 'source_user', 'source_address', 'github_owner')):
+                raise ApiError(409, 'ROUTED_TASKS_ACTIVE', '副号项目池仍有关联任务或待归还工程，请处理完成后再更换')
+            ctx.secrets.set_json(ctx.routing.secret_key, updated)
+            if ctx.secrets.get_json(ctx.routing.secret_key) != updated:
+                raise ApiError(500, 'POOL_SAVE_FAILED', '工程池保存后核对失败')
+            await ctx.routing.invalidate()
+        ctx.repo.add_event('dispatch.engineering_pools_saved', '已保存副号项目池', actor='user')
+        return ctx.routing.pool_view()
+    finally:
+        if source is not ctx.source:
+            await source.close()
+
+
 @router.get('')
 async def list_profiles(ctx: AppContext = Depends(context)) -> Profiles:
     return profile_catalog(ctx)
@@ -98,25 +221,6 @@ def profile_catalog(ctx: AppContext) -> Profiles:
     record = ctx.secrets.get_json(_standby_key(settings.solo2))
     return Profiles(active=settings.active_profile, items=[ProfileItem(id=k, name=v.name) for k, v in settings.profiles.items()],
                     connections=connections(ctx), standby=StandbyAccount.model_validate(record) if record else None)
-
-
-def _standby_key(primary: Solo2Settings) -> str:
-    # SecretStore 负责按配置 ID 隔离。同一配置内更换主号时也只取相应主号的绑定。
-    origin = urlsplit(primary.base_url)
-    identity = f'{origin.scheme}://{origin.netloc}/{primary.username.strip()}'
-    return 'solo2.standby.' + hashlib.sha256(identity.encode()).hexdigest()
-
-
-def submission_quota_directory(ctx: AppContext, username: str) -> str:
-    url = urlsplit(ctx.settings.solo2.base_url.strip())
-    identity = f'{url.scheme}://{url.netloc}/{username.strip()}'
-    return str(ctx.paths.run / 'solo2-daily-quota' / hashlib.sha256(identity.encode()).hexdigest())
-
-
-def standby_record(ctx: AppContext) -> dict[str, Any] | None:
-    primary = ctx.settings.solo2
-    record = ctx.secrets.get_json(_standby_key(primary))
-    return record if record and primary.username.strip() else None
 
 
 def standby_credentials(ctx: AppContext) -> StandbyUpdate | None:
@@ -158,6 +262,9 @@ async def save_standby(profile_id: str, payload: StandbyUpdate, request: Request
     draft = _standby_draft(profile_id, payload, request, ctx)
     if not draft.password or not draft.github_token:
         raise ApiError(422, 'STANDBY_CREDENTIALS', '请填写该副号的 SOLO2 密码和专属 GitHub 密钥')
+    current = standby_record(ctx) or {}
+    if (current.get('username'), current.get('domain')) != (draft.username, draft.domain) and ctx.routing.busy('standby'):
+        raise ApiError(409, 'ROUTED_TASKS_ACTIVE', '副号仍有在途任务或待归还工程，请完成后再更换账号或领域')
     key = _standby_key(ctx.settings.solo2)
     record = draft.model_dump(exclude={'primary_username', 'primary_address'})
     record['revision'] = uuid4().hex
@@ -243,7 +350,7 @@ async def activate_profile(profile_id: str, ctx: AppContext = Depends(context)) 
         raise ApiError(404, 'PROFILE_UNKNOWN', '找不到这套配置')
     if profile_id == current.active_profile:
         return profile_catalog(ctx)
-    if (ctx.scheduler.active or ctx.scheduler.queue or ctx.dispatcher.in_hand_count() or ctx.intake.updating_plan
+    if (ctx.scheduler.active or ctx.scheduler.queue or ctx.dispatcher.in_hand_count() or ctx.intake.updating_plan or ctx.routing.busy()
             or any(job.active or job.desktop_running for job in ctx.autopilot.jobs.values())):
         raise ApiError(409, 'PROFILE_BUSY', '当前账号还有任务正在处理或排队，请等任务结束后再切换')
     previous_id = current.active_profile
@@ -267,5 +374,6 @@ async def activate_profile(profile_id: str, ctx: AppContext = Depends(context)) 
     ctx.solo2 = Solo2Client(solo2, storage)
     ctx.replace_source(source)
     ctx.tasks.staging = ctx.staging = ctx.intake.switch_profile(profile_id)
+    await ctx.routing.invalidate()
     await previous.close()
     return profile_catalog(ctx)

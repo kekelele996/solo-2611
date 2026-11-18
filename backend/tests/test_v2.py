@@ -135,8 +135,8 @@ def test_chatgpt_deep_link_uses_one_workspace_per_date(
     query = urllib.parse.parse_qs(urllib.parse.urlsplit(captured[1]).query)
     assert Path(query["path"][0]) == tmp_path / "home" / "chatgpt-workspaces" / datetime.now().strftime("%Y-%m-%d")
     assert str(task_root) in query["prompt"][0]
-    assert "完成后提交到 SOLO2 平台" in query["prompt"][0]
-    assert "使用本地工作台配置的用户" in query["prompt"][0]
+    assert "工作台负责处理提交" in query["prompt"][0]
+    assert "使用本地工作台配置的用户" not in query["prompt"][0]
     assert "绝对不要写入正式题面文件" in query["prompt"][0]
     assert result["workdir"] == query["path"][0]
 

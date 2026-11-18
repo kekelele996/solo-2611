@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from solo_auto.errors import ApiError
+from solo_auto.pipeline.prompt_templates import solo2_account_instruction
 
 MARKER_RE = re.compile(r"solo-auto-chatgpt:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):([0-9a-z]+)")
 THREAD_LOCK_RE = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.lock")
@@ -104,12 +105,15 @@ class ChatGPTDesktop:
         task_root: Path,
         prompt: str,
         folder_id: str = "",
+        isolated: bool = False,
+        solo2_username: str = "",
     ) -> dict[str, Any]:
         if not self.app_path.is_dir():
             raise ApiError(409, "CHATGPT_APP_MISSING", "未找到 ChatGPT.app，无法创建桌面会话")
         marker = f"solo-auto-chatgpt:{task_id}:{uuid.uuid4().hex[:12]}"
+        account_header = f"{solo2_account_instruction(solo2_username)}\n\n" if solo2_username else ""
         marked_prompt = (
-            f"{prompt.strip()}\n\n"
+            f"{account_header}{prompt.strip()}\n\n"
             f"本次会话标识：`{marker}`\n"
             f"唯一任务名：`{task_name}`\n"
             f"任务目录：`{task_root}`\n"
@@ -117,11 +121,12 @@ class ChatGPTDesktop:
         directory = self.home / "desktop" / task_id
         directory.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        grouped_workdir = self.home / "chatgpt-workspaces" / datetime.now().strftime("%Y-%m-%d")
-        grouped_workdir.mkdir(parents=True, exist_ok=True)
+        workdir = task_root if isolated else self.home / "chatgpt-workspaces" / datetime.now().strftime("%Y-%m-%d")
+        workdir.mkdir(parents=True, exist_ok=True)
         prompt_path = directory / f"chatgpt-{stamp}.md"
         prompt_path.write_text(marked_prompt, encoding="utf-8")
         link_prompt = (
+            f"{account_header}"
             "使用 `$solo-2611`，读取并严格执行下面的本地任务指令文件：\n"
             f"`{prompt_path}`\n"
             f"唯一任务标识：`{marker}`\n"
@@ -130,10 +135,10 @@ class ChatGPTDesktop:
             "不要只总结指令，直接开始执行，直到前 10 项门禁通过或出现真实阻断。\n"
             "真实阻断必须使用 `AUTOPILOT: BLOCKED <原因>` 结束，平台会自动停止重试；"
             "只有可恢复的失败才使用 `AUTOPILOT: FAILED <原因>`。\n"
-            "完成后提交到 SOLO2 平台，用户名：使用本地工作台配置的用户。\n"
+            "前十项就绪后结束，工作台负责处理提交。\n"
             "提交流程只写在本会话指令中，绝对不要写入正式题面文件。"
         )
-        link = build_deep_link(workdir=grouped_workdir, prompt=link_prompt, folder_id=folder_id)
+        link = build_deep_link(workdir=workdir, prompt=link_prompt, folder_id=folder_id)
         (directory / f"chatgpt-{stamp}.url.txt").write_text(link + "\n", encoding="utf-8")
         locks_before = self.thread_lock_ids()
         opened_at = time.time()
@@ -148,7 +153,7 @@ class ChatGPTDesktop:
             "warning": warning,
             "pending_thread_id": pending_thread_id,
             "thread_seen": bool(candidates),
-            "workdir": str(grouped_workdir),
+            "workdir": str(workdir),
             "started_at": datetime.now().astimezone().replace(microsecond=0).isoformat(),
         }
 

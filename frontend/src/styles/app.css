@@ -886,41 +886,104 @@ select:focus {
 }
 
 .project-bar {
-  padding: 12px;
+  container-type: inline-size;
+  padding: var(--sp-4);
 }
 
 .project-bar .panel-head {
-  margin: -12px -12px 12px;
+  margin: calc(-1 * var(--sp-4)) calc(-1 * var(--sp-4)) var(--sp-4);
+  padding-inline: var(--sp-4);
 }
 
 .project-select-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: var(--sp-2) var(--sp-3);
 }
 
 .project-select-row select {
-  min-width: 360px;
-}
-
-.project-select-row span {
-  color: var(--ink-3);
-}
-
-.project-select-row .project-queue-source {
+  flex: 1 1 16rem;
   min-width: 0;
-  margin-left: auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
+}
+
+.project-select-row label,
+.source-project-count,
+.source-pool-names dt {
+  color: var(--ink-2);
   white-space: nowrap;
 }
 
 .source-queue-note {
-  margin: 10px 0 0;
+  margin: var(--sp-2) 0 0;
+  color: var(--warn);
 }
 
-.source-queue-note.is-pending {
-  color: var(--warn);
+.source-pool-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3) var(--sp-5);
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--line-soft);
+}
+
+.source-pool-names {
+  display: grid;
+  flex: 1 1 26rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-3) var(--sp-5);
+  min-width: 0;
+  margin: 0;
+}
+
+.source-pool-names dt { font-size: 12px; }
+.source-pool-names dd { margin: var(--sp-1) 0 0; font-weight: 600; overflow-wrap: anywhere; }
+
+.source-pool-editor {
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--line-soft);
+}
+
+.source-pool-fields,
+.source-pool-connection {
+  display: grid;
+  gap: var(--sp-3);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.source-pool-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--sp-2) var(--sp-3);
+}
+
+.source-pool-controls > .field { flex: 1 1 16rem; }
+
+.source-pool-editor .field {
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-1);
+  margin: 0;
+}
+
+.source-pool-editor .field small { grid-column: 1; }
+.source-pool-editor .account-view { padding: 0; max-width: 24rem; }
+.source-pool-editor p { margin: 0; }
+
+@container (min-width: 640px) {
+  .source-pool-connection { grid-template-columns: 2fr 1fr 1fr; }
+}
+
+@container (max-width: 420px) {
+  .project-select-row label { flex-basis: 100%; }
+  .source-pool-names { grid-template-columns: minmax(0, 1fr); }
 }
 
 .claimed-section {
@@ -6488,6 +6551,23 @@ kbd {
   background: var(--surface);
 }
 .standby-panel { margin-top: var(--sp-4); padding-top: var(--sp-3); border-top: 1px solid var(--line-soft); }
+
+.dispatch-quota-accounts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+  gap: var(--sp-3);
+}
+
+.dispatch-quota-account {
+  min-width: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--line-soft);
+  overflow-wrap: anywhere;
+}
+
+.dispatch-quota-account p { margin: var(--sp-1) 0; }
+.dispatch-quota-waiting { margin-bottom: 0; padding-inline-start: 1.4em; }
+.dispatch-quota-waiting span { display: block; }
 .standby-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-3); }
 .standby-heading h3 { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
 .standby-heading p { margin: var(--sp-1) 0 0; color: var(--ink-2); overflow-wrap: anywhere; }

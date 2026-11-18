@@ -985,7 +985,7 @@ class Dispatcher:
             {
                 task_id
                 for task_id, job in jobs.items()
-                if getattr(job, "desktop_running", False) and getattr(job, "awaiting_platform", False)
+                if getattr(job, "awaiting_platform", False) or getattr(job, "stage", "") == "waiting_quota"
             }
             if isinstance(jobs, dict)
             else set()

@@ -72,6 +72,7 @@ export type TaskDetail = Omit<TaskRow, "steps"> & {
   state: Record<string, unknown>;
   steps: Step[];
   source: Record<string, unknown>;
+  account_dispatch?: { role: AccountRole; project: string; reason: string; retry_at: string; stopped: boolean };
 };
 
 export type SystemStatus = {
@@ -267,6 +268,8 @@ export type BatchRow = {
 };
 
 export type IntakeSnapshot = {
+  engineering_pool?: { project_id: string; project_name: string } | null;
+  standby_engineering_pool?: { project_id: string; project_name: string } | null;
   plan: {
     id: string;
     project_id: string;
@@ -493,6 +496,7 @@ export type StagingRow = {
   name: string;
   tags?: EngineeringRow["tags"];
   claimId: string;
+  stagingId?: string;
   zipSha256: string;
   stagingPath: string;
   sourcePath: string;
@@ -716,6 +720,8 @@ export type DispatchHold = {
 };
 
 export type DispatchQueueItem = {
+  account_role?: AccountRole | "";
+  estimated_submission?: number | null;
   task_id: string;
   task_name: string;
   status: string;
@@ -762,6 +768,7 @@ export type DispatchUpcomingItem = DispatchQueueItem & {
 };
 
 export type DispatchPreviewItem = {
+  account_role?: AccountRole;
   task_id: string;
   task_name: string;
   engineering_id: string;
@@ -784,11 +791,57 @@ export type DispatchPool = {
   draining: boolean;
 };
 
+export type AccountRole = "primary" | "standby";
+
+export type AccountQuota = {
+  account: string;
+  domain: string;
+  open: boolean;
+  platform_closed?: boolean;
+  fresh?: boolean;
+  submitted?: number | null;
+  discarded?: number;
+  reserved?: number;
+  remaining?: number | null;
+  updated_at?: string;
+  error?: string;
+  project?: string;
+  project_id?: string;
+  stopping?: number;
+  stopped?: number;
+  deferred?: Array<{
+    task_id: string; task_name: string; retry_at: string; project: string; reason: string; estimated_submission?: number | null;
+  }>;
+};
+
+export type EngineeringPools = Partial<{
+  primary_project_id: string;
+  primary_project_name: string;
+  primary_source_address: string;
+  standby_project_id: string;
+  standby_project_name: string;
+  standby_source_address: string;
+  standby_source_user: string;
+  standby_source_password: string;
+  standby_account: string;
+  standby_use_primary_source: boolean;
+}>;
+
+export type StandbySource = {
+  standby_use_primary_source: boolean;
+  standby_source_address: string;
+  standby_source_user: string;
+  standby_source_password: string;
+};
+
 export type DispatchSnapshot = {
   submission_quota?: {
     open: boolean; date: string; limit: number;
-    primary: { account: string; domain: string; open: boolean };
-    standby: { account: string; domain: string; open: boolean } | null;
+    primary: AccountQuota;
+    standby: AccountQuota | null;
+    selected?: AccountRole | "";
+    reason?: string;
+    pools_configured?: boolean;
   };
   engine: "v2" | "v3";
   active_profile_name: string | null;
@@ -944,6 +997,7 @@ export type ConfigResponse = {
   recording: { max_seconds: number; chrome_url: string };
   submission: {
     auto_submit: boolean;
+    daily_new_limit?: number;
     poll_interval_seconds: number;
     poll_timeout_seconds: number;
   };

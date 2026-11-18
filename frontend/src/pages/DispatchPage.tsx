@@ -24,6 +24,7 @@ import type {
   DispatchPreviewItem,
   DispatchQueueItem,
   DispatchQueueSnapshot,
+  AccountQuota,
 } from "../api/types";
 import { AccountViewPanel } from "../components/AccountViewPanel";
 import { IntakePanel } from "../components/IntakePanel";
@@ -51,6 +52,7 @@ const STAGE_LABEL: Record<string, string> = {
   delivering: "交付",
   recording: "录屏",
   exporting: "导出",
+  reviewing: "提交与质检",
   waiting_quota: "待次日提交",
   done: "完成",
 };
@@ -168,7 +170,8 @@ export function DispatchPage() {
   const showCandidates = !!groups && groups.pending.length < NEXT_QUEUE_LIMIT &&
     (plan?.status === "running" || plan?.status === "paused");
   const upcoming = useQuery({
-    queryKey: ["dispatch-upcoming", plan?.id, plan?.project_id, plan?.source_changed_at, plan?.filters, plan?.exclude_delivered, plan?.max_uses],
+    queryKey: ["dispatch-upcoming", plan?.id, plan?.project_id, plan?.source_changed_at, plan?.filters, plan?.exclude_delivered, plan?.max_uses,
+      snapshot?.submission_quota?.date, snapshot?.submission_quota?.selected],
     enabled: showCandidates,
     queryFn: async ({ signal }) => {
       const batch = await api.dispatchUpcoming(NEXT_QUEUE_LIMIT, signal);
@@ -197,14 +200,19 @@ export function DispatchPage() {
   const busyId = action.isPending ? action.variables?.item.task_id : undefined;
   const pendingItems = groups.pending.slice(0, pendingLimit);
   const processingItems = groups.processing.slice(0, processingLimit);
-  const occupied = new Set([...groups.pending, ...groups.processing].map(item => item.engineering_id));
+  const candidateLane = snapshot.submission_quota?.selected;
+  const candidateProject = candidateLane ? snapshot.submission_quota?.[candidateLane]?.project_id : plan?.project_id;
+  const candidateLimit = Math.min(NEXT_QUEUE_LIMIT - groups.pending.length,
+    candidateLane ? snapshot.submission_quota?.[candidateLane]?.remaining ?? 0 : NEXT_QUEUE_LIMIT);
+  const occupied = new Set([...groups.pending, ...groups.processing].map(item => `${item.account_role || ""}/${item.engineering_id}`));
   const candidates: DispatchPreviewItem[] = [];
   if (showCandidates) {
     for (const item of upcoming.data?.items ?? []) {
-      if (!("preview" in item) || item.project_id !== plan?.project_id || occupied.has(item.engineering_id)) continue;
-      if (candidates.length >= NEXT_QUEUE_LIMIT - groups.pending.length) break;
+      if (!("preview" in item) || item.project_id !== candidateProject || (item.account_role && item.account_role !== candidateLane)
+          || occupied.has(`${item.account_role || ""}/${item.engineering_id}`)) continue;
+      if (candidates.length >= candidateLimit) break;
       candidates.push(item);
-      occupied.add(item.engineering_id);
+      occupied.add(`${item.account_role || ""}/${item.engineering_id}`);
     }
   }
 
@@ -235,18 +243,17 @@ export function DispatchPage() {
       <CapacityStrip snapshot={snapshot} inHand={snapshot.creation?.in_hand ?? snapshot.queue.filter((item) => IN_HAND.has(item.status)).length} />
 
       {snapshot.submission_quota && (
-        <div className="system-banner" role="status" aria-label="SOLO2 每日提交开关">
-          <strong>SOLO2 新建提交 · {snapshot.submission_quota.open ? "开放" : "今日已满"}</strong>
-          <span>
-            主号 {snapshot.submission_quota.primary.account}
-            {snapshot.submission_quota.primary.account ? ` · ${snapshot.submission_quota.primary.open ? "开放" : "已满"}` : ""}
-            {"；"}副号 {snapshot.submission_quota.standby
-              ? `${snapshot.submission_quota.standby.account} · ${snapshot.submission_quota.standby.open ? "开放" : "已满"}`
-              : "未配置"}
-            。每号每日 {snapshot.submission_quota.limit} 条，北京时间 00:00 恢复
-          </span>
-          <a className="text-link" href="/system#accounts">管理提交账号</a>
-        </div>
+        <Panel title="SOLO2 今日有效提交" actions={<div className="row-actions">
+          <a className="text-link" href="https://solo2.jzxhnh.com/app" target="_blank" rel="noreferrer">打开 SOLO2</a>
+          <Link className="text-link" to="/source#source-project-pools">项目池设置</Link>
+        </div>}>
+          <p className="form-note">{snapshot.submission_quota.date} · 每号上限 {snapshot.submission_quota.limit} 条 · 后台每分钟同步 · 北京时间 00:00 换日。仅统计当天首次提交，并扣除已废弃条目。</p>
+          <div className="dispatch-quota-accounts">
+            <QuotaAccount label="主号" account={snapshot.submission_quota.primary} />
+            <QuotaAccount label="副号" account={snapshot.submission_quota.standby} />
+          </div>
+          {snapshot.submission_quota.reason && <p className="form-note" role="status">{snapshot.submission_quota.reason}</p>}
+        </Panel>
       )}
       {snapshot.holds.length ? (
         <section className="dispatch-holds" aria-label="当前挂起">
@@ -292,6 +299,7 @@ export function DispatchPage() {
                   item={item}
                   zone="pending"
                   rank={index + 1}
+                  submissionLimit={snapshot.submission_quota?.limit}
                   last={index + 1 === groups.pending.length}
                   eta={eta.get(item.task_id)}
                   onExplain={() => setDetail({ id: item.task_id, view: "wait" })}
@@ -308,7 +316,7 @@ export function DispatchPage() {
                     <li key={item.task_id}>
                       <span className="dispatch-queue-index mono" aria-hidden="true">{String(pendingItems.length + index + 1).padStart(2, "0")}</span>
                       <span className="dispatch-candidate-name" title={item.task_name}>{item.task_name}</span>
-                      <small>候补</small>
+                      <small>{item.account_role ? `${item.account_role === "primary" ? "主号" : "副号"}候补` : "候补"}</small>
                     </li>
                   ))}
                 </ol>
@@ -339,6 +347,7 @@ export function DispatchPage() {
                   item={item}
                   zone="processing"
                   rank={index + 1}
+                  submissionLimit={snapshot.submission_quota?.limit}
                   eta={eta.get(item.task_id)}
                   onExplain={() => setDetail({ id: item.task_id, view: "wait" })}
                   onTrace={() => setDetail({ id: item.task_id, view: "trace" })}
@@ -620,6 +629,36 @@ function QueueLane({
   );
 }
 
+function QuotaAccount({ label, account }: { label: string; account: AccountQuota | null }) {
+  return <section className="dispatch-quota-account" aria-label={`${label}提交额度`}>
+    <strong>{label}{account?.account ? ` · ${account.account}` : ""}</strong>
+    <p>{account?.project ? `工程池 ${account.project}` : "工程池待配置"}</p>
+    <p>已提交 {account?.submitted ?? "—"} · 在途预留 {account?.reserved ?? "—"} · 预计可用 {account?.remaining ?? "—"}</p>
+    {!!account?.discarded && <p>已扣除今日废弃 {account.discarded} 条</p>}
+    {account?.platform_closed && <p className="danger-text">平台已拒绝今日的新建提交</p>}
+    {!!account?.stopping && <p className="danger-text">{account.stopping} 个任务正在终止</p>}
+    {!!account?.stopped && <p>今日已终止并留档 {account.stopped} 个任务</p>}
+    {account?.error && <p className="danger-text">{account.error}</p>}
+    {account?.updated_at && <small>统计更新于 {formatDateTime(account.updated_at)}</small>}
+    {!!account?.deferred?.length && <ul className="dispatch-quota-waiting" aria-label={`${label}待续交项目`}>
+      {account.deferred.map((item) => <li key={item.task_id}>
+        <Link className="text-link" to={`/tasks/${item.task_id}`}>{item.task_name}</Link>
+        <TaskSubmissionNumber id={item.task_id} estimated={item.estimated_submission} />
+        <span>{item.project} · {item.reason} · {formatDateTime(item.retry_at)}</span>
+      </li>)}
+    </ul>}
+  </section>;
+}
+
+function TaskSubmissionNumber({ id, estimated, limit }: { id: string; estimated?: number | null; limit?: number }) {
+  const overLimit = estimated != null && limit != null && estimated > limit;
+  return <small className={overLimit ? "danger-text" : undefined}>
+    <code title={id}>任务编号 {id.slice(0, 13)}</code>
+    {estimated != null && ` · 预计第 ${estimated} 条`}
+    {overLimit && " · 超出今日上限"}
+  </small>;
+}
+
 function pendingQueueHint({ desired_state, creation }: DispatchQueueSnapshot): string {
   if (desired_state === "paused") return "调度已暂停。继续调度后，运行中的生产计划会按可用名额补入任务。";
   if (desired_state === "draining") return "调度正在排空，已停止领取新任务。";
@@ -640,6 +679,7 @@ function QueueRow({
   item,
   zone,
   rank,
+  submissionLimit,
   last,
   eta,
   onExplain,
@@ -651,6 +691,7 @@ function QueueRow({
   item: DispatchQueueItem;
   zone: QueueZone;
   rank: number;
+  submissionLimit?: number;
   last?: boolean;
   eta?: string;
   onExplain: () => void;
@@ -677,10 +718,12 @@ function QueueRow({
             pulse={item.active}
           />
           {pending && rank === 1 ? <span>队首</span> : null}
+          {item.account_role && <span>{item.account_role === "primary" ? "主号" : "副号"}</span>}
         </div>
         <Link className="dispatch-queue-name" to={`/tasks/${item.task_id}`} title={item.task_name}>
           {item.task_name}
         </Link>
+        <TaskSubmissionNumber id={item.task_id} estimated={item.estimated_submission} limit={submissionLimit} />
         {zone === "processing" ? (
           <span className="dispatch-queue-note">
             更新于 <time dateTime={item.updated_at}>{formatDateTime(item.updated_at)}</time>

@@ -18,6 +18,7 @@ import {
 } from "../components/ui";
 import { useToast } from "../components/toast-context";
 import { PromptLibraryPanel } from "../components/source/PromptLibraryPanel";
+import { StandbyPoolEditor } from "../components/source/StandbyPoolEditor";
 import { errorText, formatNames } from "../utils/display";
 import { formatDateTime } from "../utils/time";
 
@@ -44,6 +45,7 @@ export function SourcePage() {
   const [stagingTarget, setStagingTarget] = useState<StagingRow | null>(null);
   const [taskName, setTaskName] = useState("");
   const [loginOpen, setLoginOpen] = useState(false);
+  const [standbyPoolOpen, setStandbyPoolOpen] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [unusedOnly, setUnusedOnly] = useState(false);
@@ -61,8 +63,11 @@ export function SourcePage() {
     if (projectId) localStorage.setItem("solo-auto-project", projectId);
   }, [projectId]);
   useEffect(() => {
-    if (!projectId && projects.data?.items.length) setProjectId(projects.data.items[0].id);
-  }, [projectId, projects.data?.items]);
+    const items = projects.data?.items;
+    if (intake.isPending || !items?.length || items.some(item => item.id === projectId)) return;
+    const primary = intake.data?.engineering_pool?.project_id ?? intake.data?.plan?.project_id;
+    setProjectId(items.find(item => item.id === primary)?.id ?? items[0].id);
+  }, [intake.data, intake.isPending, projectId, projects.data?.items]);
 
   const engineering = useQuery({
     queryKey: ["engineering", projectId, query, language, minFiles, maxFiles],
@@ -130,7 +135,7 @@ export function SourcePage() {
     onError: (error) => toast(errorText(error), "error"),
   });
   const create = useMutation({
-    mutationFn: () => api.createTask({ staging_id: stagingTarget?.engineeringId ?? "", task_name: taskName }),
+    mutationFn: () => api.createTask({ staging_id: stagingTarget?.stagingId ?? stagingTarget?.engineeringId ?? "", task_name: taskName }),
     onSuccess: (result) => {
       toast("任务已创建，开始写题面", "ok");
       setStagingTarget(null);
@@ -154,6 +159,9 @@ export function SourcePage() {
   const planActive = Boolean(plan && ["running", "paused"].includes(plan.status));
   const queueSourceId = planActive ? plan?.project_id ?? "" : "";
   const queueSourceName = plan?.project_name || plan?.project_id || "";
+  const primaryPool = intake.data?.engineering_pool;
+  const standbyPool = intake.data?.standby_engineering_pool;
+  const primaryPoolId = primaryPool?.project_id || plan?.project_id || "";
   const queueSourceSynced = Boolean(projectId && queueSourceId === projectId);
   const authError = projects.error instanceof ApiError && projects.error.status === 401;
   const engineeringRows = useMemo(() => {
@@ -180,9 +188,14 @@ export function SourcePage() {
         </Button>
       </header>
 
-      <Panel className="project-bar" title="项目">
+      <Panel className="project-bar" title="项目" id="source-project-pools" actions={
+        <Button size="small" variant="ghost" onClick={() => void projects.refetch()} loading={projects.isFetching}>
+          <RefreshCw size={13} /> 刷新项目
+        </Button>
+      }>
         <div className="project-select-row">
-          <select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
+          <label htmlFor="source-project">浏览项目</label>
+          <select id="source-project" value={projectId} onChange={(event) => setProjectId(event.target.value)}>
             <option value="">请选择项目</option>
             {projects.data?.items.map((project: ProjectRow) => (
               <option key={project.id} value={project.id}>
@@ -191,23 +204,18 @@ export function SourcePage() {
             ))}
           </select>
           {selected ? (
-            <span>
-              {selected.status ?? "active"} · 工程 {selected.engineering_count ?? "—"}
-            </span>
-          ) : null}
-          {planActive ? (
-            <span className="project-queue-source">
-              调度来源：{queueSourceName}
-            </span>
+            <span className="source-project-count">工程 {selected.engineering_count ?? "—"}</span>
           ) : null}
           <Button
             size="small"
             variant={projectId && planActive && !queueSourceSynced ? "primary" : "ghost"}
             onClick={() => projectId && retarget.mutate(projectId)}
             loading={retarget.isPending}
-            disabled={!projectId || !planActive || queueSourceSynced}
+            disabled={!projectId || !planActive || queueSourceSynced || projectId === standbyPool?.project_id}
             title={
-              !planActive
+              projectId && projectId === standbyPool?.project_id
+                ? "该项目组已用于副号"
+                : !planActive
                 ? "当前没有运行中的生产计划；下达计划时会默认使用所选项目"
                 : queueSourceSynced
                   ? "调度任务队列已经使用所选项目"
@@ -216,22 +224,22 @@ export function SourcePage() {
           >
             <RefreshCw size={13} /> 刷新调度来源
           </Button>
-          <Button
-            size="small"
-            variant="ghost"
-            onClick={() => void projects.refetch()}
-            loading={projects.isFetching}
-          >
-            刷新项目
+        </div>
+        {planActive && projectId && !queueSourceSynced && <p className="form-note source-queue-note">
+          {projectId === standbyPool?.project_id ? "当前正在浏览副号项目组。" : `调度任务队列仍从「${queueSourceName}」补题。`}
+        </p>}
+        <div className="source-pool-summary">
+          <dl className="source-pool-names">
+            <div><dt>主号项目池</dt><dd>{primaryPool?.project_name || queueSourceName || "待下达生产计划"}</dd></div>
+            <div><dt>副号项目池</dt><dd>{standbyPool?.project_name || "待配置"}</dd></div>
+          </dl>
+          <Button size="small" aria-expanded={standbyPoolOpen} aria-controls={standbyPoolOpen ? "standby-project-editor" : undefined}
+            disabled={!primaryPoolId} onClick={() => setStandbyPoolOpen(open => !open)}>
+            {standbyPoolOpen ? "收起" : standbyPool ? "更换副号项目池" : "配置副号项目池"}
           </Button>
         </div>
-        <p className={`form-note source-queue-note${planActive && projectId && !queueSourceSynced ? " is-pending" : ""}`}>
-          {planActive
-            ? queueSourceSynced
-              ? `调度任务队列当前从「${queueSourceName}」补题，已与所选项目同步。`
-              : `调度任务队列仍从「${queueSourceName}」补题；刷新调度来源后，候补工程会立即切换，已在跑任务不受影响。`
-            : "当前没有运行中的生产计划；下达计划时会默认使用题源页所选项目。"}
-        </p>
+        {standbyPoolOpen && primaryPoolId && <StandbyPoolEditor key={primaryPoolId} primaryId={primaryPoolId}
+          projects={projects.data?.items ?? []} onClose={() => setStandbyPoolOpen(false)} />}
       </Panel>
 
       <div className="source-tabs">

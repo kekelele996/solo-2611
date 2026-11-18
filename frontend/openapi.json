@@ -107,6 +107,144 @@
         }
       }
     },
+    "/api/system/accounts/profiles/{profile_id}/engineering-pools": {
+      "get": {
+        "summary": "Get Engineering Pools",
+        "operationId": "get_engineering_pools_api_system_accounts_profiles__profile_id__engineering_pools_get",
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Profile Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Get Engineering Pools Api System Accounts Profiles  Profile Id  Engineering Pools Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Save Engineering Pools",
+        "operationId": "save_engineering_pools_api_system_accounts_profiles__profile_id__engineering_pools_put",
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Profile Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PoolUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Save Engineering Pools Api System Accounts Profiles  Profile Id  Engineering Pools Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/accounts/profiles/{profile_id}/engineering-pools/projects": {
+      "post": {
+        "summary": "List Standby Projects",
+        "operationId": "list_standby_projects_api_system_accounts_profiles__profile_id__engineering_pools_projects_post",
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Profile Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PoolSource"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response List Standby Projects Api System Accounts Profiles  Profile Id  Engineering Pools Projects Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/system/accounts/profiles": {
       "get": {
         "summary": "List Profiles",
@@ -8564,6 +8702,79 @@
         "type": "object",
         "title": "NotifyConfigPatch"
       },
+      "PoolSource": {
+        "properties": {
+          "standby_use_primary_source": {
+            "type": "boolean",
+            "title": "Standby Use Primary Source",
+            "default": false
+          },
+          "standby_source_address": {
+            "type": "string",
+            "maxLength": 2000,
+            "title": "Standby Source Address",
+            "default": ""
+          },
+          "standby_source_user": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "Standby Source User",
+            "default": ""
+          },
+          "standby_source_password": {
+            "type": "string",
+            "title": "Standby Source Password",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "PoolSource"
+      },
+      "PoolUpdate": {
+        "properties": {
+          "standby_use_primary_source": {
+            "type": "boolean",
+            "title": "Standby Use Primary Source",
+            "default": false
+          },
+          "standby_source_address": {
+            "type": "string",
+            "maxLength": 2000,
+            "title": "Standby Source Address",
+            "default": ""
+          },
+          "standby_source_user": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "Standby Source User",
+            "default": ""
+          },
+          "standby_source_password": {
+            "type": "string",
+            "title": "Standby Source Password",
+            "default": ""
+          },
+          "primary_project_id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Primary Project Id"
+          },
+          "standby_project_id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Standby Project Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "primary_project_id",
+          "standby_project_id"
+        ],
+        "title": "PoolUpdate"
+      },
       "PrivacyRecheckRequest": {
         "properties": {
           "task_ids": {
@@ -9477,6 +9688,19 @@
               }
             ],
             "title": "Auto Submit"
+          },
+          "daily_new_limit": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 10000.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily New Limit"
           },
           "poll_interval_seconds": {
             "anyOf": [
