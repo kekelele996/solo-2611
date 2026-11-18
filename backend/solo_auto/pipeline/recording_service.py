@@ -218,7 +218,7 @@ class RecordingService:
         root = Path(task["task_root"])
         result = await self.gateway.call(
             ["record", "stop", "--task-root", str(root)],
-            timeout=120,
+            timeout=900,
             task_id=target_id,
         )
         self.active_task_id = ""
@@ -231,7 +231,16 @@ class RecordingService:
                 detail={"stdout": result.out, "stderr": result.err},
             )
         await self.reconciler.run()
-        self.repo.add_event("record.stopped", "录屏已停止并完成校验", actor="user", task_id=target_id)
+        cleanup = (result.data or {}).get("serviceCleanup") if isinstance(result.data, dict) else None
+        cleanup_ok = not isinstance(cleanup, dict) or cleanup.get("status") == "ok"
+        self.repo.add_event(
+            "record.stopped",
+            "录屏已停止，录制服务已自动清理" if cleanup_ok else "录屏已停止，但录制服务清理失败",
+            level="info" if cleanup_ok else "warn",
+            actor="user",
+            task_id=target_id,
+            details={"serviceCleanup": cleanup} if isinstance(cleanup, dict) else {},
+        )
         self.bus.publish("record.updated", {"task_id": target_id, "recording": False})
         return {"ok": True, "task_id": target_id, "recording": result.data or {}}
 
@@ -255,6 +264,8 @@ class RecordingService:
         rec = envelope.state.recording if envelope.state and envelope.state.recording else None
         capture = _read_json(root / "recording" / "运行录屏-window-capture.json")
         cursor = _read_json(root / "recording" / "运行录屏-cursor-guard.json")
+        plan = _read_json(root / "monitor" / "record-plan.json")
+        service_cleanup = _read_json(root / "recording" / "service-cleanup.json")
         errors: list[str] = []
         if rec is None or not rec.video or not Path(rec.video).is_file():
             errors.append("录屏文件不存在")
@@ -265,6 +276,7 @@ class RecordingService:
                 "duration_s": 0,
                 "capture_kind": "",
                 "cursor_ok": False,
+                "service_cleanup_ok": False,
                 "errors": errors,
             }
         if (rec.width, rec.height) != (1280, 720):
@@ -277,6 +289,8 @@ class RecordingService:
         manual = capture.get("status") == cursor.get("status") == "manual-import"
         if not (normal or manual):
             errors.append(f"capture={capture.get('status')} cursor={cursor.get('status')}")
+        if plan.get("cleanupCommands") and service_cleanup.get("status") != "ok":
+            errors.append("录制结束后未确认服务已停止")
         return {
             "ok": not errors,
             "width": rec.width,
@@ -284,6 +298,7 @@ class RecordingService:
             "duration_s": rec.durationSeconds,
             "capture_kind": rec.captureKind,
             "cursor_ok": cursor.get("pointerStrategy") == "none",
+            "service_cleanup_ok": not plan.get("cleanupCommands") or service_cleanup.get("status") == "ok",
             "errors": errors,
         }
 
@@ -385,11 +400,21 @@ class RecordingService:
         task = self._task(task_id)
         result = await self.gateway.call(
             ["record", "chrome-stop", "--task-root", task["task_root"]],
-            timeout=120,
+            timeout=900,
             task_id=task_id,
         )
         if result.code != 0:
             raise ApiError(500, "CHROME_STOP_FAILED", result.err.strip() or "独立 Chrome 关闭失败")
+        cleanup = (result.data or {}).get("serviceCleanup") if isinstance(result.data, dict) else None
+        if isinstance(cleanup, dict):
+            self.repo.add_event(
+                "record.service_cleanup",
+                str(cleanup.get("message") or "录制服务已自动停止"),
+                level="info" if cleanup.get("status") == "ok" else "warn",
+                actor="gateway",
+                task_id=task_id,
+                details={"serviceCleanup": cleanup},
+            )
         return result.data or {}
 
     def _task(self, task_id: str) -> dict[str, Any]:

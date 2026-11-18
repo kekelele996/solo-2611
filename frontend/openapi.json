@@ -2391,6 +2391,65 @@
         }
       }
     },
+    "/api/tasks/{task_id}/terminal-view": {
+      "post": {
+        "summary": "Open Terminal View",
+        "operationId": "open_terminal_view_api_tasks__task_id__terminal_view_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Open Terminal View Api Tasks  Task Id  Terminal View Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/terminals/open-all": {
+      "post": {
+        "summary": "Open All Terminal Views",
+        "operationId": "open_all_terminal_views_api_terminals_open_all_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Open All Terminal Views Api Terminals Open All Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tasks/{task_id}/run/collect": {
       "post": {
         "summary": "Collect Run",
@@ -3995,6 +4054,18 @@
       "get": {
         "summary": "Snapshot",
         "operationId": "snapshot_api_dispatch_get",
+        "parameters": [
+          {
+            "name": "compact",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Compact"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -4003,6 +4074,16 @@
                 "schema": {
                   "type": "object",
                   "title": "Response Snapshot Api Dispatch Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -5851,6 +5932,45 @@
         }
       }
     },
+    "/api/intake/project": {
+      "post": {
+        "summary": "Retarget Project",
+        "operationId": "retarget_project_api_intake_project_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntakeRetargetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Retarget Project Api Intake Project Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/intake/pause": {
       "post": {
         "summary": "Pause",
@@ -6991,6 +7111,36 @@
         ],
         "title": "CreateTaskRequest"
       },
+      "DispatchElasticPatch": {
+        "properties": {
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "ceiling": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 8.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ceiling"
+          }
+        },
+        "type": "object",
+        "title": "DispatchElasticPatch"
+      },
       "DispatchInterruptRequest": {
         "properties": {
           "task_ids": {
@@ -7076,6 +7226,16 @@
               }
             ],
             "title": "Keep Awake"
+          },
+          "elastic": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DispatchElasticPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -7607,6 +7767,21 @@
           "project_id"
         ],
         "title": "IntakeCreateRequest"
+      },
+      "IntakeRetargetRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Project Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "IntakeRetargetRequest"
       },
       "IntakeStopRequest": {
         "properties": {

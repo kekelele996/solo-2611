@@ -301,7 +301,7 @@ class AppContext:
             self.bus.publish(
                 "system",
                 {
-                    "docker_ok": await self.docker_ok(),
+                    "docker_ok": (await self.dispatcher.facts.snapshot()).docker.healthy,
                     "source_online": self.source_online,
                     "offline": not self.source_online,
                 },
@@ -325,7 +325,7 @@ class AppContext:
 
     async def system_status(self) -> dict[str, Any]:
         if self.dispatcher.v3_enabled:
-            snapshot = self.dispatcher.snapshot()
+            snapshot = self.dispatcher.snapshot(compact=True, include_queue=False)
             raw_pools = snapshot.get("pools")
             pools = raw_pools if isinstance(raw_pools, dict) else {}
             raw_containers = pools.get("containers")

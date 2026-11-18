@@ -52,6 +52,8 @@ COMMANDS = {
     "repo",
     "cleanup",
     "terminal-sweep",
+    "terminal-view",
+    "terminal-view-all",
 }
 
 

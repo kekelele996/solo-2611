@@ -8,6 +8,8 @@ from typing import Any
 
 from solo_auto.dispatch.facts import FactsSnapshot
 
+CONTAINER_RESERVATION_TTL_SECONDS = 300.0
+
 
 @dataclass(slots=True)
 class PoolState:
@@ -41,7 +43,8 @@ class PoolBook:
             name: PoolState(name)
             for name in ("containers", "sessions", "authoring", "delivering", "recording", "exporting")
         }
-        self._reserved_containers: dict[str, float] = {}
+        # task_id -> {at: monotonic timestamp, container: docker name or ""}
+        self._reserved_containers: dict[str, dict[str, Any]] = {}
 
     def configure(
         self,
@@ -61,11 +64,36 @@ class PoolBook:
 
     def occupy_from_facts(self, facts: FactsSnapshot) -> None:
         managed = set(facts.docker.containers)
-        reservation_count = len([task for task in self._reserved_containers if task not in managed])
+        now = time.monotonic()
+        # A reservation protects the short gap between admission and Docker
+        # visibility. Once its real container name is known, Docker is the
+        # source of truth and the reservation must not be counted a second time.
+        # Empty reservations expire so a crashed launcher cannot hold capacity
+        # forever.
+        self._reserved_containers = {
+            task_id: reservation
+            for task_id, reservation in self._reserved_containers.items()
+            if reservation.get("container") in managed
+            or now - float(reservation.get("at") or 0) < CONTAINER_RESERVATION_TTL_SECONDS
+        }
+        reservation_count = sum(
+            1
+            for reservation in self._reserved_containers.values()
+            if not reservation.get("container") or str(reservation["container"]) not in managed
+        )
         self.pools["containers"].used = len(managed) + reservation_count
 
-    def reserve_container(self, task_id: str) -> None:
-        self._reserved_containers[task_id] = time.monotonic()
+    def reserve_container(self, task_id: str, *, container: str = "") -> None:
+        self._reserved_containers[task_id] = {"at": time.monotonic(), "container": container}
+
+    def bind_container(self, task_id: str, container: str) -> None:
+        if not container:
+            return
+        reservation = self._reserved_containers.get(task_id)
+        if reservation is None:
+            self._reserved_containers[task_id] = {"at": time.monotonic(), "container": container}
+        else:
+            reservation["container"] = container
 
     def release_container(self, task_id: str) -> None:
         self._reserved_containers.pop(task_id, None)

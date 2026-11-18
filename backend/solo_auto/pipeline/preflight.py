@@ -38,7 +38,7 @@ class Preflight:
 
     async def probe_api(self) -> dict[str, Any]:
         try:
-            result = await self.gateway.call(["config", "test"], timeout=30)
+            result = await self.gateway.call(["config", "test"], timeout=90)
         except Exception as exc:
             return {
                 "ok": False,

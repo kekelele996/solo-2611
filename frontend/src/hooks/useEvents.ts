@@ -7,7 +7,7 @@ import { useToast } from "../components/toast-context";
  * 运行中的后端每秒会推几十条事件，逐条全量失效会让每个页面持续重拉、重渲染，
  * 所以这里合并成每 FLUSH_MS 至多一次；日志类事件只刷新对应的日志查询。
  */
-const FLUSH_MS = 1000;
+const FLUSH_MS = 2000;
 
 const BROAD_EVENTS = [
   "task.updated",
@@ -43,7 +43,9 @@ export function useEvents(): void {
     const flush = () => {
       timer = undefined;
       if (broad) {
-        void queryClient.invalidateQueries();
+        // 事件只负责标记数据已过期，具体请求交给各页面自己的轮询。
+        // 直接 invalidate 全部活跃查询会让 2 秒一条的状态事件放大成持续重拉。
+        void queryClient.invalidateQueries({ refetchType: "none" });
       } else {
         for (const key of scoped) void queryClient.invalidateQueries({ queryKey: [key] });
       }

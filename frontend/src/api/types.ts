@@ -263,6 +263,7 @@ export type IntakeSnapshot = {
   plan: {
     id: string;
     project_id: string;
+    project_name?: string;
     filters: Record<string, unknown>;
     mode?: "target" | "continuous";
     target: number;
@@ -276,6 +277,7 @@ export type IntakeSnapshot = {
     failed_claims: Array<{ engineering_id: string; code?: string; message?: string }>;
     exclude_delivered?: boolean;
     pause_reason?: string;
+    source_changed_at?: string;
   } | null;
   counts: {
     target: number;
@@ -668,6 +670,7 @@ export type RecordingVerify = {
   duration_s: number;
   capture_kind: string;
   cursor_ok: boolean;
+  service_cleanup_ok?: boolean;
   errors: string[];
 };
 
@@ -786,12 +789,15 @@ export type DispatchSnapshot = {
   limits: {
     mode: DispatchMode;
     containers: number;
+    effective_containers: number;
+    elastic: DispatchElasticConfig;
     max_tasks: number;
     create_cooldown_seconds: number;
     recording: number;
     skill_limit: number;
     synced: boolean;
   };
+  elastic: DispatchElasticStatus;
   pools: Record<string, DispatchPool>;
   creation?: DispatchCreation;
   session_capacity?: { running: number; waiting: number; label: string };
@@ -844,6 +850,35 @@ export type DispatchLimitsRequest = {
   max_tasks?: number;
   create_cooldown_seconds?: number;
   keep_awake?: boolean;
+  elastic?: DispatchElasticPatch;
+};
+
+export type DispatchElasticConfig = {
+  enabled: boolean;
+  ceiling: number;
+  step_up_seconds: number;
+  cooldown_seconds: number;
+  stall_percent: number;
+  severe_attempt: number;
+  stable_seconds: number;
+};
+
+export type DispatchElasticPatch = {
+  enabled?: boolean;
+  ceiling?: number;
+};
+
+export type DispatchElasticStatus = DispatchElasticConfig & {
+  floor: number;
+  current: number;
+  recent_rate_limits: number;
+  stall_percent_now: number;
+  worst_attempt: number;
+  learned_for_hour: number;
+  last_429_at: string;
+  last_pressure_at: string;
+  last_change_at: string;
+  last_reason: string;
 };
 
 export type DispatchLogRow = EventRow & { family: string };

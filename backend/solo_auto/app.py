@@ -13,6 +13,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 
 from solo_auto.api import (
     audit,
@@ -88,6 +89,7 @@ def create_app(home: Path | None = None, *, auto_start: bool = True) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.context = context
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.add_middleware(SecurityHeadersMiddleware)
 
     app.include_router(system.router)

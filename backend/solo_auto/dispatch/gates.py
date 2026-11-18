@@ -103,6 +103,9 @@ def evaluate_creation_gates(
     startup_elapsed: float,
     in_hand: int,
     container_used: int,
+    container_limit: int | None = None,
+    container_live: int | None = None,
+    container_waiting: int = 0,
     last_created_at: float,
     now: datetime,
 ) -> GateDecision:
@@ -114,6 +117,7 @@ def evaluate_creation_gates(
     """
     task_limit = settings.max_tasks
     tasks_first = settings.mode == "tasks"
+    effective_containers = max(1, int(container_limit or settings.containers))
     checks = [
         GateResult("G1", settings.enabled, "dispatch.disabled", "调度总开关已关闭") if not settings.enabled else GateResult("G1", True),
         _intent_gate(desired_state),
@@ -126,12 +130,17 @@ def evaluate_creation_gates(
         if not tasks_first or in_hand < task_limit
         else GateResult("C1", False, "tasks.full", f"任务已满 {in_hand}/{task_limit}，等在手任务结束再建题"),
         GateResult("C2", True)
-        if tasks_first or container_used + 1 <= settings.containers
+        if tasks_first or container_used + 1 <= effective_containers
         else GateResult(
             "C2",
             False,
             "containers.full",
-            f"容器已满 {container_used}/{settings.containers}，等容器释放再建题",
+            _container_full_text(
+                effective_containers,
+                container_used=container_used,
+                container_live=container_live,
+                container_waiting=container_waiting,
+            ),
         ),
         _cooldown_gate(settings, last_created_at, now),
     ]
@@ -139,6 +148,21 @@ def evaluate_creation_gates(
         if not check.ok:
             return GateDecision("intake", "create", False, check.code, check.text, check.until, check.gate, checks)
     return GateDecision("intake", "create", True, checks=checks)
+
+
+def _container_full_text(
+    limit: int,
+    *,
+    container_used: int,
+    container_live: int | None,
+    container_waiting: int,
+) -> str:
+    if container_live is None:
+        return f"容器已满 {container_used}/{limit}，等容器释放再建题"
+    detail = f"运行 {container_live}/{limit}"
+    if container_waiting > 0:
+        detail += f"，待起 {container_waiting}"
+    return f"容器名额已满（{detail}），等容器释放再建题"
 
 
 def _cooldown_gate(settings: DispatchSettings, last_created_at: float, now: datetime) -> GateResult:

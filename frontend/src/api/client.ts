@@ -317,6 +317,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ force }),
     }),
+  openWorkTerminal: (id: string) =>
+    request<{ requested: boolean; opened: boolean; reused: boolean; tmux: string; error?: string }>(
+      `/api/tasks/${encodeURIComponent(id)}/terminal-view`,
+      { method: "POST" },
+    ),
+  openAllWorkTerminals: () =>
+    request<{ ok: boolean; count: number; opened: number; reused: number; errors: string[] }>(
+      "/api/terminals/open-all",
+      { method: "POST" },
+    ),
   runLog: async (id: string, lines = 200) => {
     const response = await fetch(`/api/tasks/${encodeURIComponent(id)}/run/log${qs({ lines })}`);
     if (!response.ok) throw new ApiError(response.status, "RUN_LOG_FAILED", await response.text());
@@ -395,7 +405,7 @@ export const api = {
       body: JSON.stringify({ confirm: true }),
     }),
   autopilot: () => request<AutopilotSnapshot>("/api/autopilot"),
-  dispatch: () => request<DispatchSnapshot>("/api/dispatch"),
+  dispatch: () => request<DispatchSnapshot>("/api/dispatch?compact=1"),
   dispatchState: (desired: "running" | "paused" | "draining") =>
     request<DispatchSnapshot>("/api/dispatch/state", {
       method: "POST",
@@ -625,6 +635,11 @@ export const api = {
     request<IntakeSnapshot>("/api/intake", {
       method: "POST",
       body: JSON.stringify(body),
+    }),
+  retargetIntake: (projectId: string) =>
+    request<IntakeSnapshot>("/api/intake/project", {
+      method: "POST",
+      body: JSON.stringify({ project_id: projectId }),
     }),
   pauseIntake: () => request<IntakeSnapshot>("/api/intake/pause", { method: "POST" }),
   resumeIntake: () => request<IntakeSnapshot>("/api/intake/resume", { method: "POST" }),

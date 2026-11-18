@@ -50,19 +50,19 @@ export function AppShell() {
   const status = useQuery({
     queryKey: ["system-status"],
     queryFn: api.systemStatus,
-    refetchInterval: 3000,
+    refetchInterval: 10_000,
   });
   const version = useQuery({ queryKey: ["version"], queryFn: api.version, staleTime: 60_000 });
   const audits = useQuery({
     queryKey: ["audits", "pending"],
     queryFn: () => api.audits("pending"),
-    refetchInterval: 5000,
+    refetchInterval: 15_000,
   });
   // 与调度页共用缓存键，停留在调度页时不会重复拉取同一份快照。
   const dispatch = useQuery({
     queryKey: ["dispatch"],
     queryFn: api.dispatch,
-    refetchInterval: 4000,
+    refetchInterval: 8000,
   });
   const toggleDispatch = useMutation({
     mutationFn: () => api.dispatchState(dispatch.data?.desired_state === "running" ? "paused" : "running"),

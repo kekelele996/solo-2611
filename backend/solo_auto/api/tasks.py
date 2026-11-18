@@ -435,6 +435,37 @@ async def interactive_run(task_id: str, ctx: AppContext = Depends(context)) -> d
     return {"command": result.out, "container_hint": container_hint}
 
 
+@router.post("/tasks/{task_id}/terminal-view")
+async def open_terminal_view(task_id: str, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    task = _task(ctx, task_id)
+    result = await ctx.gateway.call(
+        ["terminal-view", "--task-root", task["task_root"]],
+        timeout=60,
+        task_id=task_id,
+    )
+    if result.code != 0:
+        raise ApiError(
+            409,
+            "TERMINAL_VIEW_FAILED",
+            result.err.strip() or "当前任务没有可查看的工作终端",
+            detail={"stdout": result.out, "stderr": result.err},
+        )
+    return result.data or {"ok": True}
+
+
+@router.post("/terminals/open-all")
+async def open_all_terminal_views(ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    result = await ctx.gateway.call(["terminal-view-all"], timeout=120)
+    if result.code != 0:
+        raise ApiError(
+            409,
+            "TERMINAL_VIEW_ALL_FAILED",
+            result.err.strip() or "没有可查看的工作终端",
+            detail={"stdout": result.out, "stderr": result.err},
+        )
+    return result.data or {"ok": True}
+
+
 @router.post("/tasks/{task_id}/run/collect")
 async def collect_run(
     task_id: str,

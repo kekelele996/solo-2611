@@ -83,6 +83,13 @@ def test_container_first_waits_when_occupancy_would_exceed_max_containers(tmp_pa
     assert "3/3" in full.text
 
 
+def test_container_first_uses_the_effective_elastic_limit(tmp_path: Path) -> None:
+    assert _gate(tmp_path, container_used=3, container_limit=5).allowed
+    full = _gate(tmp_path, container_used=5, container_limit=5)
+    assert not full.allowed and full.code == "containers.full"
+    assert "5/5" in full.text
+
+
 def test_container_first_ignores_max_tasks(tmp_path: Path) -> None:
     # 容器优先：在手任务数超过最大任务数也照常建题，只看容器占用。
     assert _gate(tmp_path, in_hand=9, container_used=2).allowed
@@ -113,12 +120,13 @@ def test_old_dispatch_tables_upgrade_to_max_tasks() -> None:
     explicit: dict[str, Any] = {"containers": 3, "in_hand": 6, "max_tasks": 2}
     _upgrade_dispatch(explicit)
     assert explicit["max_tasks"] == 2
-    # 旧字段（preset、sessions、in_hand、elastic……）被忽略，不让整段 [dispatch] 回退成默认值。
+    # 旧字段被忽略，不让整段 [dispatch] 回退成默认值；elastic 已恢复为正式配置。
     settings = DispatchSettings.model_validate(
         {"containers": 4, "in_hand": 2, "preset": "custom", "elastic": {"enabled": True}, "max_tasks": 2}
     )
     assert settings.containers == 4 and settings.max_tasks == 2
-    assert "preset" not in settings.model_dump() and "elastic" not in settings.model_dump()
+    assert settings.elastic.enabled is True
+    assert "preset" not in settings.model_dump()
 
 
 def _write_state(root: Path, status: str, container: str = "") -> None:
@@ -173,6 +181,12 @@ async def test_container_demand_counts_tasks_that_still_need_a_container(
         assert sorted(demand["waiting_task_ids"]) == ["authoring", "ready"]
         assert demand["used"] == 3
         assert kernel.container_demand(extra=1)["used"] == 4
+        kernel.config.containers = 3
+        kernel.pools_book.pools["containers"].limit = 3
+        sentence = kernel.status_sentence()
+        assert "容器 1/3" in sentence
+        assert "待起 2" in sentence
+        assert "容器名额已满" in sentence
     finally:
         await context.shutdown()
 

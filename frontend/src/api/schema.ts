@@ -916,6 +916,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/tasks/{task_id}/terminal-view": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Open Terminal View */
+        post: operations["open_terminal_view_api_tasks__task_id__terminal_view_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/terminals/open-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Open All Terminal Views */
+        post: operations["open_all_terminal_views_api_terminals_open_all_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tasks/{task_id}/run/collect": {
         parameters: {
             query?: never;
@@ -2317,6 +2351,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/intake/project": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retarget Project */
+        post: operations["retarget_project_api_intake_project_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/intake/pause": {
         parameters: {
             query?: never;
@@ -2681,6 +2732,13 @@ export interface components {
             /** Sub Direction */
             sub_direction?: string | null;
         };
+        /** DispatchElasticPatch */
+        DispatchElasticPatch: {
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Ceiling */
+            ceiling?: number | null;
+        };
         /** DispatchInterruptRequest */
         DispatchInterruptRequest: {
             /** Task Ids */
@@ -2703,6 +2761,7 @@ export interface components {
             create_cooldown_seconds?: number | null;
             /** Keep Awake */
             keep_awake?: boolean | null;
+            elastic?: components["schemas"]["DispatchElasticPatch"] | null;
         };
         /** DispatchMoveRequest */
         DispatchMoveRequest: {
@@ -2893,6 +2952,11 @@ export interface components {
              * @default 0
              */
             max_uses: number;
+        };
+        /** IntakeRetargetRequest */
+        IntakeRetargetRequest: {
+            /** Project Id */
+            project_id: string;
         };
         /** IntakeStopRequest */
         IntakeStopRequest: {
@@ -4974,6 +5038,57 @@ export interface operations {
             };
         };
     };
+    open_terminal_view_api_tasks__task_id__terminal_view_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    open_all_terminal_views_api_terminals_open_all_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
     collect_run_api_tasks__task_id__run_collect_post: {
         parameters: {
             query?: never;
@@ -6186,7 +6301,9 @@ export interface operations {
     };
     snapshot_api_dispatch_get: {
         parameters: {
-            query?: never;
+            query?: {
+                compact?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -6200,6 +6317,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -7624,6 +7750,39 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["IntakeCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retarget_project_api_intake_project_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IntakeRetargetRequest"];
             };
         };
         responses: {

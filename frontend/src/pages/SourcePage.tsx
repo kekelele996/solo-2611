@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, FolderInput, LogIn, Search } from "lucide-react";
+import { ExternalLink, FolderInput, LogIn, RefreshCw, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
@@ -34,6 +34,7 @@ export function SourcePage() {
   const { toast } = useToast();
   const projects = useQuery({ queryKey: ["projects"], queryFn: () => api.projects() });
   const system = useQuery({ queryKey: ["system-status"], queryFn: api.systemStatus, refetchInterval: 3000 });
+  const intake = useQuery({ queryKey: ["intake"], queryFn: api.intake, refetchInterval: 5000 });
   const [projectId, setProjectId] = useState(() => localStorage.getItem("solo-auto-project") ?? "");
   const [query, setQuery] = useState("");
   const [language, setLanguage] = useState("");
@@ -117,6 +118,17 @@ export function SourcePage() {
       void queryClient.invalidateQueries();
     },
   });
+  const retarget = useMutation({
+    mutationFn: (targetProjectId: string) => api.retargetIntake(targetProjectId),
+    onSuccess: (result) => {
+      const projectName = result.plan?.project_name || result.plan?.project_id || "所选项目";
+      toast(`调度任务队列已改为从「${projectName}」补入工程`, "ok");
+      void queryClient.invalidateQueries({ queryKey: ["intake"] });
+      void queryClient.invalidateQueries({ queryKey: ["dispatch"] });
+      void queryClient.invalidateQueries({ queryKey: ["dispatch-upcoming"] });
+    },
+    onError: (error) => toast(errorText(error), "error"),
+  });
   const create = useMutation({
     mutationFn: () => api.createTask({ staging_id: stagingTarget?.engineeringId ?? "", task_name: taskName }),
     onSuccess: (result) => {
@@ -138,6 +150,11 @@ export function SourcePage() {
   });
 
   const selected = projects.data?.items.find((project) => project.id === projectId);
+  const plan = intake.data?.plan;
+  const planActive = Boolean(plan && ["running", "paused"].includes(plan.status));
+  const queueSourceId = planActive ? plan?.project_id ?? "" : "";
+  const queueSourceName = plan?.project_name || plan?.project_id || "";
+  const queueSourceSynced = Boolean(projectId && queueSourceId === projectId);
   const authError = projects.error instanceof ApiError && projects.error.status === 401;
   const engineeringRows = useMemo(() => {
     let rows = [...(engineering.data?.items ?? [])];
@@ -178,15 +195,43 @@ export function SourcePage() {
               {selected.status ?? "active"} · 工程 {selected.engineering_count ?? "—"}
             </span>
           ) : null}
+          {planActive ? (
+            <span className="project-queue-source">
+              调度来源：{queueSourceName}
+            </span>
+          ) : null}
+          <Button
+            size="small"
+            variant={projectId && planActive && !queueSourceSynced ? "primary" : "ghost"}
+            onClick={() => projectId && retarget.mutate(projectId)}
+            loading={retarget.isPending}
+            disabled={!projectId || !planActive || queueSourceSynced}
+            title={
+              !planActive
+                ? "当前没有运行中的生产计划；下达计划时会默认使用所选项目"
+                : queueSourceSynced
+                  ? "调度任务队列已经使用所选项目"
+                  : "把调度任务队列的候补来源切换为所选项目；已在跑任务不受影响"
+            }
+          >
+            <RefreshCw size={13} /> 刷新调度来源
+          </Button>
           <Button
             size="small"
             variant="ghost"
             onClick={() => void projects.refetch()}
             loading={projects.isFetching}
           >
-            刷新
+            刷新项目
           </Button>
         </div>
+        <p className={`form-note source-queue-note${planActive && projectId && !queueSourceSynced ? " is-pending" : ""}`}>
+          {planActive
+            ? queueSourceSynced
+              ? `调度任务队列当前从「${queueSourceName}」补题，已与所选项目同步。`
+              : `调度任务队列仍从「${queueSourceName}」补题；刷新调度来源后，候补工程会立即切换，已在跑任务不受影响。`
+            : "当前没有运行中的生产计划；下达计划时会默认使用题源页所选项目。"}
+        </p>
       </Panel>
 
       <div className="source-tabs">

@@ -67,9 +67,10 @@ class FactsCollector:
     async def snapshot(self, *, force: bool = False) -> FactsSnapshot:
         async with self._lock:
             now = time.monotonic()
-            if not force and self._snapshot and now - self._snapshot.observed_at < 2.0:
+            cache_seconds = max(0.5, self.stale_seconds)
+            if not force and self._snapshot and now - self._snapshot.observed_at < cache_seconds:
                 return self._snapshot
-            if force or now - self._docker.observed_at >= 2.0:
+            if force or now - self._docker.observed_at >= cache_seconds:
                 self._docker = await self._probe_docker()
             free = self._disk_free()
             processes = await self._processes_cached(now)

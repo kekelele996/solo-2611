@@ -8,6 +8,7 @@ import {
   Radio,
   RefreshCw,
   ShieldCheck,
+  SquareTerminal,
   Trash2,
   X,
 } from "lucide-react";
@@ -77,17 +78,17 @@ export function DispatchPage() {
   const dispatch = useQuery({
     queryKey: ["dispatch"],
     queryFn: api.dispatch,
-    refetchInterval: 2500,
+    refetchInterval: 5000,
   });
   const upcoming = useQuery({
     queryKey: ["dispatch-upcoming", NEXT_QUEUE_LIMIT],
     queryFn: () => api.dispatchUpcoming(NEXT_QUEUE_LIMIT),
-    refetchInterval: 10_000,
+    refetchInterval: 30_000,
   });
   const sessionStats = useQuery({
     queryKey: ["dispatch-session-stats"],
     queryFn: api.sessionStats,
-    refetchInterval: 10_000,
+    refetchInterval: 30_000,
   });
 
   useEffect(() => {
@@ -146,6 +147,18 @@ export function DispatchPage() {
     onSuccess: (result) => toast(result.message, result.ok ? "ok" : "warn"),
     onError: (error) => toast(errorText(error), "error"),
   });
+  const openTerminals = useMutation({
+    mutationFn: api.openAllWorkTerminals,
+    onSuccess: (result) => {
+      toast(
+        result.count
+          ? `已显示 ${result.count} 个正在工作的终端${result.reused ? `，复用 ${result.reused} 个` : ""}`
+          : "当前没有正在工作的终端",
+        result.ok ? "ok" : "warn",
+      );
+    },
+    onError: (error) => toast(errorText(error), "error"),
+  });
   const recover = useMutation({
     mutationFn: () => api.dispatchRecover(120),
     onSuccess: (result) => {
@@ -192,6 +205,8 @@ export function DispatchPage() {
         onState={(desired) => state.mutate(desired)}
         busy={state.isPending}
         readonly={readonly}
+        openingTerminals={openTerminals.isPending}
+        onOpenTerminals={() => openTerminals.mutate()}
       />
       {readonly ? (
         <div className="system-banner" role="status">
@@ -237,7 +252,7 @@ export function DispatchPage() {
               <p>待处理取下一批工程，最多 20 道；工程不足时循环补位，相邻工程不重复。</p>
             </div>
             <div className="row-actions">
-              {groups.processed.length ? (
+              {snapshot.counts.finished ? (
                 <Button size="small" variant="ghost" loading={clearFinished.isPending} disabled={readonly} onClick={() => clearFinished.mutate()}>
                   <Trash2 size={13} /> 清理已处理
                 </Button>
@@ -252,7 +267,7 @@ export function DispatchPage() {
             <QueueLane
               zone="pending"
               title="待处理"
-              count={groups.pending.length}
+              count={snapshot.counts.waiting + snapshot.counts.needs_action}
               shown={pendingItems.length + previewItems.length}
               previewCount={previewItems.length}
               caption={pendingItems.length ? "首项就是下一道进入处理的工程" : "按生产计划自动补入下一批工程"}
@@ -285,7 +300,7 @@ export function DispatchPage() {
             <QueueLane
               zone="processing"
               title="正在处理"
-              count={groups.processing.length}
+              count={snapshot.counts.active}
               shown={processingItems.length}
               caption="已经占用 ChatGPT 会话或容器的任务"
             >
@@ -311,7 +326,7 @@ export function DispatchPage() {
             <QueueLane
               zone="processed"
               title="已处理"
-              count={groups.processed.length}
+              count={snapshot.counts.finished}
               shown={processedItems.length}
               caption="最近完成或失败的任务"
             >
@@ -429,11 +444,15 @@ function DispatchHeader({
   onState,
   busy,
   readonly,
+  openingTerminals,
+  onOpenTerminals,
 }: {
   snapshot: DispatchSnapshot;
   onState: (desired: "running" | "paused" | "draining") => void;
   busy: boolean;
   readonly: boolean;
+  openingTerminals: boolean;
+  onOpenTerminals: () => void;
 }) {
   const running = snapshot.desired_state === "running";
   return (
@@ -453,6 +472,9 @@ function DispatchHeader({
         <p className="dispatch-sentence" data-state={snapshot.effective_state}>{snapshot.sentence}</p>
       </div>
       <div className="dispatch-head-actions">
+        <Button size="small" variant="ghost" loading={openingTerminals} onClick={onOpenTerminals}>
+          <SquareTerminal size={14} /> 查看全部终端
+        </Button>
         {running ? (
           <Button loading={busy} disabled={readonly} onClick={() => onState("paused")}><CirclePause size={14} /> 暂停</Button>
         ) : (
@@ -475,7 +497,7 @@ function CapacityStrip({ snapshot, inHand }: { snapshot: DispatchSnapshot; inHan
   const pool = (name: string) => snapshot.pools[name] ?? { used: 0, limit: 0 };
   const creation = snapshot.creation;
   const containerLimit = creation?.containers.limit ?? snapshot.limits.containers;
-  const containerUsed = creation?.containers.used ?? pool("containers").used;
+  const containerUsed = creation?.containers.live ?? pool("containers").used;
   const taskLimit = creation?.max_tasks ?? snapshot.limits.max_tasks;
   const tasksFirst = (snapshot.limits.mode ?? "containers") === "tasks";
   const waitingContinue = snapshot.session_capacity?.waiting ?? 0;
@@ -485,6 +507,9 @@ function CapacityStrip({ snapshot, inHand }: { snapshot: DispatchSnapshot; inHan
   const cooldown = creation?.cooldown_seconds ?? snapshot.limits.create_cooldown_seconds;
   const containerNote = creation
     ? `运行 ${creation.containers.live} · 待起 ${creation.containers.waiting + creation.containers.extra}`
+      + (snapshot.elastic.enabled
+        ? ` · 弹性 ${snapshot.elastic.current}（保底 ${snapshot.elastic.floor}）`
+        : "")
     : undefined;
   const cells: Array<{ label: string; used: number; limit: number; note?: string; major?: boolean; tone?: string; unbounded?: boolean }> = [
     { label: "容器", used: containerUsed, limit: containerLimit, major: true, note: containerNote },
@@ -686,8 +711,8 @@ function QueueRow({
         {pending && until ? <span>排队重跑 <Countdown at={until} /></span> : null}
         {pending && !until && eta ? <span>预计 <Countdown at={eta} /></span> : null}
         {item.desktop_recovery_attempts ? (
-          <span title={item.desktop_recovery_error || item.autopilot_detail || "正在补按发送，不会重新创建任务"}>
-            <Badge tone="warn">自动补发 {item.desktop_recovery_attempts}/2</Badge>
+          <span title={item.desktop_recovery_error || item.autopilot_detail || "无线程时重开深链接，已有线程时补按发送"}>
+            <Badge tone="warn">自动重试 {item.desktop_recovery_attempts}/2</Badge>
           </span>
         ) : null}
         {item.total_attempts > 1 ? <span>尝试 {item.total_attempts}</span> : null}
@@ -750,6 +775,10 @@ function LimitForm({
   const cooldown = draft.create_cooldown_seconds ?? snapshot.limits.create_cooldown_seconds;
   const mode = draft.mode ?? snapshot.limits.mode ?? "containers";
   const tasksFirst = mode === "tasks";
+  const elastic = draft.elastic ?? snapshot.limits.elastic;
+  const elasticEnabled = elastic.enabled ?? false;
+  const elasticCeiling = elastic.ceiling ?? 8;
+  const elasticStatus = snapshot.elastic;
   return (
     <fieldset className="dispatch-limit-form panel-body" disabled={readonly}>
       <div className="dispatch-limit-row dispatch-mode-row">
@@ -776,7 +805,40 @@ function LimitForm({
         value={containers}
         min={1}
         max={8}
-        onChange={(value) => setDraft({ ...draft, containers: value })}
+        onChange={(value) => setDraft({
+          ...draft,
+          containers: value,
+          elastic: { ...elastic, ceiling: Math.max(value, elasticCeiling) },
+        })}
+      />
+      <label className="dispatch-limit-row dispatch-mode-row" title="容器满且有任务等待时逐级扩容；429 重试等待超过阈值时自动缩容">
+        <span>弹性扩容</span>
+        <span className="dispatch-limit-inline">
+          <input
+            type="checkbox"
+            aria-label="启用弹性扩容"
+            checked={elasticEnabled}
+            onChange={(event) => setDraft({
+              ...draft,
+              elastic: {
+                ...elastic,
+                enabled: event.target.checked,
+                ceiling: Math.max(containers, elasticCeiling),
+              },
+            })}
+          />
+          <small>{elasticEnabled ? "已启用" : "关闭"}</small>
+        </span>
+      </label>
+      <LimitNumber
+        label="弹性上限"
+        hint="弹性扩容的最高容器数；最大容器数是保底值"
+        value={elasticCeiling}
+        min={containers}
+        max={8}
+        inactive={!elasticEnabled}
+        inactiveLabel="关闭"
+        onChange={(value) => setDraft({ ...draft, elastic: { ...elastic, ceiling: value } })}
       />
       <LimitNumber
         label="最大任务数"
@@ -802,6 +864,11 @@ function LimitForm({
           : "容器优先：容器占用（运行中 + 已建题待起容器）加 1 不超过最大容器数、距上次建题已满冷却，就建下一题；不限任务数。"}
         {tasksFirst && maxTasks < containers ? " 最大任务数小于最大容器数时，容器跑不满。" : ""}
         {" 每次只建一题。"}
+      </p>
+      <p className="dispatch-limit-note dispatch-elastic-note">
+        {elasticEnabled
+          ? `当前生效 ${elasticStatus.current}/${elasticStatus.ceiling}，保底 ${elasticStatus.floor}；近 5 分钟 429 ${elasticStatus.recent_rate_limits} 次、等待占比 ${elasticStatus.stall_percent_now}%${elasticStatus.learned_for_hour ? `，本时段常用 ${elasticStatus.learned_for_hour}` : ""}。${elasticStatus.last_reason || "等待满负载信号"}`
+          : "弹性关闭：容器上限固定为最大容器数，不会自动增减。"}
       </p>
       <div className="dispatch-limit-actions" data-dirty={dirty || undefined}>
         <span>{dirty ? "有未应用的修改" : ""}</span>
@@ -888,6 +955,7 @@ function LimitNumber({
   suffix,
   hint,
   inactive,
+  inactiveLabel = "未启用",
   onChange,
 }: {
   label: string;
@@ -897,13 +965,14 @@ function LimitNumber({
   suffix?: string;
   hint?: string;
   inactive?: boolean;
+  inactiveLabel?: string;
   onChange: (value: number) => void;
 }) {
   return (
     <label className="dispatch-limit-row" title={hint} data-inactive={inactive || undefined}>
       <span>{label}</span>
       <input className="compact-number" type="number" aria-label={label} min={min} max={max} value={value} onChange={(event) => onChange(Number(event.target.value))} />
-      <small>{inactive ? "未启用" : suffix ?? ""}</small>
+      <small>{inactive ? inactiveLabel : suffix ?? ""}</small>
     </label>
   );
 }
@@ -1013,6 +1082,10 @@ function limitDraft(snapshot: DispatchSnapshot): DispatchLimitsRequest {
   return {
     mode: snapshot.limits.mode ?? "containers",
     containers: snapshot.limits.containers,
+    elastic: {
+      enabled: snapshot.limits.elastic.enabled,
+      ceiling: snapshot.limits.elastic.ceiling,
+    },
     max_tasks: snapshot.limits.max_tasks,
     create_cooldown_seconds: snapshot.limits.create_cooldown_seconds,
   };

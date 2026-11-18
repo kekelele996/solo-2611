@@ -120,6 +120,9 @@ export function IntakePanel() {
               {continuous ? "持续生产" : `定量 ${plan.target} 题`} · {STATUS_LABEL[plan.status] ?? plan.status}
             </strong>
             <span className="dispatch-plan-meta">
+              项目来源：{plan.project_name || plan.project_id}
+            </span>
+            <span className="dispatch-plan-meta">
               {continuous ? `今日领取 ${daily?.claimed ?? 0}/${daily?.cap ?? 0}` : `完成 ${counts?.completed ?? 0}/${plan.target}`}
               {" · "}进行中 {counts?.active ?? 0} · 失败 {counts?.failed ?? 0}
               {counts?.recoverable ? ` · 可恢复 ${counts.recoverable}` : ""}

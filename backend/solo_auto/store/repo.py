@@ -516,6 +516,15 @@ class Repository:
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         return self.query_one("SELECT * FROM tasks WHERE id = ?", (task_id,))
 
+    def tasks_by_ids(self, task_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Load several task rows in one query for aggregate API responses."""
+        ids = list(dict.fromkeys(str(task_id) for task_id in task_ids if task_id))
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        rows = self.query(f"SELECT * FROM tasks WHERE id IN ({placeholders})", tuple(ids))
+        return {str(row["id"]): row for row in rows}
+
     def get_task_by_root(self, root: Path) -> dict[str, Any] | None:
         return self.query_one("SELECT * FROM tasks WHERE task_root = ?", (str(root),))
 

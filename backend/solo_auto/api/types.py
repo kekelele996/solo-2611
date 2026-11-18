@@ -285,12 +285,18 @@ class DispatchInterruptRequest(BaseModel):
     kill_containers: bool = True
 
 
+class DispatchElasticPatch(BaseModel):
+    enabled: bool | None = None
+    ceiling: int | None = Field(default=None, ge=1, le=8)
+
+
 class DispatchLimitsRequest(BaseModel):
     mode: Literal["containers", "tasks"] | None = None
     containers: int | None = Field(default=None, ge=1, le=8)
     max_tasks: int | None = Field(default=None, ge=1, le=50)
     create_cooldown_seconds: int | None = Field(default=None, ge=20, le=3600)
     keep_awake: bool | None = None
+    elastic: DispatchElasticPatch | None = None
 
 
 class DispatchPoliciesRequest(BaseModel):
@@ -337,6 +343,10 @@ class IntakeCreateRequest(BaseModel):
     # 默认题源里的工程都可以用；不想用的工程在题源页单独禁用。
     exclude_delivered: bool = False
     max_uses: int = Field(default=0, ge=0, le=100)
+
+
+class IntakeRetargetRequest(BaseModel):
+    project_id: str = Field(min_length=1, max_length=200)
 
 
 class IntakeStopRequest(BaseModel):

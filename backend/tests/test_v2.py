@@ -16,7 +16,7 @@ import pytest
 from solo_auto.app import create_app
 from solo_auto.errors import ApiError
 from solo_auto.gateway.skill import SkillGateway
-from solo_auto.pipeline import prompt_templates
+from solo_auto.pipeline import desktop_chatgpt, prompt_templates
 from solo_auto.pipeline.autopilot import Job
 from solo_auto.pipeline.desktop_chatgpt import ChatGPTDesktop
 from solo_auto.pipeline.prompt_templates import PromptTemplates
@@ -104,10 +104,11 @@ def test_chatgpt_deep_link_uses_one_workspace_per_date(
 ) -> None:
     app_path = tmp_path / "ChatGPT.app"
     app_path.mkdir()
-    desktop = ChatGPTDesktop(home=tmp_path / "home")
+    desktop = ChatGPTDesktop(home=tmp_path / "home", locks_dir=tmp_path / "locks")
     desktop.app_path = app_path
     desktop.helper = None
     captured: list[str] = []
+    monkeypatch.setattr(desktop_chatgpt, "THREAD_DISCOVERY_TIMEOUT_SECONDS", 0)
 
     def fake_run(args: list[str], **_: Any) -> SimpleNamespace:
         captured.extend(args)
@@ -130,7 +131,51 @@ def test_chatgpt_deep_link_uses_one_workspace_per_date(
     assert result["workdir"] == query["path"][0]
 
 
-def test_chatgpt_submit_only_reuses_the_existing_prompt(
+def test_chatgpt_launch_records_the_pending_thread_before_its_rollout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    helper = tmp_path / "CodexQueuePush"
+    helper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    helper.chmod(0o755)
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+    desktop = ChatGPTDesktop(home=tmp_path / "home", helper=str(helper), locks_dir=locks_dir)
+    desktop.app_path = tmp_path / "ChatGPT.app"
+    desktop.app_path.mkdir()
+    thread_id = "01a1dae6-f5d3-7042-b0e9-14919a852c3d"
+    captured: list[str] = []
+
+    def fake_run(args: list[str], **_: Any) -> SimpleNamespace:
+        captured.extend(args)
+        (locks_dir / f"{thread_id}.lock").touch()
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = desktop.launch(
+        task_id="task-a",
+        task_name="任务 A",
+        task_root=tmp_path / "tasks" / "task-a",
+        prompt="执行任务",
+    )
+    assert result["pending_thread_id"] == thread_id
+
+
+def test_chatgpt_pending_thread_detection_refuses_ambiguous_locks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+    (locks_dir / "01a1dae6-f5d3-7042-b0e9-14919a852c3d.lock").touch()
+    (locks_dir / "01a1dae7-e33b-7cc1-997a-ea41cdd21f9e.lock").touch()
+    desktop = ChatGPTDesktop(home=tmp_path / "home", locks_dir=locks_dir)
+    monkeypatch.setattr(desktop_chatgpt, "THREAD_DISCOVERY_TIMEOUT_SECONDS", 0)
+
+    assert desktop._wait_for_new_thread_id(set(), 0) == ""
+
+
+def test_chatgpt_submit_only_keeps_legacy_helper_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -146,10 +191,52 @@ def test_chatgpt_submit_only_reuses_the_existing_prompt(
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     link = "codex://threads/new?path=test&prompt=test"
+    assert desktop.submit_pending_prompt(link)["ok"] is True
+    assert captured == [str(helper), "--submit-only", link]
+
+
+def test_chatgpt_unsupported_submit_falls_back_to_pressing_return(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    helper = tmp_path / "CodexQueuePush"
+    helper.write_text("#!/bin/sh\nexit 2\n", encoding="utf-8")
+    helper.chmod(0o755)
+    desktop = ChatGPTDesktop(home=tmp_path / "home", helper=str(helper))
+    captured: list[list[str]] = []
+
+    def fake_run(args: list[str], **_: Any) -> SimpleNamespace:
+        captured.append(args)
+        sent = "sent" if args[0] != str(helper) else ""
+        return SimpleNamespace(returncode=2 if args[0] == str(helper) else 0, stdout=sent, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    marker = "solo-auto-chatgpt:11111111-2222-3333-4444-555555555555:abc123def456"
+    link = f"codex://threads/new?prompt={urllib.parse.quote(marker)}"
     result = desktop.submit_pending_prompt(link)
 
     assert result["ok"] is True
-    assert captured == [str(helper), "--submit-only", link]
+    assert result["opened_with"] == "osascript"
+    assert captured[0] == [str(helper), "--submit-only", link]
+    assert captured[1][0].endswith("osascript")
+    assert marker in captured[1][2]
+    assert "key code 36" in captured[1][2]
+
+
+def test_chatgpt_return_fallback_refuses_an_unidentified_composer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    desktop = ChatGPTDesktop(home=tmp_path / "home", helper="")
+    desktop.helper = None
+    called: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", lambda args, **_: called.append(args))
+
+    result = desktop.submit_pending_prompt("codex://threads/new?prompt=test")
+
+    assert result["ok"] is False
+    assert "无法确认目标" in result["message"]
+    assert called == []
 
 
 @pytest.mark.asyncio

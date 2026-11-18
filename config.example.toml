@@ -100,6 +100,15 @@ docker_timeout_seconds = 20
 docker_stale_seconds = 15
 keep_awake = true
 
+[dispatch.elastic]
+enabled = false
+ceiling = 8
+step_up_seconds = 300
+cooldown_seconds = 600
+stall_percent = 3.0
+severe_attempt = 6
+stable_seconds = 1800
+
 [dispatch.retry]
 max_total_attempts = 8
 engineering_cooldown_failures = 2

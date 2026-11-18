@@ -20,11 +20,40 @@ const SNAPSHOT: DispatchSnapshot = {
   limits: {
     mode: "containers",
     containers: 4,
+    effective_containers: 4,
+    elastic: {
+      enabled: false,
+      ceiling: 8,
+      step_up_seconds: 300,
+      cooldown_seconds: 600,
+      stall_percent: 3,
+      severe_attempt: 6,
+      stable_seconds: 1800,
+    },
     max_tasks: 5,
     create_cooldown_seconds: 180,
     recording: 1,
     skill_limit: 4,
     synced: true,
+  },
+  elastic: {
+    enabled: false,
+    ceiling: 8,
+    step_up_seconds: 300,
+    cooldown_seconds: 600,
+    stall_percent: 3,
+    severe_attempt: 6,
+    stable_seconds: 1800,
+    floor: 4,
+    current: 4,
+    recent_rate_limits: 0,
+    stall_percent_now: 0,
+    worst_attempt: 0,
+    learned_for_hour: 0,
+    last_429_at: "",
+    last_pressure_at: "",
+    last_change_at: "",
+    last_reason: "",
   },
   creation: {
     allowed: false,
@@ -150,6 +179,13 @@ describe("dispatch page", () => {
       message: "网关可用",
       detail: {},
     });
+    vi.spyOn(api, "openAllWorkTerminals").mockResolvedValue({
+      ok: true,
+      count: 3,
+      opened: 0,
+      reused: 3,
+      errors: [],
+    });
     vi.spyOn(api, "dispatchRecover").mockResolvedValue({ requeued: 1, preserved: 0, task_ids: ["task-1"] });
   });
 
@@ -164,7 +200,7 @@ describe("dispatch page", () => {
     expect(screen.getByRole("heading", { name: /正在处理/ })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /已处理/ })).toBeInTheDocument();
     expect(screen.getByText("门禁连续两次返回相同错误")).toBeInTheDocument();
-    expect(screen.getByText("自动补发 1/2")).toBeInTheDocument();
+    expect(screen.getByText("自动重试 1/2")).toBeInTheDocument();
     fireEvent.click(screen.getByText("门禁连续两次返回相同错误"));
     expect(screen.getByText("WHY NOT RUNNING")).toBeInTheDocument();
     expect(screen.getByText("G12")).toBeInTheDocument();
@@ -182,10 +218,16 @@ describe("dispatch page", () => {
     expect(screen.getByRole("button", { name: "立即探测" })).toBeInTheDocument();
   });
 
+  it("opens every working terminal from the dispatch header", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /查看全部终端/ }));
+    await waitFor(() => expect(api.openAllWorkTerminals).toHaveBeenCalledTimes(1));
+  });
+
   it("shows container-first occupancy and the creation cooldown", async () => {
     renderPage();
     const strip = await screen.findByRole("region", { name: "资源占用" });
-    expect(strip).toHaveTextContent("容器3/4");
+    expect(strip).toHaveTextContent("容器2/4");
     expect(strip).toHaveTextContent("运行 2 · 待起 1");
     expect(strip).toHaveTextContent("建题冷却");
     expect(screen.getByText(/暂不建新题：建题冷却中/)).toBeInTheDocument();
@@ -243,11 +285,24 @@ describe("dispatch page", () => {
     expect((api.dispatchLimits as ReturnType<typeof vi.fn>).mock.calls[0][0]).toEqual({
       mode: "containers",
       containers: 5,
+      elastic: { enabled: false, ceiling: 8 },
       max_tasks: 7,
       create_cooldown_seconds: 240,
     });
     fireEvent.click(screen.getByTitle("置顶"));
     await waitFor(() => expect(api.dispatchQueueAction).toHaveBeenCalledWith("task-1", "pin"));
+  });
+
+  it("enables elastic containers and applies the ceiling with the limits", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("checkbox", { name: "启用弹性扩容" }));
+    fireEvent.change(screen.getByLabelText("弹性上限"), { target: { value: "6" } });
+    fireEvent.click(screen.getByRole("button", { name: "应用" }));
+    await waitFor(() => expect(api.dispatchLimits).toHaveBeenCalledTimes(1));
+    expect((api.dispatchLimits as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({
+      containers: 4,
+      elastic: { enabled: true, ceiling: 6 },
+    });
   });
 });
 

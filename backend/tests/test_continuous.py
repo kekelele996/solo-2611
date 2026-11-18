@@ -199,6 +199,66 @@ async def test_continuous_plan_keeps_claiming_within_the_daily_cap(
 
 
 @pytest.mark.asyncio
+async def test_retarget_project_switches_future_claims_and_releases_old_staging(
+    fixture_factory: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = await _continuous_app(tmp_path, monkeypatch, fixture_factory)
+
+    class SwitchSource(BankSource):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.released: list[tuple[str, str, str]] = []
+
+        async def list_projects(self) -> list[dict[str, str]]:
+            return [
+                {"id": "project-1", "name": "项目一"},
+                {"id": "project-2", "name": "项目二"},
+            ]
+
+        async def release(self, project_id: str, engineering_id: str, claim_id: str) -> None:
+            self.released.append((project_id, engineering_id, claim_id))
+
+    source = SwitchSource()
+    ctx.intake.source = source  # type: ignore[assignment]
+    ctx.intake.plan = {
+        **_continuous_plan(daily_cap=10),
+        "status": "paused",
+        "waiting_reason": "旧项目暂无候补",
+        "empty_step": 2,
+        "empty_retry_at": "2099-01-01T00:00:00+08:00",
+    }
+    old_staging = {
+        "projectId": "project-1",
+        "engineeringId": "old-eng",
+        "name": "旧工程",
+        "claimId": "old-claim",
+    }
+    monkeypatch.setattr(ctx.staging, "list", lambda: [old_staging])
+    removed: list[str] = []
+    monkeypatch.setattr(ctx.staging, "remove", removed.append)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=ctx.test_app),
+            base_url="http://test",
+        ) as client:
+            response = await client.post("/api/intake/project", json={"project_id": "project-2"})
+        assert response.status_code == 200
+        result = response.json()
+        assert result["plan"]["project_id"] == "project-2"
+        assert result["plan"]["project_name"] == "项目二"
+        assert "waiting_reason" not in result["plan"]
+        assert "empty_step" not in result["plan"]
+        assert "empty_retry_at" not in result["plan"]
+        assert result["plan"]["project_history"][-1]["from_id"] == "project-1"
+        assert source.released == [("project-1", "old-eng", "old-claim")]
+        assert removed == ["old-eng"]
+    finally:
+        await ctx.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_blocked_history_does_not_hold_continuous_intake(
     fixture_factory: Any,
     tmp_path: Path,

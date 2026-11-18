@@ -40,6 +40,7 @@ from solo_auto.pipeline.desktop_chatgpt import (
 from solo_auto.pipeline.export_service import ExportService
 from solo_auto.pipeline.feedback_service import FeedbackService
 from solo_auto.pipeline.notify import Notifier
+from solo_auto.pipeline.project_memory import ProjectMemory
 from solo_auto.pipeline.prompt_history import PromptHistory
 from solo_auto.pipeline.prompt_templates import PromptTemplates
 from solo_auto.pipeline.reaper import reap_and_record, reaped_note
@@ -57,6 +58,7 @@ LOGGER = logging.getLogger(__name__)
 
 ACTOR = "autopilot"
 ACTIVE_STAGES = ("pending", "chatgpt", "authoring", "running", "delivering", "exporting")
+POST_SUBMIT_WAIT_STATUSES = frozenset({"SUBMITTED", "QC_RUNNING", "QC_PASSED", "PASSED"})
 AGENT_STAGES = ("authoring", "delivering")
 STAGE_LABELS = {
     "pending": "等待调度",
@@ -77,10 +79,11 @@ AGENT_FLAGS = (
     "--dangerously-bypass-approvals-and-sandbox",
 )
 VERDICT = "AUTOPILOT:"
-# 桌面端偶尔会先出现窗口、后拿到首条消息。先做两次低风险补按发送，
-# 仍未产生带唯一标识的 rollout 才交给调度器重开会话。
-CHATGPT_SUBMIT_RECOVERY_AT_SECONDS = (20, 45)
-CHATGPT_LAUNCH_TIMEOUT_SECONDS = 90
+# 桌面端偶尔会先出现窗口、后拿到首条消息。没有新线程就快速重开深链接；
+# 已有线程则补按发送，并保留更长的首条消息物化窗口。
+CHATGPT_SUBMIT_RECOVERY_AT_SECONDS = (10, 25)
+CHATGPT_LAUNCH_TIMEOUT_SECONDS = 45
+CHATGPT_PENDING_LAUNCH_TIMEOUT_SECONDS = 75
 LIVE_REFRESH_SECONDS = 10.0
 USAGE_LIMIT_RE = re.compile(
     r"(?i)usage limit|rate.?limit|too many requests|\b429\b|quota|用量(受限|上限)|额度(不足|用尽)|超限"
@@ -185,6 +188,8 @@ class Job:
     desktop_prompt_file: str = ""
     desktop_workdir: str = ""
     desktop_deep_link: str = ""
+    desktop_pending_thread_id: str = ""
+    desktop_thread_seen: bool = False
     desktop_rollout: str = ""
     desktop_thread_id: str = ""
     desktop_started_at: str = ""
@@ -199,6 +204,15 @@ class Job:
     @property
     def active(self) -> bool:
         return self.stage in ACTIVE_STAGES
+
+
+def _chatgpt_launch_timeout(job: Job) -> int:
+    """Allow more time only after ChatGPT has created the actual thread."""
+    return (
+        CHATGPT_PENDING_LAUNCH_TIMEOUT_SECONDS
+        if job.desktop_thread_seen or job.desktop_pending_thread_id
+        else CHATGPT_LAUNCH_TIMEOUT_SECONDS
+    )
 
 
 @dataclass(slots=True)
@@ -244,6 +258,7 @@ class Autopilot:
         self.breaker =Breaker(paths.home / "breaker.json", bus, settings)
         self.prompt_templates = PromptTemplates(paths)
         self.prompt_history = PromptHistory(repo, paths.home / "prompt-history.jsonl")
+        self.project_memory = ProjectMemory(repo, paths.home / "project-memory")
         self.notifier: Notifier | None = None
         self._agent_command_override: list[str] | None = None
         self.audit_service: Any = None
@@ -334,13 +349,40 @@ class Autopilot:
         self._detect_usage_limit()
 
     def orphan_sessions(self) -> list[RolloutInfo]:
-        """Threads the platform launched but no longer follows, which still consume quota."""
+        """Threads still doing work that must consume one of the ChatGPT work slots.
+
+        A finished task may keep its desktop thread alive only to poll submission QC.
+        That lightweight wait must not block another authoring or container run.
+        """
         tracked = {job.desktop_marker for job in self.jobs.values() if job.desktop_running and job.desktop_marker}
         return [
             info
             for info in self.rollouts.live(quiet_seconds=self.settings.orphan_quiet_seconds)
-            if info.marker not in tracked
+            if info.marker not in tracked and not self._waiting_for_submission_qc(info)
         ]
+
+    def _waiting_for_submission_qc(self, info: RolloutInfo) -> bool:
+        """Return whether a live thread is only polling an accepted submission's QC."""
+        task = self.repo.get_task(info.task_id)
+        if not task:
+            return False
+        submission = Path(str(task["task_root"])) / "monitor" / "submission"
+        status = ""
+        try:
+            history = json.loads((submission / "qc-history.json").read_text(encoding="utf-8"))
+            latest = history.get("latest") if isinstance(history, dict) else None
+            if isinstance(latest, dict):
+                status = str(latest.get("status") or "")
+        except (OSError, json.JSONDecodeError):
+            pass
+        if not status:
+            try:
+                result = json.loads((submission / "api-result.json").read_text(encoding="utf-8"))
+                if isinstance(result, dict):
+                    status = str(result.get("status") or "")
+            except (OSError, json.JSONDecodeError):
+                pass
+        return status.upper() in POST_SUBMIT_WAIT_STATUSES
 
     @property
     def orphan_session_keys(self) -> set[str]:
@@ -384,6 +426,8 @@ class Autopilot:
     async def start(self) -> None:
         with suppress(Exception):
             self.prompt_history.backfill()
+        with suppress(Exception):
+            self.project_memory.backfill(hours=24)
         if not self.settings.enabled:
             return
         if self._loop_task is None:
@@ -977,7 +1021,9 @@ class Autopilot:
                 if previous is None or progress > previous:
                     job.desktop_last_progress_at = progress.replace(microsecond=0).isoformat()
                     job.updated_at = _now()
-                    self._changed()
+                    # 轨迹文件几乎每次轮询都会更新 mtime。这里只更新内存中的
+                    # 进度，下一次阶段文本变化（每分钟）时再落盘和推 SSE，避免
+                    # 每个运行中任务每 2 秒重写整份 autopilot 状态。
             rollout = Path(job.desktop_rollout) if job.desktop_rollout else None
             terminal = info.turn_state if info is not None and info.terminal else ""
             if all(step.ok for step in facts.steps[:10]):
@@ -1032,14 +1078,30 @@ class Autopilot:
     def _tracked_rollout(self, job: Job) -> RolloutInfo | None:
         if job.desktop_rollout:
             path = Path(job.desktop_rollout)
-            return self.rollouts.update(path) if path.is_file() else None
+            info = self.rollouts.update(path) if path.is_file() else None
+            if info is not None:
+                self._clear_desktop_recovery(job)
+            return info
         info = self.rollouts.find(job.desktop_marker) if job.desktop_marker else None
         if info is not None:
             job.desktop_rollout = str(info.path)
             job.desktop_thread_id = thread_id_from_rollout(info.path)
+            self._clear_desktop_recovery(job)
             job.log = str(info.path)
             self._changed()
         return info
+
+    @staticmethod
+    def _clear_desktop_recovery(job: Job) -> None:
+        """The rollout is attached, so a previous submit warning is no longer current."""
+        job.desktop_thread_seen = True
+        if not job.desktop_recovery_attempts:
+            job.desktop_pending_thread_id = ""
+            return
+        job.desktop_recovery_attempts = 0
+        job.desktop_recovery_last_at = ""
+        job.desktop_recovery_error = ""
+        job.desktop_pending_thread_id = ""
 
     async def _session_slot(self, job: Job) -> tuple[bool, str]:
         """Decide whether one more desktop thread may start, counting threads that are really alive."""
@@ -1075,6 +1137,8 @@ class Autopilot:
         job.desktop_rollout = str(info.path)
         job.desktop_thread_id = thread_id_from_rollout(info.path)
         job.desktop_workdir = info.cwd or job.desktop_workdir
+        job.desktop_pending_thread_id = ""
+        job.desktop_thread_seen = True
         job.desktop_started_at = now
         job.desktop_last_progress_at = now
         job.desktop_recovery_attempts = 0
@@ -1105,6 +1169,7 @@ class Autopilot:
             self._stage(job, "pending", wait_text)
             return
         job.attempts["chatgpt"] = used + 1
+        memory_snapshot = self.project_memory.snapshot_for_task(job.task_id, root)
         prompt = self.prompt_templates.render(
             "chatgpt",
             root=root,
@@ -1112,6 +1177,7 @@ class Autopilot:
             missing=missing,
             previous=job.detail,
             history=self.prompt_history.notes(job.task_id),
+            memory=self.project_memory.notes(job.task_id),
         )
         stage_id = self.repo.start_autopilot_stage(
             task_id=job.task_id,
@@ -1153,6 +1219,8 @@ class Autopilot:
         job.desktop_prompt_file = str(launched["prompt_path"])
         job.desktop_workdir = str(launched["workdir"])
         job.desktop_deep_link = str(launched["deep_link"])
+        job.desktop_pending_thread_id = str(launched.get("pending_thread_id") or "")
+        job.desktop_thread_seen = bool(launched.get("thread_seen") or job.desktop_pending_thread_id)
         job.desktop_started_at = str(launched["started_at"])
         job.desktop_last_progress_at = str(launched["started_at"])
         job.desktop_recovery_attempts = 0
@@ -1175,6 +1243,7 @@ class Autopilot:
                 "opened_with": launched["opened_with"],
                 "warning": warning,
                 "attempt": job.attempts["chatgpt"],
+                "context_pack": memory_snapshot.get("pack", ""),
             },
         )
         self._ensure_desktop_follower(job)
@@ -1205,9 +1274,11 @@ class Autopilot:
                     if path is not None:
                         job.desktop_rollout = str(path)
                         job.desktop_thread_id = thread_id_from_rollout(path)
+                        self._clear_desktop_recovery(job)
                         job.log = str(path)
                         self._changed()
                 if path and path.is_file():
+                    self._clear_desktop_recovery(job)
                     frames, offset = rollout_delta(path, offset)
                     if frames:
                         self.bus.publish(
@@ -1227,14 +1298,15 @@ class Autopilot:
                     now = datetime.now().astimezone()
                     await self._recover_missing_chatgpt_submission(job, started=started, now=now)
                     elapsed = (now - started).total_seconds()
-                    if elapsed >= CHATGPT_LAUNCH_TIMEOUT_SECONDS:
+                    launch_timeout = _chatgpt_launch_timeout(job)
+                    if elapsed >= launch_timeout:
                         tried = (
                             f"，已自动补按发送 {job.desktop_recovery_attempts} 次"
                             if job.desktop_recovery_attempts
                             else ""
                         )
                         detail = (
-                            f"发出深链接后 {CHATGPT_LAUNCH_TIMEOUT_SECONDS} 秒仍未建立可跟踪会话{tried}"
+                            f"发出深链接后 {launch_timeout} 秒仍未建立可跟踪会话{tried}"
                         )
                         await self._finish_desktop_stage(
                             job,
@@ -1259,28 +1331,55 @@ class Autopilot:
         started: datetime,
         now: datetime,
     ) -> None:
-        """Nudge ChatGPT after a deep link opens without creating a rollout."""
+        """Retry the trigger quickly, then nudge the existing thread if needed."""
         attempt = job.desktop_recovery_attempts
         if attempt >= len(CHATGPT_SUBMIT_RECOVERY_AT_SECONDS):
             return
         elapsed = (now - started).total_seconds()
         if elapsed < CHATGPT_SUBMIT_RECOVERY_AT_SECONDS[attempt]:
             return
-        result = await asyncio.to_thread(
-            self.desktop.submit_pending_prompt,
-            job.desktop_deep_link,
-        )
+        retried_launch = not (job.desktop_thread_seen or job.desktop_pending_thread_id)
+        if retried_launch:
+            try:
+                result = await asyncio.to_thread(self.desktop.retry_launch, job.desktop_deep_link)
+            except Exception as error:
+                message = error.message if isinstance(error, ApiError) else f"{type(error).__name__}: {error}"
+                result = {"ok": False, "message": message, "opened_with": ""}
+            else:
+                pending = str(result.get("pending_thread_id") or "")
+                if pending:
+                    job.desktop_pending_thread_id = pending
+                if result.get("thread_seen"):
+                    job.desktop_thread_seen = True
+        else:
+            result = await asyncio.to_thread(
+                self.desktop.submit_pending_prompt,
+                job.desktop_deep_link,
+            )
+        job.desktop_recovery_error = "" if result.get("ok") else str(result.get("message") or "补按发送失败")
+        total = len(CHATGPT_SUBMIT_RECOVERY_AT_SECONDS)
+        unsupported = "不支持补按发送" in job.desktop_recovery_error
         job.desktop_recovery_attempts = attempt + 1
         job.desktop_recovery_last_at = _now()
-        job.desktop_recovery_error = "" if result.get("ok") else str(result.get("message") or "补按发送失败")
         done = job.desktop_recovery_attempts
-        total = len(CHATGPT_SUBMIT_RECOVERY_AT_SECONDS)
         if result.get("ok"):
-            detail = f"ChatGPT 已打开但未收到首条消息，已自动补按发送（{done}/{total}）"
+            detail = (
+                f"重新打开 ChatGPT 深链接并检测到新线程（{done}/{total}）"
+                if retried_launch
+                else f"ChatGPT 已打开但未收到首条消息，已自动补按发送（{done}/{total}）"
+            )
             level = "info"
             action = "autopilot.chatgpt.submit_recovered"
+        elif unsupported:
+            detail = (
+                "当前桌面辅助程序不支持补按发送，继续等待会话轨迹"
+                f"（最多 {_chatgpt_launch_timeout(job)} 秒）"
+            )
+            level = "warn"
+            action = "autopilot.chatgpt.submit_recovery_unsupported"
         else:
-            detail = f"ChatGPT 已打开但未收到首条消息，自动补发失败（{done}/{total}）：{job.desktop_recovery_error}"
+            prefix = "重新打开深链接失败" if retried_launch else "自动补按发送失败"
+            detail = f"ChatGPT 未进入执行，{prefix}（{done}/{total}）：{job.desktop_recovery_error}"
             level = "warn"
             action = "autopilot.chatgpt.submit_recovery_failed"
         self._stage(job, "chatgpt", detail)
@@ -1296,6 +1395,7 @@ class Autopilot:
                 "ok": bool(result.get("ok")),
                 "message": job.desktop_recovery_error,
                 "opened_with": str(result.get("opened_with") or ""),
+                "unsupported": unsupported,
             },
         )
         self._changed()
@@ -1401,6 +1501,7 @@ class Autopilot:
         log_dir = self.log_root / job.task_id
         log_dir.mkdir(parents=True, exist_ok=True)
         log = log_dir / f"{stage}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.jsonl"
+        self.project_memory.snapshot_for_task(job.task_id, root)
         prompt = self.prompt_templates.render(
             stage,
             root=root,
@@ -1408,6 +1509,7 @@ class Autopilot:
             missing=missing,
             previous=job.detail,
             history=self.prompt_history.notes(job.task_id) if stage == "authoring" else None,
+            memory=self.project_memory.notes(job.task_id),
         )
         stage_id = self.repo.start_autopilot_stage(
             task_id=job.task_id,
@@ -1624,6 +1726,8 @@ class Autopilot:
             actor=ACTOR,
             task_id=job.task_id,
         )
+        with suppress(Exception):
+            self.project_memory.sync_task(job.task_id)
         self._changed()
 
     def _job_view(self, job: Job) -> dict[str, Any]:

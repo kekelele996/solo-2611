@@ -153,9 +153,19 @@ def evaluate_steps(
     feedback_check = _read_json(task_root / "monitor" / "feedback-check.json")
     ack = _read_json(task_root / "monitor" / "review-ack.json")
     feedback_file = task_root / "delivery" / "feedback.md"
-    checked_sha = str(state.feedbackCheck.sha256 if state.feedbackCheck else "")
+    checked_sha = str(
+        (state.feedbackCheck.sha256 if state.feedbackCheck else "")
+        or feedback_check.get("sha256")
+        or ""
+    )
     ack_sha = str(ack.get("feedbackSha256") or "")
-    file_sha = _sha256(feedback_file) if feedback_file.is_file() else ""
+    snapshot_file = task_root / "monitor" / "feedback-locked.md"
+    snapshot_sha = _sha256(snapshot_file) if snapshot_file.is_file() else ""
+    if ack.get("acked") is True and ack_sha and snapshot_sha and ack_sha == snapshot_sha:
+        feedback_file = snapshot_file
+        file_sha = snapshot_sha
+    else:
+        file_sha = _sha256(feedback_file) if feedback_file.is_file() else ""
     ack_ok = bool(ack.get("acked") is True and ack_sha and file_sha and ack_sha == file_sha)
     machine_feedback_ok = bool((state.feedbackCheck and state.feedbackCheck.ok) or feedback_check.get("ok") is True)
     feedback_ok = machine_feedback_ok

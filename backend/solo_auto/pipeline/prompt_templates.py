@@ -147,6 +147,7 @@ class PromptTemplates:
         missing: list[str],
         previous: str = "",
         history: list[str] | None = None,
+        memory: list[str] | None = None,
     ) -> str:
         if stage not in STAGES:
             raise ApiError(400, "PROMPT_STAGE_INVALID", f"未知 Agent 阶段：{stage}")
@@ -169,6 +170,8 @@ class PromptTemplates:
             notes.extend(f"- {item}" for item in missing[:6])
         if previous and "未完成" in previous:
             notes.append(f"上一次尝试的结果：{previous}")
+        if memory:
+            notes.extend(memory)
         if history:
             notes.extend(history)
         try:
@@ -218,6 +221,8 @@ class PromptTemplates:
     @staticmethod
     def _errors(text: str) -> list[str]:
         errors: list[str] = []
+        if "{notes}" not in text:
+            errors.append("模板缺少 {notes} 占位符，项目记忆和历史提示词无法自动注入")
         for number, raw in enumerate(text.splitlines(), 1):
             line = raw.strip()
             lowered = line.lower()

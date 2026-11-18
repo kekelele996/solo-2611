@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 
 from solo_auto.api.dependencies import context
-from solo_auto.api.types import IntakeCreateRequest, IntakeStopRequest
+from solo_auto.api.types import IntakeCreateRequest, IntakeRetargetRequest, IntakeStopRequest
 from solo_auto.context import AppContext
 from solo_auto.errors import ApiError
 
@@ -37,6 +37,11 @@ async def create(payload: IntakeCreateRequest, ctx: AppContext = Depends(context
         mode=payload.mode,
         daily_cap=payload.daily_cap,
     )
+
+
+@router.post("/project")
+async def retarget_project(payload: IntakeRetargetRequest, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    return await ctx.intake.retarget_project(payload.project_id)
 
 
 @router.post("/pause")

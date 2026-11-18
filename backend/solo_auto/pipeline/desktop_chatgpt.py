@@ -20,6 +20,7 @@ from typing import Any, cast
 from solo_auto.errors import ApiError
 
 MARKER_RE = re.compile(r"solo-auto-chatgpt:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):([0-9a-z]+)")
+THREAD_LOCK_RE = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.lock")
 TURN_EVENTS = frozenset({"task_started", "task_complete", "turn_aborted", "stream_error", "error"})
 TERMINAL_TURN_EVENTS = frozenset({"task_complete", "turn_aborted", "stream_error", "error"})
 TOOL_ITEMS = frozenset(
@@ -51,17 +52,46 @@ DEFAULT_HELPERS = (
 )
 SUBMIT_PENDING_FLAG = "--submit-only"
 LAUNCH_OPEN_ATTEMPTS = 2
+THREAD_DISCOVERY_TIMEOUT_SECONDS = 2.0
+HELPER_OPEN_TIMEOUT_SECONDS = 15.0
+HELPER_SUBMIT_TIMEOUT_SECONDS = 8.0
+SUBMIT_FALLBACK_TIMEOUT_SECONDS = 8.0
+SUBMIT_FALLBACK_SCRIPT = """
+tell application "ChatGPT" to activate
+delay 0.25
+tell application "System Events"
+  tell process "ChatGPT"
+    set focusedElement to value of attribute "AXFocusedUIElement"
+    if role of focusedElement is not "AXTextArea" then return "not-composer"
+    set focusedValue to ""
+    try
+      set focusedValue to value of focusedElement as text
+    end try
+    if expectedMarker is not "" and focusedValue does not contain expectedMarker then return "wrong-composer"
+    key code 36
+    return "sent"
+  end tell
+end tell
+""".strip()
 LOGGER = logging.getLogger(__name__)
 
 
 class ChatGPTDesktop:
-    def __init__(self, *, home: Path, helper: str = "", sessions_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        home: Path,
+        helper: str = "",
+        sessions_dir: Path | None = None,
+        locks_dir: Path | None = None,
+    ) -> None:
         self.home = home
         self.app_path = Path("/Applications/ChatGPT.app")
         self.helper = Path(helper).expanduser() if helper else self._find_helper()
         self.sessions_dir = sessions_dir or Path(
             os.environ.get("CODEX_SESSIONS_DIR") or Path.home() / ".codex" / "sessions"
         )
+        self.locks_dir = locks_dir or Path.home() / ".codex" / "thread-writer-locks"
 
     def available(self) -> bool:
         return self.app_path.is_dir() and (self.helper is not None or shutil.which("open") is not None)
@@ -105,24 +135,83 @@ class ChatGPTDesktop:
         )
         link = build_deep_link(workdir=grouped_workdir, prompt=link_prompt, folder_id=folder_id)
         (directory / f"chatgpt-{stamp}.url.txt").write_text(link + "\n", encoding="utf-8")
+        locks_before = self.thread_lock_ids()
+        opened_at = time.time()
         opened_with, warning = self._open_link(link)
+        candidates = self._wait_for_new_thread_ids(locks_before, opened_at)
+        pending_thread_id = candidates[0] if len(candidates) == 1 else ""
         return {
             "marker": marker,
             "prompt_path": str(prompt_path),
             "deep_link": link,
             "opened_with": opened_with,
             "warning": warning,
+            "pending_thread_id": pending_thread_id,
+            "thread_seen": bool(candidates),
             "workdir": str(grouped_workdir),
             "started_at": datetime.now().astimezone().replace(microsecond=0).isoformat(),
         }
 
+    def retry_launch(self, link: str) -> dict[str, Any]:
+        """Open an existing launch link again only when it never created a thread."""
+        locks_before = self.thread_lock_ids()
+        opened_at = time.time()
+        opened_with, warning = self._open_link(link)
+        candidates = self._wait_for_new_thread_ids(locks_before, opened_at)
+        return {
+            "ok": bool(candidates),
+            "opened_with": opened_with,
+            "warning": warning,
+            "pending_thread_id": candidates[0] if len(candidates) == 1 else "",
+            "thread_seen": bool(candidates),
+            "message": "" if candidates else "重新打开深链接后仍未检测到新线程",
+        }
+
+    def thread_lock_ids(self) -> set[str]:
+        """Return ChatGPT threads that already have a desktop writer lock."""
+        try:
+            paths = list(self.locks_dir.iterdir())
+        except OSError:
+            return set()
+        return {
+            match.group(1)
+            for path in paths
+            if (match := THREAD_LOCK_RE.fullmatch(path.name)) is not None
+        }
+
+    def _wait_for_new_thread_id(self, before: set[str], opened_at: float) -> str:
+        """Find the single thread created by this launch.
+
+        ChatGPT creates its writer lock before the first message reaches a
+        rollout file. Remembering that ID lets recovery focus the existing
+        thread and submit its current composer instead of opening a duplicate.
+        More than one new ID is ambiguous, so callers must not guess.
+        """
+        candidates = self._wait_for_new_thread_ids(before, opened_at)
+        return candidates[0] if len(candidates) == 1 else ""
+
+    def _wait_for_new_thread_ids(self, before: set[str], opened_at: float) -> list[str]:
+        """Return recent new writer locks without guessing which one is ours."""
+        deadline = time.monotonic() + THREAD_DISCOVERY_TIMEOUT_SECONDS
+        while True:
+            candidates: list[str] = []
+            for thread_id in self.thread_lock_ids() - before:
+                try:
+                    modified = (self.locks_dir / f"{thread_id}.lock").stat().st_mtime
+                except OSError:
+                    continue
+                if modified >= opened_at - 0.5:
+                    candidates.append(thread_id)
+            if candidates or time.monotonic() >= deadline:
+                return sorted(candidates)
+            time.sleep(0.1)
+
     def _open_link(self, link: str) -> tuple[str, str]:
         """Hand the deep link to ChatGPT; return (opener, warning).
 
-        The helper both opens the thread and presses send.  When it times out
-        or exits abnormally the thread may already exist, so the link is not
-        opened a second time (that could start a duplicate thread); the caller
-        keeps following the marker and re-presses send if no rollout appears.
+        The helper both opens the thread and presses send. When it times out or
+        exits abnormally the thread may already exist, so the follower must
+        first check for a writer lock before deciding whether to retry the link.
         Only a helper that cannot be started at all falls back to ``open``.
         """
         if self.helper and self.helper.is_file() and os.access(self.helper, os.X_OK):
@@ -131,11 +220,14 @@ class ChatGPTDesktop:
                     [str(self.helper), link],
                     capture_output=True,
                     text=True,
-                    timeout=45,
+                    timeout=HELPER_OPEN_TIMEOUT_SECONDS,
                     check=False,
                 )
             except subprocess.TimeoutExpired:
-                return str(self.helper), "CodexQueuePush 45 秒内没有返回，继续等待会话建立"
+                return (
+                    str(self.helper),
+                    f"CodexQueuePush {HELPER_OPEN_TIMEOUT_SECONDS:g} 秒内没有返回，继续等待会话建立",
+                )
             except OSError as error:
                 LOGGER.warning("CodexQueuePush could not start, falling back to open: %s", error)
             else:
@@ -150,37 +242,47 @@ class ChatGPTDesktop:
                     )
                 return str(self.helper), f"CodexQueuePush 异常退出，继续等待会话建立：{message[:300]}"
         message = ""
-        for number in range(LAUNCH_OPEN_ATTEMPTS):
-            try:
-                result = subprocess.run(
-                    ["open", link],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    check=False,
-                )
-            except (subprocess.TimeoutExpired, OSError) as error:
-                message = f"{type(error).__name__}: {error}"
-            else:
-                if result.returncode == 0:
-                    return "open", ""
-                message = (result.stderr or result.stdout).strip() or "打开 ChatGPT 深链接失败"
-            if number + 1 < LAUNCH_OPEN_ATTEMPTS:
-                time.sleep(2.0)
+        # ``open <codex-url>`` relies on LaunchServices choosing the right app.
+        # Some machines have a stale handler, so retry through the app bundle
+        # and bundle id before reporting a launch failure.
+        commands = [
+            ["open", link],
+            ["open", "-a", str(self.app_path), link],
+            ["open", "-b", "com.openai.chat", link],
+        ]
+        attempts = 0
+        for command in commands:
+            for _ in range(LAUNCH_OPEN_ATTEMPTS):
+                attempts += 1
+                try:
+                    result = subprocess.run(
+                        command,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        check=False,
+                    )
+                except (subprocess.TimeoutExpired, OSError) as error:
+                    message = f"{type(error).__name__}: {error}"
+                else:
+                    if result.returncode == 0:
+                        return "open", ""
+                    message = (result.stderr or result.stdout).strip() or f"{' '.join(command[:2])} 打开 ChatGPT 深链接失败"
+                if attempts < LAUNCH_OPEN_ATTEMPTS * len(commands):
+                    time.sleep(2.0)
         raise ApiError(500, "CHATGPT_LAUNCH_FAILED", message[:500])
 
     def submit_pending_prompt(self, link: str = "") -> dict[str, Any]:
         """Ask the trusted helper to submit the prompt already present in ChatGPT.
 
-        This deliberately does not reopen the deep link. Reopening can create a
-        second thread when the first one was merely slow to accept its prompt.
+        Never open an unmaterialized ``codex://threads/<id>`` route: ChatGPT
+        cannot resume it before the first user message exists and reports
+        ``no rollout found``. Older CodexQueuePush builds cannot submit the
+        pending composer, so fall back to activating ChatGPT and pressing Return.
+        This only nudges the visible thread; it never creates a duplicate.
         """
         if not self.helper or not self.helper.is_file() or not os.access(self.helper, os.X_OK):
-            return {
-                "ok": False,
-                "opened_with": "",
-                "message": "未找到支持补发的 CodexQueuePush",
-            }
+            return self._submit_with_return(link)
         args = [str(self.helper), SUBMIT_PENDING_FLAG]
         if link:
             args.append(link)
@@ -189,7 +291,7 @@ class ChatGPTDesktop:
                 args,
                 capture_output=True,
                 text=True,
-                timeout=20,
+                timeout=HELPER_SUBMIT_TIMEOUT_SECONDS,
                 check=False,
             )
         except subprocess.TimeoutExpired:
@@ -213,12 +315,78 @@ class ChatGPTDesktop:
         message = (result.stderr or result.stdout).strip()
         if result.returncode == 3:
             message = "CodexQueuePush 缺少辅助功能权限，请在系统设置中授权"
-        elif result.returncode == 2 and not message:
-            message = "当前 CodexQueuePush 版本不支持补按发送"
+        elif result.returncode == 2:
+            return self._submit_with_return(link)
         return {
             "ok": False,
             "opened_with": str(self.helper),
             "message": message or f"CodexQueuePush 补发退出码 {result.returncode}",
+        }
+
+    def _submit_with_return(self, link: str) -> dict[str, Any]:
+        """Press Return only when the focused composer contains this task marker."""
+        executable = shutil.which("osascript")
+        if not executable:
+            return {
+                "ok": False,
+                "opened_with": "",
+                "message": "未找到可补按发送的 CodexQueuePush 或 osascript",
+            }
+        marker = ""
+        if link:
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(link).query)
+            prompt = str((query.get("prompt") or [""])[0])
+            match = MARKER_RE.search(prompt)
+            marker = match.group(0) if match else ""
+        if not marker:
+            return {
+                "ok": False,
+                "opened_with": "",
+                "message": "无法确认目标 ChatGPT 会话，未自动发送",
+            }
+        script = f"set expectedMarker to {json.dumps(marker, ensure_ascii=False)}\n{SUBMIT_FALLBACK_SCRIPT}"
+        try:
+            result = subprocess.run(
+                [executable, "-e", script],
+                capture_output=True,
+                text=True,
+                timeout=SUBMIT_FALLBACK_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "ok": False,
+                "opened_with": "osascript",
+                "message": "自动补按发送超时",
+            }
+        except OSError as exc:
+            return {
+                "ok": False,
+                "opened_with": "osascript",
+                "message": f"自动补按发送失败：{exc}",
+            }
+        output = result.stdout.strip()
+        if result.returncode == 0 and output == "sent":
+            return {
+                "ok": True,
+                "opened_with": "osascript",
+                "message": "已激活 ChatGPT 并补按发送",
+            }
+        if result.returncode == 0 and output in {"not-composer", "wrong-composer"}:
+            return {
+                "ok": False,
+                "opened_with": "osascript",
+                "message": (
+                    "ChatGPT 当前输入框不属于目标任务，未自动发送"
+                    if output == "wrong-composer"
+                    else "ChatGPT 当前焦点不在输入框，未自动发送"
+                ),
+            }
+        message = (result.stderr or result.stdout).strip()
+        return {
+            "ok": False,
+            "opened_with": "osascript",
+            "message": f"自动补按发送失败：{message[:300]}" if message else "自动补按发送失败",
         }
 
     def find_rollout(self, marker: str, *, started_at: datetime, workdir: Path) -> Path | None:

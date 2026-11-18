@@ -111,10 +111,14 @@ class ThroughputLedger:
             "container_utilization": utilization,
         }
 
-    def capacity(self, hours: int = 24) -> dict[str, Any]:
+    def capacity(self, hours: int = 24, *, include_items: bool = True) -> dict[str, Any]:
         cutoff = (datetime.now(UTC) - timedelta(hours=max(1, hours))).isoformat()
-        rows = self.repo.query("SELECT * FROM dispatch_capacity WHERE at >= ? ORDER BY at", (cutoff,))
-        latest = rows[-1] if rows else {}
+        if include_items:
+            rows = self.repo.query("SELECT * FROM dispatch_capacity WHERE at >= ? ORDER BY at", (cutoff,))
+            latest = rows[-1] if rows else {}
+        else:
+            rows = []
+            latest = self.repo.query_one("SELECT * FROM dispatch_capacity ORDER BY at DESC LIMIT 1") or {}
         occupied = int(latest.get("occupied") or 0)
         waiting = int(latest.get("waiting") or 0)
         return {

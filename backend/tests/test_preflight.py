@@ -15,8 +15,8 @@ async def test_api_probe_uses_skill_config_test_and_reports_success(
     preflight = Preflight.__new__(Preflight)
     calls: list[list[str]] = []
 
-    async def fake_call(argv: list[str], **_: Any) -> SimpleNamespace:
-        calls.append(argv)
+    async def fake_call(argv: list[str], **kwargs: Any) -> SimpleNamespace:
+        calls.append([*argv, f"timeout={kwargs.get('timeout')}"])
         return SimpleNamespace(code=0, out="✅ https://gateway.test/v1/messages -> HTTP 200", err="")
 
     monkeypatch.setattr(preflight, "gateway", SimpleNamespace(call=fake_call), raising=False)
@@ -25,7 +25,7 @@ async def test_api_probe_uses_skill_config_test_and_reports_success(
     assert result["ok"] is True
     assert result["detail"]["exit_code"] == 0
     assert "HTTP 200" in result["message"]
-    assert calls == [["config", "test"]]
+    assert calls == [["config", "test", "timeout=90"]]
 
 
 @pytest.mark.asyncio

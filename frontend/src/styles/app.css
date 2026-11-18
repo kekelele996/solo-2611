@@ -906,6 +906,22 @@ select:focus {
   color: var(--ink-3);
 }
 
+.project-select-row .project-queue-source {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-queue-note {
+  margin: 10px 0 0;
+}
+
+.source-queue-note.is-pending {
+  color: var(--warn);
+}
+
 .claimed-section {
   margin-top: 24px;
 }

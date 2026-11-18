@@ -13,7 +13,7 @@ import pytest
 
 from solo_auto.app import create_app
 from solo_auto.gateway.skill import SkillGateway
-from solo_auto.pipeline.autopilot import Autopilot, Job, _meaningful_progress_at, build_prompt
+from solo_auto.pipeline.autopilot import Autopilot, Job, _chatgpt_launch_timeout, _meaningful_progress_at, build_prompt
 from solo_auto.pipeline.desktop_chatgpt import RolloutIndex
 
 FAKE_AGENT = """
@@ -397,6 +397,7 @@ async def test_missing_chatgpt_prompt_is_resubmitted_before_relaunch(
         stage="chatgpt",
         desktop_running=True,
         desktop_deep_link="codex://threads/new?prompt=test",
+        desktop_pending_thread_id="01a1dae6-f5d3-7042-b0e9-14919a852c3d",
         desktop_started_at=started.isoformat(),
     )
     pilot.jobs[task["id"]] = job
@@ -415,14 +416,14 @@ async def test_missing_chatgpt_prompt_is_resubmitted_before_relaunch(
         await pilot._recover_missing_chatgpt_submission(
             job,
             started=started,
-            now=started + timedelta(seconds=19),
+            now=started + timedelta(seconds=9),
         )
         assert calls == [] and job.desktop_recovery_attempts == 0
 
         await pilot._recover_missing_chatgpt_submission(
             job,
             started=started,
-            now=started + timedelta(seconds=21),
+            now=started + timedelta(seconds=11),
         )
         assert calls == [job.desktop_deep_link]
         assert job.desktop_recovery_attempts == 1
@@ -431,12 +432,7 @@ async def test_missing_chatgpt_prompt_is_resubmitted_before_relaunch(
         await pilot._recover_missing_chatgpt_submission(
             job,
             started=started,
-            now=started + timedelta(seconds=46),
-        )
-        await pilot._recover_missing_chatgpt_submission(
-            job,
-            started=started,
-            now=started + timedelta(seconds=80),
+            now=started + timedelta(seconds=26),
         )
         assert calls == [job.desktop_deep_link, job.desktop_deep_link]
         assert job.desktop_recovery_attempts == 2
@@ -451,6 +447,124 @@ async def test_missing_chatgpt_prompt_is_resubmitted_before_relaunch(
         assert "autopilot.chatgpt.submit_recovered" in actions
     finally:
         await ctx.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_unsupported_submit_recovery_waits_for_the_original_launch(
+    fixture_factory: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, root = await _app(tmp_path, monkeypatch, fixture_factory, "prompt-only")
+    ctx = app.state.context
+    await ctx.startup()
+    pilot = ctx.autopilot
+    task = ctx.repo.get_task_by_root(root)
+    started = datetime.now().astimezone().replace(microsecond=0)
+    job = Job(
+        task_id=task["id"],
+        task_name=task["task_name"],
+        stage="chatgpt",
+        desktop_running=True,
+        desktop_deep_link="codex://threads/new?prompt=test",
+        desktop_pending_thread_id="01a1dafb-361c-7203-83f2-818772b7458f",
+        desktop_started_at=started.isoformat(),
+    )
+    pilot.jobs[task["id"]] = job
+    calls: list[str] = []
+
+    def fake_submit(link: str = "") -> dict[str, Any]:
+        calls.append(link)
+        return {"ok": False, "message": "当前 CodexQueuePush 版本不支持补按发送"}
+
+    pilot.desktop.submit_pending_prompt = fake_submit  # type: ignore[method-assign]
+    try:
+        await pilot._recover_missing_chatgpt_submission(
+            job,
+            started=started,
+            now=started + timedelta(seconds=11),
+        )
+        await pilot._recover_missing_chatgpt_submission(
+            job,
+            started=started,
+            now=started + timedelta(seconds=26),
+        )
+        assert calls == [job.desktop_deep_link, job.desktop_deep_link]
+        assert job.desktop_recovery_attempts == 2
+        assert "继续等待会话轨迹" in job.detail
+        assert "75 秒" in job.detail
+    finally:
+        await ctx.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_missing_chatgpt_thread_reopens_deep_link_before_nudging(
+    fixture_factory: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, root = await _app(tmp_path, monkeypatch, fixture_factory, "prompt-only")
+    ctx = app.state.context
+    await ctx.startup()
+    pilot = ctx.autopilot
+    task = ctx.repo.get_task_by_root(root)
+    started = datetime.now().astimezone().replace(microsecond=0)
+    job = Job(
+        task_id=task["id"],
+        task_name=task["task_name"],
+        stage="chatgpt",
+        desktop_running=True,
+        desktop_deep_link="codex://threads/new?prompt=test",
+        desktop_started_at=started.isoformat(),
+    )
+    pilot.jobs[task["id"]] = job
+    retry_calls: list[str] = []
+    submit_calls: list[str] = []
+
+    def fake_retry(link: str) -> dict[str, Any]:
+        retry_calls.append(link)
+        return {
+            "ok": True,
+            "opened_with": "helper",
+            "pending_thread_id": "01a1dafb-361c-7203-83f2-818772b7458f",
+            "thread_seen": True,
+            "message": "",
+        }
+
+    def fake_submit(link: str = "") -> dict[str, Any]:
+        submit_calls.append(link)
+        return {"ok": True, "opened_with": "osascript", "message": "已补充发送"}
+
+    pilot.desktop.retry_launch = fake_retry  # type: ignore[method-assign]
+    pilot.desktop.submit_pending_prompt = fake_submit  # type: ignore[method-assign]
+    try:
+        await pilot._recover_missing_chatgpt_submission(
+            job,
+            started=started,
+            now=started + timedelta(seconds=11),
+        )
+        assert retry_calls == [job.desktop_deep_link]
+        assert submit_calls == []
+        assert job.desktop_thread_seen is True
+        assert "检测到新线程" in job.detail
+
+        await pilot._recover_missing_chatgpt_submission(
+            job,
+            started=started,
+            now=started + timedelta(seconds=26),
+        )
+        assert retry_calls == [job.desktop_deep_link]
+        assert submit_calls == [job.desktop_deep_link]
+        assert "补按发送（2/2）" in job.detail
+    finally:
+        await ctx.shutdown()
+
+
+def test_chatgpt_launch_timeout_is_fast_without_a_pending_thread() -> None:
+    job = Job(task_id="task-a", task_name="任务 A", stage="chatgpt", desktop_running=True)
+    assert _chatgpt_launch_timeout(job) == 45
+    job.desktop_pending_thread_id = "01a1dafb-361c-7203-83f2-818772b7458f"
+    assert _chatgpt_launch_timeout(job) == 75
 
 
 def test_rollout_index_reads_incrementally_and_follows_turns(isolated_codex_sessions: Path) -> None:
@@ -517,6 +631,42 @@ async def test_untracked_live_sessions_hold_capacity_until_they_go_quiet(
         await pilot.refresh_live_sessions(force=True)
         await pilot._launch_chatgpt(current, root, [])
         assert launched == [task["id"]]
+    finally:
+        await ctx.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_submission_qc_polling_does_not_hold_chatgpt_work_capacity(
+    fixture_factory: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_codex_sessions: Path
+) -> None:
+    app, root = await _app(tmp_path, monkeypatch, fixture_factory, "prompt-only")
+    ctx = app.state.context
+    await ctx.startup()
+    pilot = ctx.autopilot
+    task = ctx.repo.get_task_by_root(root)
+    pilot.jobs = {}
+    submission = root / "monitor" / "submission"
+    submission.mkdir(parents=True)
+    qc_history = submission / "qc-history.json"
+    qc_history.write_text(
+        json.dumps({"latest": {"status": "QC_RUNNING", "stage": "QC_RUNNING"}}),
+        encoding="utf-8",
+    )
+    _write_rollout(
+        isolated_codex_sessions,
+        task["id"],
+        [_event("task_started"), _tool()],
+        suffix="qc-wait",
+    )
+    try:
+        await pilot.refresh_live_sessions(force=True)
+        assert [info.task_id for info in pilot.orphan_sessions()] == []
+
+        qc_history.write_text(
+            json.dumps({"latest": {"status": "PENDING_FIX", "stage": "PENDING_FIX"}}),
+            encoding="utf-8",
+        )
+        assert [info.task_id for info in pilot.orphan_sessions()] == [task["id"]]
     finally:
         await ctx.shutdown()
 

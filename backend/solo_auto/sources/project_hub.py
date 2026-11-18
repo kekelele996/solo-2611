@@ -34,6 +34,8 @@ class ProjectHubClient:
             follow_redirects=True,
             headers={"Accept": "application/json"},
             transport=transport,
+            # 工程台是本机/内网服务，必须绕过 Clash 等系统代理；GitHub 客户端单独使用代理。
+            trust_env=False,
         )
         cookies = secrets.get_json("projecthub.cookies", {})
         self._cookie_signature = json.dumps(cookies, sort_keys=True) if isinstance(cookies, dict) else ""

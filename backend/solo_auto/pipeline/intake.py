@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shutil
 import statistics
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -29,6 +31,9 @@ SYSTEM_CLAIM_CODES = frozenset(
 )
 # 题源暂无候选时的重查间隔（秒），逐次拉长，有候选后清零。
 EMPTY_BACKOFF_SECONDS = (60, 120, 300, 600, 1800)
+PREVIEW_CACHE_SECONDS = 30.0
+
+LOGGER = logging.getLogger(__name__)
 
 
 class IntakeService:
@@ -61,6 +66,10 @@ class IntakeService:
         self.plan: dict[str, Any] | None = None
         self._loop_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
+        self._preview_cache: list[dict[str, Any]] = []
+        self._preview_cache_key = ""
+        self._preview_cache_at = 0.0
+        self._preview_task: asyncio.Task[None] | None = None
         self._load()
 
     async def start(self) -> None:
@@ -72,6 +81,10 @@ class IntakeService:
             self._loop_task.cancel()
             await asyncio.gather(self._loop_task, return_exceptions=True)
             self._loop_task = None
+        if self._preview_task is not None:
+            self._preview_task.cancel()
+            await asyncio.gather(self._preview_task, return_exceptions=True)
+            self._preview_task = None
 
     async def _loop(self) -> None:
         while True:
@@ -197,6 +210,73 @@ class IntakeService:
             details={"project_id": project_id, "filters": filters or {}},
         )
         await self.tick()
+        return self.snapshot()
+
+    async def retarget_project(self, project_id: str) -> dict[str, Any]:
+        """Switch where an active plan claims new work without dropping in-flight tasks."""
+        project_id = project_id.strip()
+        if not project_id:
+            raise ApiError(400, "PROJECT_REQUIRED", "刷新调度来源前必须选择项目")
+        projects = await self.source.list_projects()
+        project = next((item for item in projects if str(item.get("id") or "") == project_id), None)
+        if project is None:
+            raise ApiError(404, "PROJECT_NOT_FOUND", f"项目不存在或无权访问：{project_id}")
+
+        async with self._lock:
+            plan = self._require_plan()
+            if plan.get("status") not in {"running", "paused"}:
+                raise ApiError(409, "INTAKE_NOT_ACTIVE", "当前没有可刷新来源的生产计划")
+            previous_id = str(plan.get("project_id") or "")
+            if previous_id == project_id:
+                return self.snapshot()
+
+            previous_name = str(plan.get("project_name") or previous_id)
+            project_name = str(project.get("name") or project_id)
+            changed_at = _now()
+            plan["project_id"] = project_id
+            plan["project_name"] = project_name
+            plan["source_changed_at"] = changed_at
+            plan.pop("empty_step", None)
+            plan.pop("empty_retry_at", None)
+            plan.pop("waiting_reason", None)
+            history = plan.get("project_history")
+            if not isinstance(history, list):
+                history = []
+            history.append(
+                {
+                    "from_id": previous_id,
+                    "from_name": previous_name,
+                    "to_id": project_id,
+                    "to_name": project_name,
+                    "at": changed_at,
+                }
+            )
+            plan["project_history"] = history[-20:]
+            plan["updated_at"] = changed_at
+            self._save()
+
+        # 旧项目尚未建题的暂存材料不再进入新队列，立即归还可领取池。
+        for meta in self.staging.list():
+            if str(meta.get("projectId") or "") == previous_id and not meta.get("taskRoot"):
+                await self._release_staged_claim(meta, "调度来源切换，已归还原工程")
+
+        self.repo.add_event(
+            "intake.project_retargeted",
+            f"调度任务队列的项目来源已从 {previous_name} 刷新为 {project_name}",
+            actor="user",
+            details={
+                "from_project_id": previous_id,
+                "from_project_name": previous_name,
+                "to_project_id": project_id,
+                "to_project_name": project_name,
+            },
+        )
+        self.bus.publish(
+            "intake.updated",
+            {"status": plan.get("status"), "project_id": project_id, "project_name": project_name},
+        )
+        if plan.get("status") == "running":
+            await self.tick()
         return self.snapshot()
 
     async def _convert_to_continuous(
@@ -614,11 +694,32 @@ class IntakeService:
         candidates = await self._candidate_pool(plan)
         return candidates[0] if candidates else None
 
-    async def preview_candidates(self, limit: int = 20) -> list[dict[str, Any]]:
+    async def preview_candidates(self, limit: int = 20, *, background: bool = False) -> list[dict[str, Any]]:
         plan = self.plan
         if not plan or plan.get("status") not in {"running", "paused"}:
             return []
-        candidates = await self._candidate_pool(plan)
+        key = json.dumps(
+            {
+                "project_id": plan.get("project_id"),
+                "filters": plan.get("filters") or {},
+                "exclude_delivered": plan.get("exclude_delivered"),
+                "max_uses": plan.get("max_uses"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        now = time.monotonic()
+        if key != self._preview_cache_key or now - self._preview_cache_at >= PREVIEW_CACHE_SECONDS:
+            self._preview_cache_key = key
+            self._preview_cache_at = 0.0
+            self._preview_cache = []
+            if background:
+                if self._preview_task is None or self._preview_task.done():
+                    self._preview_task = asyncio.create_task(self._refresh_preview_cache(key, dict(plan)))
+                return []
+            self._preview_cache = await self._candidate_pool(plan)
+            self._preview_cache_at = time.monotonic()
+        candidates = self._preview_cache
         if not candidates:
             return []
         stats = {
@@ -655,6 +756,17 @@ class IntakeService:
                 break
             cycle += 1
         return preview
+
+    async def _refresh_preview_cache(self, key: str, plan: dict[str, Any]) -> None:
+        try:
+            candidates = await self._candidate_pool(plan)
+        except Exception as exc:
+            LOGGER.warning("preview candidate refresh failed: %s", exc)
+            return
+        if key != self._preview_cache_key:
+            return
+        self._preview_cache = candidates
+        self._preview_cache_at = time.monotonic()
 
     async def _candidate_pool(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
         filters = dict(plan.get("filters") or {})
@@ -841,8 +953,14 @@ class IntakeService:
             str(task.get("task_root") or ""): task
             for task in self.repo.query("SELECT * FROM tasks")
         }
+        plan_task_roots = {
+            str(task.get("task_root") or "")
+            for task_id in plan.get("task_ids") or []
+            if (task := self.repo.get_task(str(task_id))) is not None
+        }
         for meta in self.staging.list():
-            if str(meta.get("projectId") or "") != str(plan.get("project_id")) or not meta.get("taskRoot"):
+            # 任务可能来自计划切换前的项目；按任务根归还，避免旧项目工程长期占用。
+            if not meta.get("taskRoot") or str(meta.get("taskRoot") or "") not in plan_task_roots:
                 continue
             task = tasks.get(str(meta.get("taskRoot") or ""))
             if not task:

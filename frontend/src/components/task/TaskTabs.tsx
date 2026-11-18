@@ -897,8 +897,14 @@ export function RecordingTab({ task }: { task: TaskDetail }) {
   });
   const stop = useMutation({
     mutationFn: () => api.stopRecording(task.id),
-    onSuccess: () => {
-      toast("录屏已停止，正在读取校验结果", "ok");
+    onSuccess: (result) => {
+      const cleanup = result.recording?.serviceCleanup as { status?: string } | undefined;
+      toast(
+        cleanup?.status === "ok"
+          ? "录屏已停止，录制服务已自动停止，正在读取校验结果"
+          : "录屏已停止，正在读取校验结果",
+        "ok",
+      );
       void queryClient.invalidateQueries();
     },
     onError: (error) => toast(errorText(error), "error"),
@@ -923,7 +929,15 @@ export function RecordingTab({ task }: { task: TaskDetail }) {
   });
   const chromeStop = useMutation({
     mutationFn: () => api.chromeStop(task.id),
-    onSuccess: () => toast("独立 Chrome 已关闭并清理 profile", "ok"),
+    onSuccess: (result) => {
+      const cleanup = result.serviceCleanup as { status?: string } | undefined;
+      toast(
+        cleanup?.status === "ok"
+          ? "独立 Chrome 已关闭，录制服务已自动停止，profile 已清理"
+          : "独立 Chrome 已关闭并清理 profile",
+        "ok",
+      );
+    },
     onError: (error) => toast(errorText(error), "error"),
   });
   const deleteRecording = useMutation({

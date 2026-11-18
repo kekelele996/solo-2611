@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from types import ModuleType
@@ -22,6 +23,7 @@ PLACEHOLDER = re.compile(r"（填 1–5 的整数）|（可空[^）]*）")
 PROCESS = re.compile(r"(过程|第\s*\d+\s*步|轨迹|调用|执行了|读取|运行了|验证|规划|反复|重试)")
 ARTIFACT = re.compile(r"(产物|页面|画面|输出|文件|接口|功能|效果|运行后|打开|结果|记录|批次|对账|入库|回读)")
 NUMBER = re.compile(r"(?<!\w)\d+(?:[./:-]\d+)*(?:%|ms|s|MB|GB)?(?!\w)")
+FEEDBACK_LOCK_PATH = Path("monitor") / "feedback-locked.md"
 
 
 class FeedbackService:
@@ -63,15 +65,20 @@ class FeedbackService:
     def get(self, task_id: str) -> dict[str, Any]:
         task = self._task(task_id)
         root = Path(task["task_root"])
-        path = root / "delivery" / "feedback.md"
+        live = root / "delivery" / "feedback.md"
+        snapshot = root / FEEDBACK_LOCK_PATH
+        envelope = load_state(root)
+        ack = _read_json(root / "monitor" / "review-ack.json")
+        ack_sha = str(ack.get("feedbackSha256") or "")
+        snapshot_sha = _hash(snapshot) if snapshot.is_file() else ""
+        path = snapshot if ack_sha and snapshot_sha == ack_sha else live
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
         parts = _parse_sections(text)
         feedback = parts.get("Feedback", "")
         body = re.sub(r"(过程问题|产物问题)[:：]", "", feedback).strip()
         checked = _read_json(root / "monitor" / "feedback-check.json")
-        envelope = load_state(root)
-        ack = _read_json(root / "monitor" / "review-ack.json")
         current_sha = _hash(path) if path.is_file() else ""
+        live_sha = _hash(live) if live.is_file() else ""
         checked_sha = str(
             checked.get("sha256")
             or (envelope.state.feedbackCheck.sha256 if envelope.state and envelope.state.feedbackCheck else "")
@@ -97,7 +104,10 @@ class FeedbackService:
             },
             "review_ack": {
                 **ack,
-                "valid": bool(ack.get("acked") and ack.get("feedbackSha256") == current_sha),
+                "valid": bool(ack.get("acked") and ack_sha and ack_sha == current_sha),
+                "snapshot": str(FEEDBACK_LOCK_PATH) if snapshot_sha else "",
+                "snapshotValid": bool(ack_sha and snapshot_sha and ack_sha == snapshot_sha),
+                "liveChanged": bool(live_sha and current_sha and live_sha != current_sha),
             },
         }
 
@@ -107,6 +117,9 @@ class FeedbackService:
         path = root / "delivery" / "feedback.md"
         if not path.exists():
             raise ApiError(409, "FEEDBACK_NOT_INITIALIZED", "请先生成 Feedback 模板")
+        # Editing feedback invalidates the immutable version reviewed earlier.
+        (root / "monitor" / "review-ack.json").unlink(missing_ok=True)
+        (root / FEEDBACK_LOCK_PATH).unlink(missing_ok=True)
         path.write_text(text, encoding="utf-8")
         draft = self.paths.drafts / task_id / "feedback.md"
         draft.parent.mkdir(parents=True, exist_ok=True)
@@ -162,19 +175,27 @@ class FeedbackService:
         envelope = load_state(root)
         state_check = envelope.state.feedbackCheck if envelope.state else None
         checked_sha = str(checked.get("sha256") or (state_check.sha256 if state_check else ""))
-        current_sha = _hash(feedback) if feedback.is_file() else ""
+        raw = feedback.read_bytes() if feedback.is_file() else b""
+        current_sha = hashlib.sha256(raw).hexdigest() if raw else ""
         checked_ok = bool(checked.get("ok") or (state_check and state_check.ok))
         if not checked_ok:
             raise ApiError(422, "FEEDBACK_GATE_FAILED", "Feedback 检查未通过，不能确认复核")
         if not current_sha or current_sha != checked_sha:
             raise ApiError(409, "FEEDBACK_CHANGED", "Feedback 在检查后被修改，请重新检查")
+        snapshot = root / FEEDBACK_LOCK_PATH
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        temporary = snapshot.with_name(f".{snapshot.name}.{os.getpid()}.tmp")
+        temporary.write_bytes(raw)
+        os.replace(temporary, snapshot)
         payload = {
             "schemaVersion": 1,
             "acked": True,
             "ackedBy": actor,
             "ackedAt": _now(),
             "feedbackSha256": current_sha,
-            "chars": _non_space(feedback.read_text(encoding="utf-8")),
+            "feedbackSnapshot": str(FEEDBACK_LOCK_PATH),
+            "feedbackSnapshotSha256": current_sha,
+            "chars": _non_space(raw.decode("utf-8", errors="replace")),
             "score": checked.get("score") or (state_check.score if state_check else None),
         }
         path = root / "monitor" / "review-ack.json"

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleStop, Play, RotateCw, ShieldAlert } from "lucide-react";
+import { CircleStop, Play, RotateCw, ShieldAlert, SquareTerminal } from "lucide-react";
 
 import { api } from "../../api/client";
 import type { SessionRound, TaskDetail } from "../../api/types";
@@ -67,6 +67,13 @@ export function SessionPanel({
     onSuccess: (result) => {
       toast(result.sent ? "已发送“继续”" : "继续请求已排队", "ok");
       refresh();
+    },
+    onError: (error) => toast(errorText(error), "error"),
+  });
+  const openTerminal = useMutation({
+    mutationFn: () => api.openWorkTerminal(task.id),
+    onSuccess: (result) => {
+      toast(result.reused ? "已显示正在工作的终端窗口" : "已打开正在工作的终端窗口", "ok");
     },
     onError: (error) => toast(errorText(error), "error"),
   });
@@ -146,6 +153,14 @@ export function SessionPanel({
         <div className="row-actions">
           {!terminal ? (
             <>
+              <Button
+                size="small"
+                variant="ghost"
+                loading={openTerminal.isPending}
+                onClick={() => openTerminal.mutate()}
+              >
+                <SquareTerminal size={13} /> 查看终端
+              </Button>
               <Button
                 size="small"
                 variant="ghost"

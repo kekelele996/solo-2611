@@ -30,8 +30,11 @@ router = APIRouter(prefix="/api/dispatch", dependencies=[Depends(require_v3_engi
 
 
 @router.get("")
-async def snapshot(ctx: AppContext = Depends(context)) -> dict[str, Any]:
-    return ctx.dispatcher.snapshot()
+async def snapshot(
+    compact: bool = Query(default=True),
+    ctx: AppContext = Depends(context),
+) -> dict[str, Any]:
+    return ctx.dispatcher.snapshot(compact=compact)
 
 
 @router.post("/state")
@@ -89,7 +92,7 @@ async def explain(task_id: str = "", ctx: AppContext = Depends(context)) -> dict
 async def upcoming(limit: int = Query(default=20, ge=1, le=50), ctx: AppContext = Depends(context)) -> dict[str, Any]:
     items = ctx.dispatcher.upcoming(limit)
     if len(items) < limit and ctx.intake.plan:
-        items.extend(await ctx.intake.preview_candidates(limit - len(items)))
+        items.extend(await ctx.intake.preview_candidates(limit - len(items), background=True))
     return {"items": items}
 
 

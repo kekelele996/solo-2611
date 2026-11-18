@@ -326,6 +326,22 @@ class DispatchWindowSettings(BaseModel):
     allow: list[str] = Field(default_factory=lambda: ["00:00-08:00", "20:00-24:00"])
 
 
+class DispatchElasticSettings(BaseModel):
+    """Rate-limit-aware container ceiling above ``dispatch.containers``."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    ceiling: int = Field(default=8, ge=1, le=8)
+    # A raised limit needs time to reach every running executor before the next
+    # probe, so keep one step per skill refresh interval by default.
+    step_up_seconds: int = Field(default=300, ge=180, le=86400)
+    cooldown_seconds: int = Field(default=600, ge=180, le=86400)
+    stall_percent: float = Field(default=3.0, ge=0.5, le=50.0)
+    severe_attempt: int = Field(default=6, ge=2, le=10)
+    stable_seconds: int = Field(default=1800, ge=600, le=86400)
+
+
 class DispatchSettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -345,6 +361,7 @@ class DispatchSettings(BaseModel):
     docker_timeout_seconds: int = Field(default=20, ge=1, le=300)
     docker_stale_seconds: int = Field(default=15, ge=1, le=300)
     keep_awake: bool = True
+    elastic: DispatchElasticSettings = Field(default_factory=DispatchElasticSettings)
     retry: DispatchRetrySettings = Field(default_factory=DispatchRetrySettings)
     guard: DispatchGuardSettings = Field(default_factory=DispatchGuardSettings)
     llm_guard: DispatchLLMGuardSettings = Field(default_factory=DispatchLLMGuardSettings)
@@ -353,6 +370,12 @@ class DispatchSettings(BaseModel):
     dispose: DispatchDisposeSettings = Field(default_factory=DispatchDisposeSettings)
     watchdog: DispatchWatchdogSettings = Field(default_factory=DispatchWatchdogSettings)
     window: DispatchWindowSettings = Field(default_factory=DispatchWindowSettings)
+
+    @model_validator(mode="after")
+    def _consistent_limits(self) -> DispatchSettings:
+        if self.elastic.enabled and self.elastic.ceiling < self.containers:
+            raise ValueError("弹性上限不能小于最大容器数（保底值）")
+        return self
 
 
 class Settings(BaseSettings):
@@ -515,6 +538,7 @@ def config_toml(settings: Settings) -> str:
             "dispatch",
             settings.dispatch,
             exclude={
+                "elastic",
                 "retry",
                 "guard",
                 "llm_guard",
@@ -525,6 +549,8 @@ def config_toml(settings: Settings) -> str:
                 "window",
             },
         ),
+        "",
+        *_dump_table("dispatch.elastic", settings.dispatch.elastic),
         "",
         *_dump_table("dispatch.retry", settings.dispatch.retry),
         "",

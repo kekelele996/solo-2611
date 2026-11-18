@@ -19,6 +19,7 @@ from typing import Any, Protocol
 
 from solo_auto.dispatch.classify import Evidence, Failure, FailureClassifier
 from solo_auto.dispatch.clock import Clock, ClockState, observe_clock
+from solo_auto.dispatch.elastic import ElasticController
 from solo_auto.dispatch.facts import FactsCollector, FactsSnapshot
 from solo_auto.dispatch.faults import FaultController
 from solo_auto.dispatch.gates import (
@@ -42,7 +43,7 @@ from solo_auto.dispatch.throughput import Outcome, ThroughputLedger
 from solo_auto.dispatch.watchdog import LoopHealth
 from solo_auto.events.bus import EventBus
 from solo_auto.gateway.skill import SkillGateway
-from solo_auto.settings import DispatchSettings, Paths, Settings, save_settings
+from solo_auto.settings import DispatchElasticSettings, DispatchSettings, Paths, Settings, save_settings
 from solo_auto.store.repo import Repository
 
 LOGGER = logging.getLogger(__name__)
@@ -100,6 +101,7 @@ class Dispatcher:
         self.guards = GuardRunner(self.queue, self.config)
         self.state_file = paths.run / "dispatch.json"
         self.starts_file = paths.run / "starts.json"
+        self.elastic = ElasticController(paths.run / "elastic.json", self.config)
         self.state = self._load_state()
         self.desired_state = str(self.state.get("desired_state") or ("running" if self.config.enabled else "paused"))
         raw_plan = self.state.get("plan")
@@ -206,6 +208,7 @@ class Dispatcher:
         self._fact_snapshot = snapshot
         self.pools_book.occupy_from_facts(snapshot)
         self._sync_runtime_pools()
+        await self._step_elastic()
         self._configure_pools()
         self._check_clock()
         if snapshot.disk_free_gb < self.config.disk.floor_gb:
@@ -217,8 +220,8 @@ class Dispatcher:
         await self._refresh_waits()
 
     async def sync_skill_limit(self, *, sync: bool = True) -> dict[str, Any]:
-        desired = self.config.containers
-        requested = self.config.containers
+        desired = self.effective_container_limit
+        requested = desired
         result = await self.gateway.call(["config", "show"], timeout=30)
         actual = 0
         if result.code == 0 and result.data:
@@ -249,7 +252,7 @@ class Dispatcher:
             "requested": requested,
             "actual": actual,
             "synced": self.limit_synced,
-            "ceiling": max(requested, desired),
+            "ceiling": self.elastic.ceiling,
         }
 
     async def request_container(self, task_id: str) -> GateDecision:
@@ -329,7 +332,7 @@ class Dispatcher:
             "waiting": len(waiting),
             "extra": max(0, extra),
             "used": used,
-            "limit": self.config.containers,
+            "limit": self.effective_container_limit,
             "waiting_task_ids": waiting,
         }
 
@@ -347,6 +350,9 @@ class Dispatcher:
             startup_elapsed=self.clock.monotonic() - self.started_monotonic,
             in_hand=in_hand,
             container_used=int(demand["used"]),
+            container_limit=int(demand["limit"]),
+            container_live=int(demand["live"]),
+            container_waiting=int(demand["waiting"]) + int(demand["extra"]),
             last_created_at=self.last_created_at,
             now=self.clock.wall(),
         )
@@ -491,6 +497,7 @@ class Dispatcher:
         validated = DispatchSettings.model_validate(config.model_dump())
         self.settings.dispatch = validated
         self.config = validated
+        self.elastic.update_settings(validated)
         self.policy.settings = self.config.retry
         self.guards.settings = self.config
         self.probes.settings = self.config
@@ -513,6 +520,11 @@ class Dispatcher:
         changed = _diff(before, after)
         if not changed:
             return {"changed": {}}
+        floor_changed = before.get("containers") != after.get("containers")
+        elastic_changed = before.get("elastic") != after.get("elastic")
+        if floor_changed or elastic_changed:
+            self.elastic.reset(from_floor=floor_changed, now=self.clock.wall().timestamp())
+            self._configure_pools()
         sync: dict[str, Any] = {}
         if self.effective_container_limit != old_containers:
             sync = await self.sync_skill_limit(sync=True)
@@ -529,14 +541,28 @@ class Dispatcher:
     async def update_limits(self, values: dict[str, Any], *, actor: str = "user") -> dict[str, Any]:
         allowed = {"mode", "containers", "max_tasks", "create_cooldown_seconds", "keep_awake"}
         changed: dict[str, list[Any]] = {}
+        candidate = self.config.model_copy(deep=True)
         for key, value in values.items():
+            if key == "elastic" and isinstance(value, dict):
+                patch = {name: item for name, item in value.items() if item is not None}
+                old_elastic = candidate.elastic.model_dump()
+                new_elastic = {**old_elastic, **patch}
+                if old_elastic != new_elastic:
+                    changed["elastic"] = [old_elastic, new_elastic]
+                    candidate.elastic = DispatchElasticSettings.model_validate(new_elastic)
+                continue
             if key not in allowed or value is None:
                 continue
-            old = getattr(self.config, key)
+            old = getattr(candidate, key)
             if old != value:
                 changed[key] = [old, value]
-                setattr(self.config, key, value)
-        self._install_config(self.config)
+                setattr(candidate, key, value)
+        self._install_config(candidate)
+        floor_changed = "containers" in changed
+        elastic_changed = "elastic" in changed
+        if floor_changed or elastic_changed:
+            self.elastic.reset(from_floor=floor_changed, now=self.clock.wall().timestamp())
+            self._configure_pools()
         save_settings(self.paths, self.settings)
         sync = await self.sync_skill_limit(sync=True)
         self.repo.add_event(
@@ -585,6 +611,10 @@ class Dispatcher:
         """记录一次失败：能重跑的排到队尾，会话已消耗的（``final``）直接结束、由自动清理补新题。"""
         item = self.queue.get(task_id) or self.queue.enqueue(task_id, stage=evidence.stage)
         failure = self.classifier.classify(evidence)
+        if failure.kind == "gateway.rate_limited" and self.config.elastic.enabled:
+            # A round-ending 429 may not appear as an ``api_retry`` event in
+            # every skill version, but it is still a severe pressure signal.
+            self.elastic.note_severe_rate_limit(now=self.clock.wall().timestamp())
         if failure.kind.startswith("gateway.") and self.preflight is not None:
             asyncio.create_task(self.probes.probe("llm_guard"))
         if failure.kind.startswith("docker.") and self.preflight is not None:
@@ -765,15 +795,40 @@ class Dispatcher:
         self._publish()
         return result
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, *, compact: bool = False, include_queue: bool = True) -> dict[str, Any]:
         items = self.queue.all_items()
-        queue_view = [self._item_view(item) for item in self._display_order(items)]
         active = [item for item in items if item.active]
         waiting = [item for item in items if item.status in {"queued", "launching", "backoff", "interrupted"}]
         needs = [item for item in items if item.status == "quarantined"]
         finished = [item for item in items if item.status in {"done", "failed", "removed"}]
+        display_items = self._display_order(items)
+
+        # 轮询接口只带看板实际会展示的条目；计数仍来自完整队列。
+        if not include_queue:
+            selected_items: list[DispatchItem] = []
+        elif compact:
+            selected_items = list(
+                {
+                    item.task_id: item
+                    for item in [
+                        *[entry for entry in display_items if entry.active][:20],
+                        *[entry for entry in display_items if not entry.active and entry.status not in {"done", "failed", "removed"}][:20],
+                        *[entry for entry in display_items if entry.status in {"done", "failed", "removed"}][:20],
+                    ]
+                }.values()
+            )
+        else:
+            selected_items = display_items
+
+        ordered = self.queue.ordered() if selected_items else []
+        positions = {item.task_id: index + 1 for index, item in enumerate(ordered)}
+        task_map = self.repo.tasks_by_ids([item.task_id for item in selected_items])
+        queue_view = [
+            self._item_view(item, ordered=ordered, positions=positions, task_map=task_map)
+            for item in selected_items
+        ]
         holds = [asdict(hold) for hold in self.holds.active()]
-        guards = [hit.view() for hit in self.guards.scan()]
+        guards = [hit.view() for hit in self.guards.scan()] if include_queue else []
         effective = self._effective_state(items)
         waiting_sessions = [
             item
@@ -785,19 +840,22 @@ class Dispatcher:
             "enabled": self.config.enabled,
             "desired_state": self.desired_state,
             "effective_state": effective,
-            "sentence": self.status_sentence(),
+            "sentence": self.status_sentence(items),
             "started_at": self.clock.wall().replace(microsecond=0).isoformat(),
             "uptime_seconds": round(self.clock.monotonic() - self.started_monotonic, 1),
             "settings": self.config.model_dump(),
             "limits": {
                 "mode": self.config.mode,
                 "containers": self.config.containers,
+                "effective_containers": self.effective_container_limit,
+                "elastic": self.config.elastic.model_dump(),
                 "max_tasks": self.config.max_tasks,
                 "create_cooldown_seconds": max(20, self.config.create_cooldown_seconds),
                 "recording": self.config.recording,
                 "skill_limit": self.skill_limit,
                 "synced": self.limit_synced,
             },
+            "elastic": self.elastic.status(now=self.clock.wall().timestamp()),
             "pools": self.pools_book.snapshot(),
             "creation": self.creation_view(),
             "session_capacity": {
@@ -809,7 +867,7 @@ class Dispatcher:
                 ),
             },
             "holds": holds,
-            "hold_history": self.holds.history[-20:],
+            "hold_history": self.holds.history[-(5 if compact else 20):],
             "counts": {
                 "active": len(active),
                 "waiting": len(waiting),
@@ -818,14 +876,14 @@ class Dispatcher:
                 "all": len(items),
             },
             "queue": queue_view,
-            "upcoming": self.upcoming(),
+            "upcoming": [] if compact else self.upcoming(),
             "guard": {
                 "mode": self.config.guard.mode,
                 "count": len(guards),
                 "hits": guards,
             },
             "throughput": self.throughput.summary(),
-            "capacity": self.throughput.capacity(),
+            "capacity": self.throughput.capacity(include_items=not compact),
             "plan": self.plan,
             "loops": self.health.snapshot(),
             "keep_awake": self.config.keep_awake,
@@ -902,8 +960,8 @@ class Dispatcher:
 
     @property
     def effective_container_limit(self) -> int:
-        """最大容器数是唯一的容器上限。"""
-        return self.config.containers
+        """当前生效的容器上限；弹性开启时不低于配置保底、不高于弹性上限。"""
+        return self.elastic.effective
 
     @property
     def tasks_first(self) -> bool:
@@ -938,7 +996,8 @@ class Dispatcher:
             if item.status in IN_HAND and item.task_id not in awaiting
         )
 
-    def status_sentence(self) -> str:
+    def status_sentence(self, items: list[DispatchItem] | None = None) -> str:
+        current_items = self.queue.all_items() if items is None else items
         pools = self.pools_book.snapshot()
         containers = pools["containers"]
         in_hand = self.in_hand_count()
@@ -949,17 +1008,22 @@ class Dispatcher:
             "degraded": "运行中（部分能力受限）",
             "idle": "空闲",
             "running": "运行中",
-        }[self._effective_state(self.queue.all_items())]
+        }[self._effective_state(current_items)]
         demand = self.container_demand()
         parts = [
             prefix,
             "任务优先" if self.tasks_first else "容器优先",
-            f"容器 {demand['used']}/{containers['limit']}",
+            f"容器 {demand['live']}/{containers['limit']}",
             f"任务 {in_hand}/{self.effective_in_hand}" if self.tasks_first else f"任务 {in_hand}",
         ]
+        if self.config.elastic.enabled and not self.tasks_first:
+            parts.append(f"弹性 {self.effective_container_limit}（{self.elastic.floor}–{self.elastic.ceiling}）")
+        if demand["waiting"] or demand["extra"]:
+            parts.append(f"待起 {demand['waiting'] + demand['extra']}")
         waiting = sum(
             1
-            for item in self.queue.all_items(include_terminal=False)
+            for item in current_items
+            if item.status not in {"done", "failed", "removed"}
             if item.session_state in {"waiting_continue", "holding", "manual_input"}
         )
         if waiting:
@@ -975,7 +1039,7 @@ class Dispatcher:
             if self.tasks_first and in_hand >= self.effective_in_hand:
                 parts.append("任务已满，等待在手任务结束")
             elif not self.tasks_first and demand["used"] + 1 > containers["limit"]:
-                parts.append("容器已满，等待容器释放")
+                parts.append("容器名额已满，等待容器释放")
             elif countdown:
                 parts.append(f"建题冷却 {countdown} 秒")
             else:
@@ -1028,11 +1092,23 @@ class Dispatcher:
             now=self.clock.wall(),
         )
 
-    def _item_view(self, item: DispatchItem) -> dict[str, Any]:
-        ordered = self.queue.ordered()
-        position = next((index + 1 for index, candidate in enumerate(ordered) if candidate.task_id == item.task_id), None)
+    def _item_view(
+        self,
+        item: DispatchItem,
+        *,
+        ordered: list[DispatchItem] | None = None,
+        positions: dict[str, int] | None = None,
+        task_map: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        if ordered is None:
+            ordered = self.queue.ordered()
+        if positions is None:
+            positions = {candidate.task_id: index + 1 for index, candidate in enumerate(ordered)}
+        if task_map is None:
+            task_map = self.repo.tasks_by_ids([item.task_id])
+        position = positions.get(item.task_id)
         decision = self._decision_for(item, queue_head=position == 1)
-        task = self.repo.get_task(item.task_id) or {}
+        task = task_map.get(item.task_id) or {}
         job: Any = None
         if self.autopilot is not None:
             jobs = getattr(self.autopilot, "jobs", {})
@@ -1067,6 +1143,74 @@ class Dispatcher:
                 item.position,
             ),
         )
+
+    def _elastic_trace_files(self) -> list[Path]:
+        roots: set[Path] = set()
+        for task_id in self._in_hand_task_ids():
+            task = self.repo.get_task(task_id) or {}
+            root_text = str(task.get("task_root") or "")
+            if root_text:
+                roots.add(Path(root_text))
+        files: set[Path] = set()
+        patterns = (
+            "monitor/runs/attempt-*/live/*/*.jsonl",
+            "monitor/runtime/candidates/*/attempt-*/stdout.jsonl",
+        )
+        for task_root in roots:
+            for pattern in patterns:
+                files.update(task_root.glob(pattern))
+        return sorted(files)
+
+    async def _step_elastic(self) -> None:
+        if self.tasks_first or not self.config.elastic.enabled:
+            return
+        now = self.clock.wall().timestamp()
+        retries = self.elastic.scan(self._elastic_trace_files(), now=now)
+        self.elastic.observe(retries, now=now)
+        demand = self.container_demand()
+        pending = any(
+            item.status in {"queued", "launching", "backoff", "interrupted"}
+            for item in self.queue.all_items(include_terminal=False)
+        )
+        plan_mode = str(self.plan.get("mode") or "") if self.plan else ""
+        try:
+            plan_target = int(self.plan.get("target") or 0) if self.plan else 0
+        except (TypeError, ValueError):
+            plan_target = 0
+        plan_demand = bool(
+            self.desired_state == "running"
+            and self.plan
+            and self.plan.get("project_ids")
+            and (plan_mode == "continuous" or plan_target > self.in_hand_count())
+        )
+        waiting = bool(demand["waiting"] or demand["extra"] or pending or plan_demand)
+        full = int(demand["used"]) >= self.effective_container_limit
+        adjustment = self.elastic.adjust(now=now, full=full, waiting=waiting)
+        if adjustment is None:
+            return
+        self._configure_pools()
+        level = "warn" if adjustment.action in {"down", "rate_limited_at_floor"} else "info"
+        event = f"elastic.{adjustment.action}"
+        self.repo.add_event(
+            event,
+            adjustment.reason,
+            level=level,
+            actor="dispatch",
+            details={
+                "action": adjustment.action,
+                "previous": adjustment.previous,
+                "current": adjustment.current,
+                "floor": self.elastic.floor,
+                "ceiling": self.elastic.ceiling,
+            },
+        )
+        if adjustment.current != adjustment.previous:
+            await self.sync_skill_limit(sync=True)
+            self.bus.publish(
+                "dispatch.limit",
+                {"effective": self.effective_container_limit, "changed": {"elastic": adjustment.action}},
+            )
+        self._publish()
 
     def _configure_pools(self) -> None:
         agents = self.effective_session_limit
@@ -1120,9 +1264,10 @@ class Dispatcher:
     async def _facts_loop(self, name: str, interval: float) -> None:
         while not self._stopping:
             async with self.health.beat(name):
-                self._fact_snapshot = await self.facts.snapshot(force=True)
+                self._fact_snapshot = await self.facts.snapshot()
                 self.pools_book.occupy_from_facts(self._fact_snapshot)
                 self._sync_runtime_pools()
+                await self._step_elastic()
                 self._configure_pools()
                 self._check_clock()
             await asyncio.sleep(interval)
@@ -1183,12 +1328,14 @@ class Dispatcher:
 
     async def _refresh_waits(self) -> None:
         ordered = self.queue.ordered()
+        changed = False
         for index, item in enumerate(ordered):
             decision = self._decision_for(item, queue_head=index == 0)
             text = decision.text or (f"排队第 {index + 1} 位" if index else "可启动")
             code = decision.code or ("queue.waiting" if index else "gate.ready")
             if item.wait_code != code or item.wait_text != text or item.wait_until != decision.until:
                 self.queue.update(item.task_id, wait_code=code, wait_text=text, wait_until=decision.until)
+                changed = True
                 if index == 0 or decision.code not in {"capacity.full", "spacing", "startup.grace"}:
                     self._event_once(
                         f"wait:{item.task_id}:{code}",
@@ -1197,7 +1344,10 @@ class Dispatcher:
                         task_id=item.task_id,
                         details={"code": code, "gate": decision.gate},
                     )
-        self._publish()
+        # 倒计时文本未变化时 2 秒一轮仍会无条件推送事件，浏览器会因此反复
+        # 失效并重拉所有查询。只在队列事实确实变化时通知。
+        if changed:
+            self._publish()
 
     def _release_hold(self, source: str, *, actor: str) -> Hold | None:
         hold = self.holds.release(source, actor=actor)

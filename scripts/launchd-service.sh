@@ -6,8 +6,13 @@ LABEL="com.gaobo.solo-auto"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 PYTHON="$ROOT/backend/.venv/bin/python"
 NPM=$(command -v npm || true)
+PYTHON_BIN=$(command -v python3 || true)
+PYTHON_DIR=""
+if [ -n "$PYTHON_BIN" ]; then
+  PYTHON_DIR=$(dirname "$PYTHON_BIN")
+fi
 LOG_DIR="${SOLO_AUTO_HOME:-$HOME/solo-auto}/logs"
-SERVICE_PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+SERVICE_PATH="$HOME/.codex/solo-2611/.venv/bin:${PYTHON_DIR:+$PYTHON_DIR:}$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 if [ "${1:-}" = "uninstall" ]; then
   launchctl bootout "gui/$(id -u)" "$PLIST" >/dev/null 2>&1 || true
@@ -61,4 +66,4 @@ launchctl bootout "gui/$(id -u)" "$PLIST" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 launchctl enable "gui/$(id -u)/$LABEL"
 launchctl kickstart -k "gui/$(id -u)/$LABEL"
-printf '已安装并启动 %s；仅监听配置中的 127.0.0.1 地址\n' "$LABEL"
+printf '已安装并启动 %s；仅监听配置中的绑定地址（默认 127.0.0.1）\n' "$LABEL"

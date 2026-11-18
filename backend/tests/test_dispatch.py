@@ -77,8 +77,10 @@ disk_floor_gb = 42
     assert reloaded.dispatch.containers == 5
     assert reloaded.dispatch.max_tasks == 7
     saved = tomllib.loads(paths.config.read_text(encoding="utf-8"))["dispatch"]
-    for stale in ("preset", "elastic", "in_hand", "sessions", "authoring", "launch_spacing_seconds"):
+    for stale in ("preset", "in_hand", "sessions", "authoring", "launch_spacing_seconds"):
         assert stale not in saved
+    assert saved["elastic"]["enabled"] is False
+    assert saved["elastic"]["ceiling"] == 8
     assert reloaded._dispatch_migrated is False
 
 
@@ -385,7 +387,7 @@ async def test_dispatch_api_queue_and_explain(
             queued = await client.post("/api/dispatch/queue", json={"task_ids": [task_id], "front": True})
             assert queued.status_code == 200
             assert queued.json()["added"] == [task_id]
-            snapshot = (await client.get("/api/dispatch")).json()
+            snapshot = (await client.get("/api/dispatch", params={"compact": False})).json()
             assert snapshot["counts"]["all"] == 1
             assert snapshot["queue"][0]["task_id"] == task_id
             upcoming = snapshot["upcoming"]
@@ -402,9 +404,13 @@ async def test_dispatch_api_queue_and_explain(
             for action in ("retry", "quarantine", "ignore", "keep"):
                 gone = await client.post(f"/api/dispatch/queue/{task_id}/{action}")
                 assert gone.status_code in {404, 405}
-            limits = (await client.get("/api/dispatch")).json()["limits"]
-            assert set(limits) == {"mode", "containers", "max_tasks", "create_cooldown_seconds", "recording", "skill_limit", "synced"}
-            assert "preset" not in snapshot and "elastic" not in snapshot
+            limits = (await client.get("/api/dispatch", params={"compact": False})).json()["limits"]
+            assert set(limits) == {
+                "mode", "containers", "effective_containers", "elastic", "max_tasks",
+                "create_cooldown_seconds", "recording", "skill_limit", "synced",
+            }
+            assert "preset" not in snapshot
+            assert snapshot["elastic"]["current"] == 4
     finally:
         await context.shutdown()
 
@@ -522,6 +528,120 @@ async def test_dispatch_mode_switches_through_the_limits_api(
         assert kernel.creation_view()["mode"] == "tasks"
         saved = tomllib.loads(context.paths.config.read_text(encoding="utf-8"))["dispatch"]
         assert saved["mode"] == "tasks" and saved["max_tasks"] == 6
+    finally:
+        await context.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_compact_snapshot_caps_history_and_skips_capacity_timeline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = await _v3_context(tmp_path, monkeypatch)
+    try:
+        kernel = context.dispatcher
+        for index in range(30):
+            task_id = f"finished-{index}"
+            kernel.queue.enqueue(task_id)
+            kernel.queue.update(task_id, status="done")
+
+        compact = kernel.snapshot(compact=True)
+        assert compact["counts"]["finished"] == 30
+        assert len(compact["queue"]) == 20
+        assert compact["capacity"]["items"] == []
+
+        overview = kernel.snapshot(compact=True, include_queue=False)
+        assert overview["counts"]["finished"] == 30
+        assert overview["queue"] == []
+    finally:
+        await context.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_elastic_limits_apply_to_the_pool_and_are_persisted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = await _v3_context(tmp_path, monkeypatch)
+    synced: list[int] = []
+
+    async def fake_sync(*, sync: bool = True) -> dict[str, Any]:
+        synced.append(context.dispatcher.effective_container_limit)
+        return {"synced": True, "requested": context.dispatcher.effective_container_limit}
+
+    monkeypatch.setattr(context.dispatcher, "sync_skill_limit", fake_sync)
+    try:
+        kernel = context.dispatcher
+        result = await kernel.update_limits(
+            {"containers": 4, "elastic": {"enabled": True, "ceiling": 6}}
+        )
+        assert result["snapshot"]["limits"]["elastic"]["enabled"] is True
+        assert result["snapshot"]["limits"]["effective_containers"] == 4
+        assert kernel.pools_book.snapshot()["containers"]["limit"] == 4
+        kernel.elastic.state.limit = 6
+        kernel.elastic._save()
+        kernel._configure_pools()
+        assert kernel.effective_container_limit == 6
+        assert kernel.pools_book.snapshot()["containers"]["limit"] == 6
+        await kernel.sync_skill_limit(sync=True)
+        assert synced[-1] == 6
+        saved = tomllib.loads(context.paths.config.read_text(encoding="utf-8"))["dispatch"]
+        assert saved["elastic"]["enabled"] is True
+        assert saved["elastic"]["ceiling"] == 6
+    finally:
+        await context.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_elastic_steps_up_when_full_with_planned_demand(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = await _v3_context(tmp_path, monkeypatch)
+
+    async def fake_sync(*, sync: bool = True) -> dict[str, Any]:
+        return {"synced": True, "requested": context.dispatcher.effective_container_limit}
+
+    monkeypatch.setattr(context.dispatcher, "sync_skill_limit", fake_sync)
+    try:
+        kernel = context.dispatcher
+        kernel.config.elastic.enabled = True
+        kernel.config.elastic.ceiling = 5
+        kernel.elastic.update_settings(kernel.config)
+        kernel.plan = {"mode": "continuous", "target": 0, "project_ids": ["project-1"]}
+        kernel._fact_snapshot = FactsSnapshot(
+            docker=DockerFacts(
+                known=True,
+                healthy=True,
+                containers=frozenset({"one", "two", "three", "four"}),
+                observed_at=time.monotonic(),
+            ),
+            disk_free_gb=100,
+            observed_at=time.monotonic(),
+        )
+        kernel.elastic.state.limit = 4
+        kernel.elastic.state.last_change_at = kernel.clock.wall().timestamp() - 301
+        await kernel._step_elastic()
+        assert kernel.effective_container_limit == 5
+        assert kernel.pools_book.snapshot()["containers"]["limit"] == 5
+        events = [row["action"] for row in context.repo.events(limit=50)]
+        assert "elastic.up" in events
+    finally:
+        await context.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_invalid_elastic_limit_does_not_mutate_the_running_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = await _v3_context(tmp_path, monkeypatch)
+    try:
+        kernel = context.dispatcher
+        before = kernel.config.model_dump()
+        with pytest.raises(ValueError, match="弹性上限不能小于最大容器数"):
+            await kernel.update_limits({"containers": 6, "elastic": {"enabled": True, "ceiling": 5}})
+        assert kernel.config.model_dump() == before
     finally:
         await context.shutdown()
 
