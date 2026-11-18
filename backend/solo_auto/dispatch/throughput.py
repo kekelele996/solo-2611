@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from solo_auto.pipeline.platform_result import platform_receipt
 from solo_auto.store.repo import Repository
 
 
@@ -89,11 +90,17 @@ class ThroughputLedger:
     def summary(self, hours: int = 24) -> dict[str, Any]:
         cutoff = (datetime.now(UTC) - timedelta(hours=max(1, hours))).isoformat()
         rows = self.repo.query(
-            "SELECT * FROM dispatch_outcomes WHERE finished_at >= ? ORDER BY finished_at",
+            "SELECT * FROM dispatch_outcomes WHERE finished_at >= ? ORDER BY finished_at, rowid",
             (cutoff,),
         )
-        completed = sum(1 for row in rows if row["outcome"] in {"done", "awaiting_audit"})
-        failed = sum(1 for row in rows if row["outcome"] in {"failed", "quarantined"})
+        latest = {row["task_id"]: row for row in rows}
+        rows = list(latest.values())
+        cutoff_ts = datetime.fromisoformat(cutoff).timestamp()
+        completed = sum(1 for task in self.repo.query("SELECT task_root FROM tasks")
+                        if (receipt := platform_receipt(task["task_root"]))[0] == "qc_passed"
+                        and receipt[1] is not None and receipt[1] >= cutoff_ts)
+        recovering = {row["task_id"] for row in self.repo.query("SELECT task_id FROM dispatch_items WHERE status IN ('backoff','queued','launching','active')")}
+        failed = sum(row["outcome"] in {"failed", "quarantined"} and row["task_id"] not in recovering for row in rows)
         quarantined = sum(1 for row in rows if row["outcome"] == "quarantined")
         fields = ("authoring_s", "running_s", "delivering_s", "recording_s", "exporting_s")
         medians = {
@@ -133,9 +140,6 @@ class ThroughputLedger:
 
     def _utilization(self, hours: int) -> float:
         cutoff = (datetime.now(UTC) - timedelta(hours=max(1, hours))).isoformat()
-        rows = self.repo.query(
-            "SELECT occupied, limit_effective FROM dispatch_capacity WHERE at >= ?",
-            (cutoff,),
-        )
-        capacity = sum(int(row["limit_effective"]) for row in rows)
-        return round(sum(int(row["occupied"]) for row in rows) / capacity, 3) if capacity else 0.0
+        totals = self.repo.query_one("SELECT SUM(occupied) AS used, SUM(limit_effective) AS capacity FROM dispatch_capacity WHERE at >= ?", (cutoff,)) or {}
+        capacity = int(totals.get("capacity") or 0)
+        return round(int(totals.get("used") or 0) / capacity, 3) if capacity else 0.0

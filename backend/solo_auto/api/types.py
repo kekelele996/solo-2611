@@ -143,7 +143,7 @@ class RevealRequest(BaseModel):
 
 
 class ConfigTestRequest(BaseModel):
-    target: Literal["skill", "source", "docker", "solo2", "api"]
+    target: Literal["skill", "source", "docker", "solo2", "github", "api"]
 
 
 class SourceConfigPatch(BaseModel):
@@ -236,18 +236,26 @@ class NotifyConfigPatch(BaseModel):
 
 
 class Solo2ConfigPatch(BaseModel):
+    locked_domain: Literal["", "安全", "游戏、图形与多媒体", "数据工程"] | None = None
     base_url: str | None = None
     username: str | None = None
     timeout_seconds: float | None = None
 
 
+class SkillConfigPatch(BaseModel):
+    base_url: str | None = None
+
+
 class SecretConfigPatch(BaseModel):
+    gateway_key: str | None = None
+    github_token: str | None = None
     source_password: str | None = None
     source_bearer: str | None = None
     solo2_password: str | None = None
 
 
 class ConfigPatchRequest(BaseModel):
+    skill: SkillConfigPatch | None = None
     host: Literal["127.0.0.1"] | None = None
     port: int | None = None
     skill_root: str | None = None

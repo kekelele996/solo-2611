@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from solo_auto.account_access import AccountAccess
 from solo_auto.auto_dispose import AutoDisposer
 from solo_auto.config_watch import ConfigWatcher
 from solo_auto.dispatch.facts import docker_info_ok
@@ -54,11 +55,15 @@ class AppContext:
         if not self.paths.config.exists():
             save_settings(self.paths, self.settings)
         configure_logging(self.paths.logs)
-        self.secrets = SecretStore(self.paths.home)
+        self.secrets = SecretStore(self.paths.home, self.settings.active_profile)
+        self.profile_lock = asyncio.Lock()
+        self.account_access = AccountAccess(self.paths.home)
         if not self.settings.notify.webhook_url:
             self.settings.notify.webhook_url = self.secrets.get("notify.webhook") or ""
         self.spec = load_spec(self.settings.skill_root)
         self.gateway = SkillGateway(self.settings.skill_root, self.paths.skill_logs)
+        self.gateway.app_home = self.paths.home
+        self.gateway.workbench_port = self.settings.port
         self.repo = Repository(self.paths.database)
         self.bus = EventBus()
         self.dispatcher = Dispatcher(
@@ -93,7 +98,7 @@ class AppContext:
             self.settings.tasks_dir,
             gateway=self.gateway,
         )
-        self.staging = StagingManager(self.paths)
+        self.staging = StagingManager(self.paths, self.settings.active_profile)
         self.source = ProjectHubClient(self.settings.source, self.secrets)
         self.solo2 = Solo2Client(self.settings.solo2, self.secrets)
         self.watcher = StateWatcher(self.settings.tasks_dir)
@@ -165,6 +170,7 @@ class AppContext:
             feedback=self.feedback,
             exports=self.exports,
             settings=self.settings.autopilot,
+            submission=self.settings.submission,
             gateway=self.gateway,
             dispatcher=self.dispatcher,
         )
@@ -291,11 +297,15 @@ class AppContext:
     async def _source_loop(self) -> None:
         while True:
             was_online = self.source_online
+            source = self.source
             try:
-                await self.source.list_projects()
-                self.source_online = True
+                await source.list_projects()
+                online = True
             except Exception:
-                self.source_online = False
+                online = False
+            if self.source is not source:
+                continue
+            self.source_online = online
             if was_online and not self.source_online:
                 self.notifier.notify(title="solo-auto 题源离线", status="题源会话已过期或服务不可达")
             self.bus.publish(
@@ -312,20 +322,23 @@ class AppContext:
         while True:
             try:
                 self.repo.prune_events(self.settings.storage.event_retention_days)
-                cutoff = (
-                    datetime.now().timestamp()
-                    - self.settings.storage.skill_log_retention_days * 86400
-                )
-                for path in self.paths.skill_logs.rglob("*.log"):
-                    if path.stat().st_mtime < cutoff:
-                        path.unlink(missing_ok=True)
+                await asyncio.to_thread(self._prune_expired_skill_logs)
             except Exception:
                 LOGGER.exception("retention cleanup failed")
             await asyncio.sleep(3600)
 
+    def _prune_expired_skill_logs(self) -> None:
+        cutoff = (
+            datetime.now().timestamp()
+            - self.settings.storage.skill_log_retention_days * 86400
+        )
+        for path in self.paths.skill_logs.rglob("*.log"):
+            if path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+
     async def system_status(self) -> dict[str, Any]:
         if self.dispatcher.v3_enabled:
-            snapshot = self.dispatcher.snapshot(compact=True, include_queue=False)
+            snapshot = self.dispatcher.status_summary()
             raw_pools = snapshot.get("pools")
             pools = raw_pools if isinstance(raw_pools, dict) else {}
             raw_containers = pools.get("containers")
@@ -400,6 +413,28 @@ class AppContext:
             return proc.stdout.strip() if proc.returncode == 0 else "unknown"
         except OSError:
             return "unknown"
+
+    async def release_profile_claim(self, meta: dict[str, Any]) -> None:
+        owner = str(meta.get("profileId") or "default")
+        args = (str(meta["projectId"]), str(meta["engineeringId"]), str(meta["claimId"]))
+        if owner == self.settings.active_profile:
+            await self.source.release(*args)
+            return
+        profile = self.settings.profiles[owner]
+        client = ProjectHubClient(profile.source, SecretStore(self.paths.home, owner))
+        try:
+            await client.release(*args)
+        finally:
+            await client.close()
+
+    def replace_source(self, source: ProjectHubClient) -> None:
+        self.source = self.preflight.source = self.intake.source = self.dispatcher.source = source
+        self.source_online = False
+        self.intake.clear_preview()
+        self.ledger = UsageLedger(self.repo, source.settings.base_url)
+        self.tasks.attach_ledger(self.ledger)
+        self.autopilot.attach_ledger(self.ledger)
+        self.batch.ledger = self.intake.ledger = self.scheduler.ledger = self.ledger
 
     def save_settings(self) -> None:
         save_settings(self.paths, self.settings)

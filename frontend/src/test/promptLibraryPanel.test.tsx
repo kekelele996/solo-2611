@@ -65,7 +65,7 @@ describe("PromptLibraryPanel", () => {
     );
 
     expect(await screen.findByText("GB-544")).toBeTruthy();
-    expect(screen.getByText("订单对账")).toBeTruthy();
+    expect(await screen.findByText("订单对账")).toBeTruthy();
     expect(screen.getByText("按来源时间合并订单，重复执行不能新增记录。")).toBeTruthy();
     expect(screen.getByText(/2 个工程/)).toBeTruthy();
 

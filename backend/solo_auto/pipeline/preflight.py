@@ -59,17 +59,14 @@ class Preflight:
 
     async def run(self) -> dict[str, Any]:
         skill_version = await self.gateway.version()
-        skill_config = await self.gateway.config()
         docker_ok, source_result, api_result = await asyncio.gather(
             _docker_ok(),
             self.source.test(),
             self.probe_api(),
         )
         disk_free = shutil.disk_usage(self.paths.home).free / 1024**3
-        raw_claude = skill_config.get("claude")
-        raw_github = skill_config.get("github")
-        claude: dict[str, Any] = raw_claude if isinstance(raw_claude, dict) else {}
-        github: dict[str, Any] = raw_github if isinstance(raw_github, dict) else {}
+        github_ready = self.secrets.has("github.token")
+        model_ready = bool(self.secrets.has("model.key") and self.settings.skill.base_url)
         template_errors = [
             f"{item['stage']}: {'；'.join(item['errors'])}"
             for item in self.templates.validate()
@@ -108,15 +105,15 @@ class Preflight:
             ),
             _item(
                 "github_token",
-                bool(self.secrets.get("github.token") or github.get("accessTokens")),
-                "GitHub Token 已配置" if self.secrets.get("github.token") or github.get("accessTokens") else "GitHub Token 未配置",
-                "在技能配置中设置 github.accessTokens",
+                github_ready,
+                "GitHub Token 已配置" if github_ready else "GitHub Token 未配置",
+                "在工作台设置中保存或迁入 GitHub 凭据",
             ),
             _item(
                 "gateway_key",
-                bool(claude.get("apiKey") and claude.get("baseUrl")),
-                "网关 Key 已配置" if claude.get("apiKey") and claude.get("baseUrl") else "网关 Key 或地址缺失",
-                "运行 solo2611 config set claude.baseUrl=<地址> claude.apiKey=<团队 Key>",
+                model_ready,
+                "网关 Key 已配置" if model_ready else "网关 Key 或地址缺失",
+                "在工作台设置中保存模型网关地址和密钥",
             ),
             _item(
                 "gateway_probe",

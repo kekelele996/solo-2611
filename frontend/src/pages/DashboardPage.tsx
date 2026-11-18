@@ -3,32 +3,33 @@ import { ArrowRight, CalendarDays, Play, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { api } from "../api/client";
+import { api, downloadExport } from "../api/client";
 import { AutopilotPanel } from "../components/AutopilotPanel";
 import { InboxPanel } from "../components/InboxPanel";
 import type { TaskRow } from "../api/types";
 import { useToast } from "../components/toast-context";
 import { Button, EmptyState, ErrorPanel, LoadingLines, Panel, StatusDot } from "../components/ui";
 import { errorText, formatDuration, statusLabel } from "../utils/display";
-import { formatDateTime, todayShanghai } from "../utils/time";
+import { todayShanghai } from "../utils/time";
 
 export function DashboardPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const today = todayShanghai();
+  const [historyOpen, setHistoryOpen] = useState(false);
   const tasks = useQuery({
     queryKey: ["tasks", "dashboard"],
     queryFn: () => api.tasks({ page_size: 200 }),
-    refetchInterval: 3000,
+    refetchInterval: 10_000,
   });
   const status = useQuery({
     queryKey: ["system-status"],
     queryFn: api.systemStatus,
-    refetchInterval: 3000,
+    staleTime: 10_000,
   });
-  const queue = useQuery({ queryKey: ["queue"], queryFn: api.queue, refetchInterval: 3000 });
-  const batches = useQuery({ queryKey: ["batches"], queryFn: api.batches, refetchInterval: 5000 });
+  const counts = useQuery({ queryKey: ["task-counts"], queryFn: api.taskCounts, refetchInterval: 10_000 });
+
 
   const grouped = useMemo(() => {
     const rows = tasks.data?.items ?? [];
@@ -42,29 +43,14 @@ export function DashboardPage() {
     };
   }, [tasks.data?.items]);
 
-  const metrics = useMemo(() => {
-    const rows = tasks.data?.items ?? [];
-    const exportedToday = (batches.data?.items ?? [])
-      .filter((batch) => formatDateTime(batch.created_at).slice(0, 10) === today)
-      .reduce((sum, batch) => sum + (batch.rows || batch.task_ids.length), 0);
-    const waiting = rows.filter((task) =>
-      ["authored", "prompt_ok", "ready", "ran", "recorded", "reviewed"].includes(task.job_status),
-    ).length;
-    const durations = rows
-      .filter((task) => task.exported_at && task.created_at)
-      .map((task) => (new Date(task.exported_at ?? "").getTime() - new Date(task.created_at).getTime()) / 60_000)
-      .filter((minutes) => Number.isFinite(minutes) && minutes >= 0);
-    const average = durations.length
-      ? formatDuration((durations.reduce((sum, minutes) => sum + minutes, 0) / durations.length) * 60)
-      : "—";
-    return {
-      exported: exportedToday,
-      running: status.data?.running ?? 0,
-      waiting,
-      blocked: status.data?.blocked ?? 0,
-      average,
-    };
-  }, [batches.data?.items, status.data, tasks.data?.items, today]);
+  const queue = useQuery({ queryKey: ["queue"], queryFn: api.queue, enabled: grouped.active.length > 0, refetchInterval: 5000 });
+  const averageSeconds = counts.data?.average_seconds ?? -1;
+  const metrics = {
+    running: status.data?.running ?? 0,
+    waiting: counts.data?.waiting ?? "—",
+    blocked: status.data?.blocked ?? 0,
+    average: averageSeconds >= 0 ? formatDuration(averageSeconds) : "—",
+  };
 
   const batchReady = useMutation({
     mutationFn: async () => {
@@ -87,7 +73,7 @@ export function DashboardPage() {
       if (result.rows) toast(`导出了 ${result.rows} 行，跳过 ${result.skipped.length} 题`, result.skipped.length ? "warn" : "ok");
       else toast(`今天没有可导出的任务，跳过 ${result.skipped.length} 题`, "warn");
       void queryClient.invalidateQueries();
-      void navigate("/export");
+      if (result.file) downloadExport(result.file);
     },
     onError: (error) => toast(errorText(error), "error"),
   });
@@ -110,16 +96,21 @@ export function DashboardPage() {
           >
             <Play size={14} /> 批量排队{readyCount ? ` · ${readyCount}` : ""}
           </Button>
-          <Button variant="primary" onClick={() => exportToday.mutate()} loading={exportToday.isPending}>
+          <Button onClick={() => exportToday.mutate()} loading={exportToday.isPending}>
             <Upload size={14} /> 导出今日
           </Button>
+          <Link className="button button-primary button-default" to="/dispatch">查看任务队列 <ArrowRight size={14} /></Link>
         </div>
       </header>
 
       <InboxPanel />
 
       <div className="metric-strip">
-        <Metric label="今日批次题数" value={metrics.exported} />
+        <Metric label="平台已通过" value={counts.data?.passed ?? "—"} />
+        <Metric label="审核中" value={counts.data?.submitted ?? "—"} />
+        <Metric label="已导出待提交" value={counts.data?.exported ?? "—"} />
+        <Metric label="平台废弃" value={counts.data?.discarded ?? "—"} />
+        <Metric label="重试中" value={counts.data?.retrying ?? "—"} />
         <Metric label="运行中" value={metrics.running} />
         <Metric label="待处理" value={metrics.waiting} />
         <Metric label="卡住" value={metrics.blocked} tone={metrics.blocked ? "danger" : undefined} />
@@ -148,9 +139,9 @@ export function DashboardPage() {
         <TaskGroup title="待处理" tasks={grouped.pending} onOpen={(id) => { void navigate(`/tasks/${id}`); }} />
       ) : null}
       {grouped.completed.length ? (
-        <details className="completed-group">
-          <summary>已完成与归档 · {grouped.completed.length}</summary>
-          <TaskGroup title="" tasks={grouped.completed} onOpen={(id) => { void navigate(`/tasks/${id}`); }} />
+        <details className="completed-group" onToggle={(event) => setHistoryOpen(event.currentTarget.open)}>
+          <summary>已导出与归档 · {grouped.completed.length}</summary>
+          {historyOpen && <TaskGroup title="" tasks={grouped.completed} onOpen={(id) => { void navigate(`/tasks/${id}`); }} />}
         </details>
       ) : null}
     </div>
@@ -258,5 +249,6 @@ function nextAction(task: TaskRow): string {
     archived: "查看存档",
     orphan: "查看状态丢失原因",
   };
-  return mapping[task.job_status] ?? "继续处理";
+  const label = mapping[task.job_status] ?? "继续处理";
+  return task.stage_started_at ? `${label} · 当前阶段 ${formatDuration(Math.max(0, (Date.now() - Date.parse(task.stage_started_at)) / 1000))}` : label;
 }

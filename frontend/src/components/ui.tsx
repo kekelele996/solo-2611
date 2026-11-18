@@ -518,11 +518,13 @@ export function TabBar<T extends string>({
   value,
   onChange,
   label,
+  shortcuts = true,
 }: {
   tabs: ReadonlyArray<readonly [T, string]>;
   value: T;
   onChange: (value: T) => void;
   label: string;
+  shortcuts?: boolean;
 }) {
   const buttons = useRef(new Map<string, HTMLButtonElement>());
   const [bar, setBar] = useState({ x: 0, width: 0 });
@@ -554,7 +556,7 @@ export function TabBar<T extends string>({
             buttons.current.get(next)?.focus();
           }}
         >
-          <kbd>{index + 1}</kbd>
+          {shortcuts && <kbd>{index + 1}</kbd>}
           {text}
         </button>
       ))}

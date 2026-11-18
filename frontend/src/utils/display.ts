@@ -1,3 +1,14 @@
+import type { DispatchSnapshot } from "../api/types";
+
+export const DISPATCH_STATE_LABEL: Record<DispatchSnapshot["effective_state"], string> = {
+  running: "运行中",
+  paused: "已暂停",
+  draining: "排空中",
+  held: "已自动挂起",
+  degraded: "部分受限",
+  idle: "空闲",
+};
+
 export function formatNames(values: unknown): string {
   if (!Array.isArray(values)) return "";
   return values

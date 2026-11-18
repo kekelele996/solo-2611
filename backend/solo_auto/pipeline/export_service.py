@@ -50,9 +50,10 @@ class ExportService:
             tasks, _ = self.repo.list_tasks(date=date, page=1, page_size=1000)
         selected: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
+        duplicates = self.repo.session_counts()
         for task in tasks:
             root = Path(task["task_root"])
-            evaluation = evaluate_steps(root, duplicate_sessions=self.repo.session_counts())
+            evaluation = evaluate_steps(root, duplicate_sessions=duplicates)
             # 第 11 项就是本次要生成的 Excel，导出前只要求前十项通过
             blockers = [step for step in evaluation.steps[:10] if not step.ok]
             if blockers:
@@ -60,7 +61,7 @@ class ExportService:
                 skipped.append({"task_id": task["id"], "task": task["task_name"], "reason": reasons})
                 continue
             export_result = await self.gateway.call(
-                ["export", "--task-root", str(root)],
+                ["export", "--task-root", str(root), "--no-submit"],
                 timeout=300,
                 task_id=task["id"],
             )
@@ -87,7 +88,7 @@ class ExportService:
         if not selected:
             return {"file": "", "rows": 0, "skipped": skipped}
         self.paths.exports.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         target = self.paths.exports / f"交付表-{date or stamp}-{stamp}.xlsx"
         with tempfile.TemporaryDirectory(prefix="solo-auto-export-") as temp:
             temp_root = Path(temp)

@@ -94,19 +94,9 @@ class BatchService:
                             "message": f"表内引用文件不存在：{path}",
                         }
                     )
-            audit = self.repo.audit(task_id)
             ack_by = str(task.get("ack_by") or "")
             if ack_by != "user":
                 unaudited += 1
-            if audit and audit.get("sampled") and audit.get("verdict") != "pass":
-                blockers.append(
-                    {
-                        "code": "AUDIT_NOT_PASSED",
-                        "task_id": task_id,
-                        "task": task["task_name"],
-                        "message": "被抽中但尚未通过人工抽检",
-                    }
-                )
             if not include_exported and self.repo.task_in_any_batch(task_id):
                 blockers.append(
                     {

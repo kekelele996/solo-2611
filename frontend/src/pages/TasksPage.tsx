@@ -3,7 +3,7 @@ import { Archive, Bot, Columns3, ListFilter, Play, Search, ShieldCheck, Trash2, 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
-import { api } from "../api/client";
+import { api, downloadExport } from "../api/client";
 import { AutopilotPanel } from "../components/AutopilotPanel";
 import { PurgeModal } from "../components/PurgeModal";
 import type { TaskRow } from "../api/types";
@@ -64,26 +64,13 @@ export function TasksPage() {
   const status = params.get("status") ?? "";
   const q = params.get("q") ?? "";
   const view = params.get("view") ?? "";
+  const page = Math.max(1, Number(params.get("page")) || 1);
   const tasks = useQuery({
-    queryKey: ["tasks", status, q],
-    queryFn: () => api.tasks({ status, q, page_size: 200 }),
+    queryKey: ["tasks", status, q, view, page],
+    queryFn: () => api.tasks({ status, q, view, page, page_size: 50 }),
     refetchInterval: 3000,
   });
-  const audits = useQuery({ queryKey: ["audits", "pending"], queryFn: () => api.audits("pending"), refetchInterval: 5000 });
-  const pilot = useQuery({ queryKey: ["autopilot"], queryFn: api.autopilot, refetchInterval: 5000 });
-  const auditIds = useMemo(() => new Set((audits.data?.items ?? []).map((item) => item.task_id)), [audits.data?.items]);
-  const failedIds = useMemo(
-    () => new Set((pilot.data?.jobs ?? []).filter((job) => job.stage === "failed").map((job) => job.task_id)),
-    [pilot.data?.jobs],
-  );
-  const rows = useMemo(() => {
-    const items = tasks.data?.items ?? [];
-    if (view === "audit") return items.filter((task) => auditIds.has(task.id));
-    if (view === "missing") return items.filter((task) => task.presence === "missing");
-    if (view === "legacy") return items.filter((task) => isLegacy(task));
-    if (view === "failed") return items.filter((task) => failedIds.has(task.id) || task.job_status === "blocked");
-    return items;
-  }, [auditIds, failedIds, tasks.data?.items, view]);
+  const rows = useMemo(() => tasks.data?.items ?? [], [tasks.data?.items]);
   const legacyRows = useMemo(() => rows.filter((task) => isLegacy(task)), [rows]);
   const mainRows = useMemo(() => (view ? rows : rows.filter((task) => !isLegacy(task))), [rows, view]);
   const refetch = tasks.refetch;
@@ -150,6 +137,7 @@ export function TasksPage() {
       if (event.key === "Escape") setSelected(new Set());
       if (event.key === "f") {
         const next = new URLSearchParams(params);
+        next.delete("page");
         if (status === "blocked") next.delete("status");
         else next.set("status", "blocked");
         setParams(next);
@@ -213,7 +201,7 @@ export function TasksPage() {
       }
       toast(`已导出 ${result.rows} 行，跳过 ${result.skipped.length} 题`, result.skipped.length ? "warn" : "ok");
       settle({ done: [...selected].filter((id) => !skipped.has(id)), failed: skipped });
-      if (!result.skipped.length) void navigate("/export");
+      if (result.file) downloadExport(result.file);
     },
     onError: (error) => toast(errorText(error), "error"),
   });
@@ -276,12 +264,18 @@ export function TasksPage() {
 
   const updateFilter = (key: string, value: string) => {
     const next = new URLSearchParams(params);
+    if (key !== "page") next.delete("page");
+    setSelected(new Set());
+    setCursor(0);
     if (value) next.set(key, value);
     else next.delete(key);
     setParams(next, { replace: key === "q" });
   };
   const updateView = (nextView: string) => {
     const next = new URLSearchParams(params);
+    next.delete("page");
+    setSelected(new Set());
+    setCursor(0);
     if (nextView) next.set("view", nextView);
     else next.delete("view");
     setParams(next);
@@ -352,7 +346,6 @@ export function TasksPage() {
       </div>
       <div className="saved-views" aria-label="保存的筛选视图">
         <button type="button" data-active={!view || undefined} onClick={() => updateView("")}>全部</button>
-        <button type="button" data-active={view === "audit" || undefined} onClick={() => updateView("audit")}>待抽检</button>
         <button type="button" data-active={view === "failed" || undefined} onClick={() => updateView("failed")}>失败</button>
         <button type="button" data-active={view === "legacy" || undefined} onClick={() => updateView("legacy")}>旧版遗留</button>
         <button type="button" data-active={view === "missing" || undefined} onClick={() => updateView("missing")}>目录缺失</button>
@@ -395,6 +388,11 @@ export function TasksPage() {
         </div>
       ) : null}
 
+      {tasks.data && (tasks.data.total > 50 || page > 1) ? <div className="row-actions">
+        <Button disabled={page <= 1} onClick={() => updateFilter("page", String(page - 1))}>上一页</Button>
+        <span>第 {page} 页 · 共 {tasks.data.total} 题</span>
+        <Button disabled={page * 50 >= tasks.data.total} onClick={() => updateFilter("page", String(page + 1))}>下一页</Button>
+      </div> : null}
       <AutopilotPanel />
 
       {tasks.isError ? <ErrorPanel error={tasks.error} onRetry={() => { void tasks.refetch(); }} /> : null}
@@ -441,7 +439,6 @@ export function TasksPage() {
                   selected={selected.has(task.id)}
                   flash={flash.has(task.id)}
                   failure={failed.get(task.id)}
-                  auditPending={auditIds.has(task.id)}
                   onSelect={() => toggle(task.id)}
                   onOpen={() => {
                     setCursor(index);
@@ -519,7 +516,6 @@ function TaskTableRow({
   selected,
   flash,
   failure,
-  auditPending,
   onSelect,
   onOpen,
 }: {
@@ -528,7 +524,6 @@ function TaskTableRow({
   selected: boolean;
   flash: boolean;
   failure?: string;
-  auditPending: boolean;
   onSelect: () => void;
   onOpen: () => void;
 }) {
@@ -544,7 +539,6 @@ function TaskTableRow({
         <strong className="ellipsis" title={task.task_name}>{task.task_name}</strong>
         <span className="task-inline-badges">
           {task.ack_by === "autopilot" ? <Badge tone="info">自动</Badge> : null}
-          {auditPending ? <Badge tone="warn">待抽检</Badge> : null}
           {isLegacy(task) ? <Badge tone="warn">旧版</Badge> : null}
           {task.presence === "missing" ? <Badge tone="danger">目录缺失</Badge> : null}
         </span>

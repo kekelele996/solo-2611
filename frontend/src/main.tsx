@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { lazy, StrictMode, Suspense } from "react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { createBrowserRouter, RouterProvider } from "react-router-dom";
+import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom";
 
 import { AppShell, NotFoundPage } from "./components/AppShell";
 import { ToastProvider } from "./components/toast";
@@ -17,13 +17,13 @@ const TaskDetailPage = lazy(() =>
   import("./pages/TaskDetailPage").then((module) => ({ default: module.TaskDetailPage })),
 );
 const SourcePage = lazy(() => import("./pages/SourcePage").then((module) => ({ default: module.SourcePage })));
-const ExportPage = lazy(() => import("./pages/ExportPage").then((module) => ({ default: module.ExportPage })));
+
 const SystemPage = lazy(() => import("./pages/SystemPage").then((module) => ({ default: module.SystemPage })));
 const DispatchPage = lazy(() => import("./pages/DispatchPage").then((module) => ({ default: module.DispatchPage })));
 const DispatchLogPage = lazy(() =>
   import("./pages/DispatchLogPage").then((module) => ({ default: module.DispatchLogPage })),
 );
-const AuditPage = lazy(() => import("./pages/AuditPage").then((module) => ({ default: module.AuditPage })));
+
 const UsagePage = lazy(() => import("./pages/UsagePage").then((module) => ({ default: module.UsagePage })));
 
 function deferred(element: ReactNode) {
@@ -50,11 +50,11 @@ const router = createBrowserRouter([
       { path: "dispatch", element: deferred(<DispatchPage />) },
       { path: "production", element: deferred(<DispatchPage />) },
       { path: "logs", element: deferred(<DispatchLogPage />) },
-      { path: "audit", element: deferred(<AuditPage />) },
+      { path: "audit", element: <Navigate to="/tasks" replace /> },
       { path: "tasks", element: deferred(<TasksPage />) },
       { path: "tasks/:id", element: deferred(<TaskDetailPage />) },
       { path: "source", element: deferred(<SourcePage />) },
-      { path: "export", element: deferred(<ExportPage />) },
+      { path: "export", element: <Navigate to="/tasks" replace /> },
       { path: "usage", element: deferred(<UsagePage />) },
       { path: "system", element: deferred(<SystemPage />) },
       { path: "*", element: <NotFoundPage /> },

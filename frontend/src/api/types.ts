@@ -1,4 +1,4 @@
-import type { paths } from "./schema";
+import type { components, paths } from "./schema";
 
 export type TaskListResponse = {
   items: TaskRow[];
@@ -19,6 +19,9 @@ export type Step = {
 };
 
 export type TaskRow = {
+  platform_status?: string;
+  stage_started_at?: string | null;
+  stage_history?: Array<{id: number; stage: string; started_at: string; ended_at?: string; attempt: number}>;
   id: string;
   task_root: string;
   task_name: string;
@@ -72,6 +75,10 @@ export type TaskDetail = Omit<TaskRow, "steps"> & {
 };
 
 export type SystemStatus = {
+  dispatch_effective_state?: DispatchSnapshot["effective_state"];
+  dispatch_sentence?: string;
+  containers_used?: number;
+  containers_limit?: number;
   docker_ok: boolean;
   source_online: boolean;
   offline: boolean;
@@ -778,7 +785,13 @@ export type DispatchPool = {
 };
 
 export type DispatchSnapshot = {
+  submission_quota?: {
+    open: boolean; date: string; limit: number;
+    primary: { account: string; domain: string; open: boolean };
+    standby: { account: string; domain: string; open: boolean } | null;
+  };
   engine: "v2" | "v3";
+  active_profile_name: string | null;
   enabled: boolean;
   desired_state: "running" | "paused" | "draining";
   effective_state: "running" | "paused" | "draining" | "held" | "degraded" | "idle";
@@ -824,6 +837,8 @@ export type DispatchSnapshot = {
   loops: Array<{ name: string; status: string; last_beat_at: number; errors: number }>;
   keep_awake: boolean;
 };
+
+export type DispatchQueueSnapshot = Omit<DispatchSnapshot, "throughput" | "capacity">;
 
 /** 调度模式：容器优先只看容器占用；任务优先只看在手任务数（容器仍受最大容器数约束）。 */
 export type DispatchMode = "containers" | "tasks";
@@ -883,7 +898,22 @@ export type DispatchElasticStatus = DispatchElasticConfig & {
 
 export type DispatchLogRow = EventRow & { family: string };
 
+export type ProfileCatalog = components["schemas"]["Profiles"];
+export type ProfileDomain = components["schemas"]["Solo2Settings"]["locked_domain"];
+export type StandbyDraft = components["schemas"]["StandbyUpdate"];
+export type StandbyCheck = components["schemas"]["StandbyCheck"];
+export type ProfileDraft = {
+  name: string; solo2: { username: string; base_url: string; locked_domain: ProfileDomain };
+  source: { username: string; base_url: string }; model_base_url: string;
+  secrets: { solo2_password: string; github_token: string; source_password: string; gateway_key: string };
+};
+export type AccountView = components["schemas"]["View"];
+export type PasswordTarget = NonNullable<components["schemas"]["Connection"]["password_target"]>;
+export type RevealTarget = paths["/api/system/accounts/profiles/{profile_id}/password/{target}"]["post"]["parameters"]["path"]["target"];
+
 export type ConfigResponse = {
+  accounts_locked?: boolean;
+  active_profile?: string | null;
   host: string;
   port: number;
   skill_root: string;
@@ -941,12 +971,15 @@ export type ConfigResponse = {
   slim: { enabled: boolean; after_days: number; patterns: string[] };
   notify: { macos: boolean; webhook_url: string };
   solo2: {
+    locked_domain?: "" | "安全" | "游戏、图形与多媒体" | "数据工程";
     base_url: string;
     username: string;
     timeout_seconds: number;
     password: string;
   };
   skill_config: Record<string, unknown>;
+  gateway_key: string;
+  model_base_url: string;
   github_token: string;
 };
 

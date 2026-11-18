@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CirclePause,
   CirclePlay,
+  ChevronDown,
   LockKeyhole,
   MoreHorizontal,
   PauseCircle,
@@ -9,10 +10,9 @@ import {
   RefreshCw,
   ShieldCheck,
   SquareTerminal,
-  Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
@@ -23,17 +23,17 @@ import type {
   DispatchMode,
   DispatchPreviewItem,
   DispatchQueueItem,
-  DispatchSnapshot,
-  DispatchUpcomingItem,
+  DispatchQueueSnapshot,
 } from "../api/types";
+import { AccountViewPanel } from "../components/AccountViewPanel";
 import { IntakePanel } from "../components/IntakePanel";
 import { CoreTracePanel } from "../components/task/CoreTracePanel";
 import { useToast } from "../components/toast-context";
 import { Badge, Button, ErrorPanel, LoadingLines, Panel, StatusDot } from "../components/ui";
-import { errorText, formatDuration } from "../utils/display";
+import { DISPATCH_STATE_LABEL, errorText } from "../utils/display";
 import { formatDateTime } from "../utils/time";
 
-type QueueZone = "pending" | "processing" | "processed";
+type QueueZone = "pending" | "processing";
 type RowAction = "pin" | "up" | "down";
 
 const MODES: Array<{ value: DispatchMode; label: string; hint: string }> = [
@@ -42,16 +42,6 @@ const MODES: Array<{ value: DispatchMode; label: string; hint: string }> = [
 ];
 
 const NEXT_QUEUE_LIMIT = 20;
-const RECENT_DONE_LIMIT = 20;
-
-const STATE_LABEL: Record<DispatchSnapshot["effective_state"], string> = {
-  running: "运行中",
-  paused: "已暂停",
-  draining: "排空中",
-  held: "已自动挂起",
-  degraded: "部分受限",
-  idle: "空闲",
-};
 
 const STAGE_LABEL: Record<string, string> = {
   pending: "待建题",
@@ -61,41 +51,40 @@ const STAGE_LABEL: Record<string, string> = {
   delivering: "交付",
   recording: "录屏",
   exporting: "导出",
+  waiting_quota: "待次日提交",
   done: "完成",
 };
 
-const FINISHED = new Set(["done", "failed", "removed", "awaiting_audit"]);
+const HIDDEN_STATUSES = new Set(["done", "failed", "removed", "stopped", "quarantined", "awaiting_audit"]);
 // 与后端 IN_HAND 保持一致：需人工处理和已结束的任务不占在手。
 const IN_HAND = new Set(["queued", "launching", "active", "backoff", "interrupted"]);
 
 export function DispatchPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const [draft, setDraft] = useState<DispatchLimitsRequest | null>(null);
-  const [explainFor, setExplainFor] = useState<DispatchQueueItem | null>(null);
-  const [traceFor, setTraceFor] = useState<DispatchQueueItem | null>(null);
-  // 与顶栏共用 ["dispatch"] 缓存，同一份快照只请求一次。
+  const [edits, setEdits] = useState<DispatchLimitsRequest>({});
+  const [limitsOpen, setLimitsOpen] = useState(false);
+  const [monitorOpen, setMonitorOpen] = useState(false);
+  const [detail, setDetail] = useState<{ id: string; view: "wait" | "trace" } | null>(null);
+  const [pendingLimit, setPendingLimit] = useState(NEXT_QUEUE_LIMIT);
+  const [processingLimit, setProcessingLimit] = useState(NEXT_QUEUE_LIMIT);
   const dispatch = useQuery({
     queryKey: ["dispatch"],
     queryFn: api.dispatch,
-    refetchInterval: 5000,
-  });
-  const upcoming = useQuery({
-    queryKey: ["dispatch-upcoming", NEXT_QUEUE_LIMIT],
-    queryFn: () => api.dispatchUpcoming(NEXT_QUEUE_LIMIT),
-    refetchInterval: 30_000,
+    refetchInterval: (query) => query.state.data?.desired_state === "paused" ? 10_000 : 5000,
   });
   const sessionStats = useQuery({
     queryKey: ["dispatch-session-stats"],
     queryFn: api.sessionStats,
-    refetchInterval: 30_000,
+    enabled: monitorOpen,
+    refetchInterval: monitorOpen ? 30_000 : false,
   });
 
-  useEffect(() => {
-    const snapshot = dispatch.data;
-    if (!snapshot || draft) return;
-    setDraft(limitDraft(snapshot));
-  }, [dispatch.data, draft]);
+  const throughput = useQuery({
+    queryKey: ["dispatch-throughput", 24], queryFn: () => api.dispatchThroughput(24),
+    enabled: monitorOpen, refetchInterval: monitorOpen ? 30_000 : false,
+  });
+  const system = useQuery({ queryKey: ["system-status"], queryFn: api.systemStatus, enabled: monitorOpen, staleTime: 10_000 });
 
   const refresh = () => void queryClient.invalidateQueries({ queryKey: ["dispatch"] });
   const state = useMutation({
@@ -105,14 +94,19 @@ export function DispatchPage() {
         desired === "running" ? "调度已启动" : desired === "draining" ? "已进入排空后停止" : "调度已暂停",
         desired === "running" ? "ok" : "info",
       );
-      void queryClient.invalidateQueries();
+      refresh();
+      void queryClient.invalidateQueries({ queryKey: ["system-status"] });
+      void queryClient.invalidateQueries({ queryKey: ["intake"] });
     },
     onError: (error) => toast(errorText(error), "error"),
   });
   const applyLimits = useMutation({
     mutationFn: (payload: DispatchLimitsRequest) => api.dispatchLimits(payload),
     onSuccess: (result) => {
-      setDraft(limitDraft(result.snapshot));
+      setEdits({});
+      queryClient.setQueryData<DispatchQueueSnapshot>(["dispatch"], (old) => old && ({
+        ...old, limits: result.snapshot.limits, elastic: result.snapshot.elastic,
+      }));
       toast(
         result.sync?.synced
           ? `上限已生效，技能侧已同步为 ${result.sync.actual}`
@@ -167,36 +161,52 @@ export function DispatchPage() {
     },
     onError: (error) => toast(errorText(error), "error"),
   });
-  const clearFinished = useMutation({
-    mutationFn: api.dispatchClearFinished,
-    onSuccess: (result) => {
-      toast(`已清理 ${result.removed} 题`, "ok");
-      refresh();
-    },
-    onError: (error) => toast(errorText(error), "error"),
-  });
-
   const snapshot = dispatch.data;
   const groups = useMemo(() => (snapshot ? groupQueue(snapshot.queue) : null), [snapshot]);
+  const intake = useQuery({ queryKey: ["intake"], queryFn: api.intake, staleTime: 5000 });
+  const plan = intake.data?.plan;
+  const showCandidates = !!groups && groups.pending.length < NEXT_QUEUE_LIMIT &&
+    (plan?.status === "running" || plan?.status === "paused");
+  const upcoming = useQuery({
+    queryKey: ["dispatch-upcoming", plan?.id, plan?.project_id, plan?.source_changed_at, plan?.filters, plan?.exclude_delivered, plan?.max_uses],
+    enabled: showCandidates,
+    queryFn: async ({ signal }) => {
+      const batch = await api.dispatchUpcoming(NEXT_QUEUE_LIMIT, signal);
+      if (batch.items.length >= NEXT_QUEUE_LIMIT || batch.items.some(item => "preview" in item)) return batch;
+      // 首次读取会在服务端异步准备题源，稍后再取一次已预热的清单。
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      return api.dispatchUpcoming(NEXT_QUEUE_LIMIT, signal);
+    },
+    staleTime: 15_000,
+    refetchInterval: 25_000,
+  });
   const eta = useMemo(
     () => new Map((snapshot?.upcoming ?? []).map((item) => [item.task_id, item.estimated_start_at])),
     [snapshot?.upcoming],
   );
 
   if (dispatch.isPending) return <div className="page"><LoadingLines rows={10} /></div>;
-  if (dispatch.isError || !snapshot || !groups) {
+  if (!snapshot || !groups) {
     return <div className="page"><ErrorPanel error={dispatch.error} onRetry={() => void dispatch.refetch()} /></div>;
   }
-  const readonly = snapshot.engine === "v2";
+  const readonly = snapshot.engine === "v2" || dispatch.isError;
+  const selected = detail && snapshot.queue.find((item) => item.task_id === detail.id);
+  const baseline = limitDraft(snapshot);
+  const draft = { ...baseline, ...edits, elastic: { ...baseline.elastic, ...edits.elastic } };
+  const setDraft = (next: DispatchLimitsRequest) => setEdits(limitChanges(baseline, next));
   const busyId = action.isPending ? action.variables?.item.task_id : undefined;
-  const pendingItems = arrangePendingQueue(groups.pending, NEXT_QUEUE_LIMIT);
-  const previewItems = fillPreviewQueue(
-    upcoming.data?.items ?? snapshot.upcoming,
-    pendingItems.length,
-    NEXT_QUEUE_LIMIT,
-  );
-  const processingItems = groups.processing.slice(0, NEXT_QUEUE_LIMIT);
-  const processedItems = groups.processed.slice(0, RECENT_DONE_LIMIT);
+  const pendingItems = groups.pending.slice(0, pendingLimit);
+  const processingItems = groups.processing.slice(0, processingLimit);
+  const occupied = new Set([...groups.pending, ...groups.processing].map(item => item.engineering_id));
+  const candidates: DispatchPreviewItem[] = [];
+  if (showCandidates) {
+    for (const item of upcoming.data?.items ?? []) {
+      if (!("preview" in item) || item.project_id !== plan?.project_id || occupied.has(item.engineering_id)) continue;
+      if (candidates.length >= NEXT_QUEUE_LIMIT - groups.pending.length) break;
+      candidates.push(item);
+      occupied.add(item.engineering_id);
+    }
+  }
 
   return (
     <div className="page dispatch-page">
@@ -205,18 +215,39 @@ export function DispatchPage() {
         onState={(desired) => state.mutate(desired)}
         busy={state.isPending}
         readonly={readonly}
+        onRefresh={() => { void dispatch.refetch(); if (showCandidates) void upcoming.refetch(); }}
+        refreshing={dispatch.isFetching}
         openingTerminals={openTerminals.isPending}
         onOpenTerminals={() => openTerminals.mutate()}
       />
-      {readonly ? (
+      {dispatch.isError && (
+        <div className="system-banner" role="status">队列刷新失败，当前显示上次获取的数据。
+          <Button size="small" onClick={() => void dispatch.refetch()}>重新连接</Button>
+        </div>
+      )}
+      {snapshot.engine === "v2" ? (
         <div className="system-banner" role="status">
           当前为 v2 调度引擎，调度页只读。将 <code>[dispatch] engine</code> 改为 <code>"v3"</code> 并重启后端即可切换；
           原生产线与全部 v2 数据保持可用。
         </div>
       ) : null}
 
-      <CapacityStrip snapshot={snapshot} inHand={snapshot.queue.filter((item) => IN_HAND.has(item.status)).length} />
+      <CapacityStrip snapshot={snapshot} inHand={snapshot.creation?.in_hand ?? snapshot.queue.filter((item) => IN_HAND.has(item.status)).length} />
 
+      {snapshot.submission_quota && (
+        <div className="system-banner" role="status" aria-label="SOLO2 每日提交开关">
+          <strong>SOLO2 新建提交 · {snapshot.submission_quota.open ? "开放" : "今日已满"}</strong>
+          <span>
+            主号 {snapshot.submission_quota.primary.account}
+            {snapshot.submission_quota.primary.account ? ` · ${snapshot.submission_quota.primary.open ? "开放" : "已满"}` : ""}
+            {"；"}副号 {snapshot.submission_quota.standby
+              ? `${snapshot.submission_quota.standby.account} · ${snapshot.submission_quota.standby.open ? "开放" : "已满"}`
+              : "未配置"}
+            。每号每日 {snapshot.submission_quota.limit} 条，北京时间 00:00 恢复
+          </span>
+          <a className="text-link" href="/system#accounts">管理提交账号</a>
+        </div>
+      )}
       {snapshot.holds.length ? (
         <section className="dispatch-holds" aria-label="当前挂起">
           {snapshot.holds.map((hold) => (
@@ -233,6 +264,7 @@ export function DispatchPage() {
               <Button
                 size="small"
                 variant="ghost"
+                disabled={readonly}
                 loading={holdProbe.isPending && holdProbe.variables?.id === hold.id}
                 onClick={() => holdProbe.mutate(hold)}
               >
@@ -245,32 +277,14 @@ export function DispatchPage() {
 
       <div className="dispatch-layout">
         <main className="dispatch-main">
-          <section className="dispatch-board-toolbar">
-            <div>
-              <span className="eyebrow">QUEUE / NEXT 20</span>
-              <strong>处理顺序</strong>
-              <p>待处理取下一批工程，最多 20 道；工程不足时循环补位，相邻工程不重复。</p>
-            </div>
-            <div className="row-actions">
-              {snapshot.counts.finished ? (
-                <Button size="small" variant="ghost" loading={clearFinished.isPending} disabled={readonly} onClick={() => clearFinished.mutate()}>
-                  <Trash2 size={13} /> 清理已处理
-                </Button>
-              ) : null}
-              <Button size="small" variant="ghost" onClick={() => void dispatch.refetch()} title="立即刷新">
-                <RefreshCw size={13} />
-              </Button>
-            </div>
-          </section>
-
           <div className="dispatch-board" aria-label="任务处理看板">
             <QueueLane
               zone="pending"
               title="待处理"
-              count={snapshot.counts.waiting + snapshot.counts.needs_action}
-              shown={pendingItems.length + previewItems.length}
-              previewCount={previewItems.length}
-              caption={pendingItems.length ? "首项就是下一道进入处理的工程" : "按生产计划自动补入下一批工程"}
+              count={groups.pending.length}
+              shown={pendingItems.length}
+              candidateCount={candidates.length}
+              caption={candidates.length && !pendingItems.length ? pendingQueueHint(snapshot) : "已排队任务在前，候补工程按预计领取顺序排列。"}
             >
               {pendingItems.map((item, index) => (
                 <QueueRow
@@ -278,21 +292,36 @@ export function DispatchPage() {
                   item={item}
                   zone="pending"
                   rank={index + 1}
+                  last={index + 1 === groups.pending.length}
                   eta={eta.get(item.task_id)}
-                  onExplain={() => setExplainFor(item)}
-                  onTrace={() => setTraceFor(item)}
+                  onExplain={() => setDetail({ id: item.task_id, view: "wait" })}
+                  onTrace={() => setDetail({ id: item.task_id, view: "trace" })}
                   onAction={(name) => action.mutate({ item, action: name })}
                   busy={busyId === item.task_id}
                   readonly={readonly}
                 />
               ))}
-              {previewItems.map((item, index) => (
-                <PreviewRow key={item.task_id} item={item} rank={pendingItems.length + index + 1} />
-              ))}
-              {!pendingItems.length && !previewItems.length ? (
+              {pendingItems.length < groups.pending.length && <Button size="small" onClick={() => setPendingLimit(value => value + NEXT_QUEUE_LIMIT)}>查看更多待处理任务</Button>}
+              {candidates.length > 0 && (
+                <ol className="dispatch-candidates" aria-label="候补工程">
+                  {candidates.map((item, index) => (
+                    <li key={item.task_id}>
+                      <span className="dispatch-queue-index mono" aria-hidden="true">{String(pendingItems.length + index + 1).padStart(2, "0")}</span>
+                      <span className="dispatch-candidate-name" title={item.task_name}>{item.task_name}</span>
+                      <small>候补</small>
+                    </li>
+                  ))}
+                </ol>
+              )}
+              {showCandidates && upcoming.isError ? (
+                <div className="dispatch-lane-foot" role="status">候补清单刷新失败。 <Button size="small" onClick={() => void upcoming.refetch()}>重试</Button></div>
+              ) : showCandidates && upcoming.isPending ? (
+                <p className="dispatch-lane-foot" role="status">正在读取候补工程…</p>
+              ) : null}
+              {!pendingItems.length && !candidates.length && !(showCandidates && (upcoming.isPending || upcoming.isError)) ? (
                 <LaneEmpty
                   title="暂无待处理工程"
-                  body="下达或继续生产计划后，这里会自动排出最多 20 道候选；不足 20 道时循环补位。"
+                  body={pendingQueueHint(snapshot)}
                 />
               ) : null}
             </QueueLane>
@@ -300,9 +329,9 @@ export function DispatchPage() {
             <QueueLane
               zone="processing"
               title="正在处理"
-              count={snapshot.counts.active}
+              count={groups.processing.length}
               shown={processingItems.length}
-              caption="已经占用 ChatGPT 会话或容器的任务"
+              caption="查看任务阶段和最新执行轨迹"
             >
               {processingItems.map((item, index) => (
                 <QueueRow
@@ -311,130 +340,108 @@ export function DispatchPage() {
                   zone="processing"
                   rank={index + 1}
                   eta={eta.get(item.task_id)}
-                  onExplain={() => setExplainFor(item)}
-                  onTrace={() => setTraceFor(item)}
+                  onExplain={() => setDetail({ id: item.task_id, view: "wait" })}
+                  onTrace={() => setDetail({ id: item.task_id, view: "trace" })}
                   onAction={(name) => action.mutate({ item, action: name })}
                   busy={busyId === item.task_id}
                   readonly={readonly}
                 />
               ))}
+              {processingItems.length < groups.processing.length && <Button size="small" onClick={() => setProcessingLimit(value => value + NEXT_QUEUE_LIMIT)}>查看更多运行中任务</Button>}
               {!processingItems.length ? (
-                <LaneEmpty title="当前没有运行中的任务" body="容器或会话释放后，待处理队列的第一道工程会进入这里。" />
+                <LaneEmpty title="当前没有运行中的任务" body="待处理任务通过启动检查后，会在这里显示进度。" />
               ) : null}
             </QueueLane>
 
-            <QueueLane
-              zone="processed"
-              title="已处理"
-              count={snapshot.counts.finished}
-              shown={processedItems.length}
-              caption="最近完成或失败的任务"
-            >
-              {processedItems.map((item, index) => (
-                <QueueRow
-                  key={item.task_id}
-                  item={item}
-                  zone="processed"
-                  rank={index + 1}
-                  onExplain={() => setExplainFor(item)}
-                  onTrace={() => setTraceFor(item)}
-                  onAction={(name) => action.mutate({ item, action: name })}
-                  busy={busyId === item.task_id}
-                  readonly={readonly}
-                />
-              ))}
-              {!processedItems.length ? (
-                <LaneEmpty title="还没有处理结果" body="任务完成或失败后会进入这里，默认展示最近 20 条。" />
-              ) : null}
-            </QueueLane>
           </div>
         </main>
 
         <aside className="dispatch-rail">
-          <Panel
-            title="调度参数"
-            actions={
-              <span className={snapshot.limits.synced ? "sync-ok" : "sync-warn"} title="平台上限与技能 claude.maxContainers 是否一致">
-                {snapshot.limits.synced ? "技能已同步" : `技能侧 ${snapshot.limits.skill_limit || "—"}`}
-              </span>
-            }
-          >
-            {draft ? (
-              <LimitForm
-                snapshot={snapshot}
-                draft={draft}
-                setDraft={setDraft}
-                readonly={readonly}
-                applying={applyLimits.isPending}
-                onApply={() => applyLimits.mutate(draft)}
-              />
-            ) : null}
-          </Panel>
-
-          <Panel
-            title="运行健康"
-            actions={<Badge tone={snapshot.holds.length ? "warn" : "ok"}>{snapshot.holds.length ? `${snapshot.holds.length} 条挂起` : "正常"}</Badge>}
-          >
-            <div className="panel-body dispatch-probes">
-              <ProbeLine label="网关" ok={!snapshot.holds.some((hold) => hold.source === "llm_guard")} onTest={() => probe.mutate()} busy={probe.isPending} />
-              <ProbeLine label="Docker" ok={Boolean((snapshot.pools.containers?.limit || 0) > 0 && snapshot.effective_state !== "held")} />
-              <ProbeLine
-                label="守护"
-                ok={snapshot.guard.mode !== "off"}
-                value={`${snapshot.guard.mode === "enforce" ? "自动处置" : snapshot.guard.mode === "observe" ? "仅观察" : "关闭"} · 命中 ${snapshot.guard.count}`}
-              />
-              {snapshot.guard.hits.length ? (
-                <ul className="dispatch-guard-list">
-                  {snapshot.guard.hits.map((hit) => (
-                    <li key={String(hit.id)}>
-                      <strong>{String(hit.kind)}</strong>
-                      <span>{String(hit.reason)}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-              <Button size="small" variant="ghost" loading={recover.isPending} disabled={readonly} onClick={() => recover.mutate()}>
-                <ShieldCheck size={13} /> 清理挂起期间残留
-              </Button>
-            </div>
-          </Panel>
-
-          <Panel title="近 24 小时">
-            <div className="panel-body dispatch-metrics">
-              <Metric label="完成" value={snapshot.throughput.completed} />
-              <Metric label="失败" value={snapshot.throughput.failed + snapshot.throughput.quarantined} />
-              <Metric label="容器利用率" value={`${Math.round(snapshot.throughput.container_utilization * 100)}%`} />
-              <Metric label="单题运行中位" value={formatMinutes(snapshot.throughput.medians_seconds.running_s ?? 0)} />
-            </div>
-          </Panel>
-
-          <Panel title="会话质量">
-            <div className="panel-body dispatch-metrics">
-              <Metric
-                label="继续率"
-                value={`${Math.round((sessionStats.data?.continueRate ?? 0) * 100)}%`}
-              />
-              <Metric
-                label="每容器小时"
-                value={(sessionStats.data?.sessionsPerContainerHour ?? 0).toFixed(2)}
-              />
-              <Metric
-                label="接受 / 含继续"
-                value={`${sessionStats.data?.accepted ?? 0} / ${sessionStats.data?.acceptedWithContinue ?? 0}`}
-              />
-              <Metric
-                label="主要终止原因"
-                value={sessionStats.data?.abortReasons[0]?.kind ?? "—"}
-              />
-            </div>
-          </Panel>
-
+          <AccountViewPanel />
           <IntakePanel />
+          <section className="dispatch-fold">
+            <button type="button" aria-expanded={limitsOpen} aria-controls="dispatch-limits" onClick={() => setLimitsOpen(!limitsOpen)}>
+              <strong>调度参数</strong><span>{Object.keys(edits).length ? "待应用" : snapshot.limits.mode === "tasks" ? "任务优先" : "容器优先"}</span><ChevronDown size={16} />
+            </button>
+            <div id="dispatch-limits" hidden={!limitsOpen}>
+              <LimitForm snapshot={snapshot} draft={draft} setDraft={setDraft} readonly={readonly} applying={applyLimits.isPending}
+                onApply={() => applyLimits.mutate(limitChanges(baseline, draft))} />
+              <p className={snapshot.limits.synced ? "sync-ok" : "sync-warn"}>
+                {snapshot.limits.synced ? "技能已同步" : `技能侧上限 ${snapshot.limits.skill_limit || "—"}`}
+              </p>
+            </div>
+          </section>
+          <section className="dispatch-fold">
+            <button type="button" aria-expanded={monitorOpen} aria-controls="dispatch-monitor" onClick={() => setMonitorOpen(!monitorOpen)}>
+              <strong>运行监控</strong><span>健康与统计</span><ChevronDown size={16} />
+            </button>
+            <div id="dispatch-monitor" hidden={!monitorOpen}>
+              <Panel
+                title="运行健康"
+                actions={<Badge tone={snapshot.holds.length ? "warn" : "ok"}>{snapshot.holds.length ? `${snapshot.holds.length} 条挂起` : "无挂起"}</Badge>}
+              >
+                <div className="panel-body dispatch-probes">
+                  <ProbeLine label="网关" ok={!snapshot.holds.some((hold) => hold.source === "llm_guard")} onTest={() => probe.mutate()} busy={probe.isPending} />
+                  <ProbeLine label="Docker" ok={system.data?.docker_ok} />
+                  <ProbeLine
+                    label="守护"
+                    ok={snapshot.guard.mode !== "off"}
+                    value={`${snapshot.guard.mode === "enforce" ? "自动处置" : snapshot.guard.mode === "observe" ? "仅观察" : "关闭"} · 命中 ${snapshot.guard.count}`}
+                  />
+                  {snapshot.guard.hits.length ? (
+                    <ul className="dispatch-guard-list">
+                      {snapshot.guard.hits.map((hit) => (
+                        <li key={String(hit.id)}>
+                          <strong>{String(hit.kind)}</strong>
+                          <span>{String(hit.reason)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  <Button size="small" variant="ghost" loading={recover.isPending} disabled={readonly} onClick={() => recover.mutate()}>
+                    <ShieldCheck size={13} /> 清理挂起期间残留
+                  </Button>
+                </div>
+              </Panel>
+
+              <Panel title="近 24 小时">
+                <div className="panel-body dispatch-metrics">
+                  <Metric label="完成" value={throughput.data?.completed ?? "—"} />
+                  <Metric label="失败" value={throughput.data?.failed ?? "—"} />
+                  <Metric label="容器利用率" value={throughput.data ? `${Math.round(throughput.data.container_utilization * 100)}%` : "—"} />
+                  <Metric label="单题运行中位" value={formatMinutes(throughput.data?.medians_seconds.running_s ?? 0)} />
+                </div>
+              </Panel>
+
+              <Panel title="会话质量">
+                <div className="panel-body dispatch-metrics">
+                  <Metric
+                    label="继续率"
+                    value={sessionStats.data ? `${Math.round(sessionStats.data.continueRate * 100)}%` : "—"}
+                  />
+                  <Metric
+                    label="每容器小时"
+                    value={sessionStats.data?.sessionsPerContainerHour.toFixed(2) ?? "—"}
+                  />
+                  <Metric
+                    label="接受 / 含继续"
+                    value={sessionStats.data ? `${sessionStats.data.accepted} / ${sessionStats.data.acceptedWithContinue}` : "—"}
+                  />
+                  <Metric
+                    label="主要终止原因"
+                    value={sessionStats.data?.abortReasons[0]?.kind ?? "—"}
+                  />
+                </div>
+              </Panel>
+
+            </div>
+          </section>
         </aside>
       </div>
 
-      {explainFor ? <ExplainDrawer item={explainFor} onClose={() => setExplainFor(null)} /> : null}
-      {traceFor ? <LiveTraceDrawer item={traceFor} onClose={() => setTraceFor(null)} /> : null}
+      {selected && detail && (
+        <TaskDrawer item={selected} view={detail.view} onClose={() => setDetail(null)} />
+      )}
     </div>
   );
 }
@@ -444,13 +451,17 @@ function DispatchHeader({
   onState,
   busy,
   readonly,
+  onRefresh,
+  refreshing,
   openingTerminals,
   onOpenTerminals,
 }: {
-  snapshot: DispatchSnapshot;
+  snapshot: DispatchQueueSnapshot;
   onState: (desired: "running" | "paused" | "draining") => void;
   busy: boolean;
   readonly: boolean;
+  onRefresh: () => void;
+  refreshing: boolean;
   openingTerminals: boolean;
   onOpenTerminals: () => void;
 }) {
@@ -459,30 +470,32 @@ function DispatchHeader({
     <header className="dispatch-head">
       <div className="dispatch-head-title">
         <div className="dispatch-title-line">
-          <div>
-            <span className="eyebrow">DISPATCH / LIVE QUEUE</span>
-            <h1>任务队列</h1>
-          </div>
+          <h1>任务队列</h1>
+          <span className="dispatch-current-profile" aria-live="polite" aria-atomic="true">
+            <span>当前配置</span>
+            <strong>{snapshot.active_profile_name || "名称未知"}</strong>
+          </span>
           <StatusDot
             state={snapshot.effective_state === "running" ? "running" : snapshot.effective_state === "held" ? "blocked" : "idle"}
-            label={STATE_LABEL[snapshot.effective_state]}
+            label={DISPATCH_STATE_LABEL[snapshot.effective_state]}
             pulse={snapshot.effective_state === "running"}
           />
         </div>
         <p className="dispatch-sentence" data-state={snapshot.effective_state}>{snapshot.sentence}</p>
       </div>
       <div className="dispatch-head-actions">
+        <Button size="small" variant="ghost" disabled={refreshing} onClick={onRefresh} aria-label="刷新队列" title="刷新队列"><RefreshCw size={14} /></Button>
         <Button size="small" variant="ghost" loading={openingTerminals} onClick={onOpenTerminals}>
           <SquareTerminal size={14} /> 查看全部终端
         </Button>
         {running ? (
-          <Button loading={busy} disabled={readonly} onClick={() => onState("paused")}><CirclePause size={14} /> 暂停</Button>
+          <Button loading={busy} disabled={readonly} onClick={() => onState("paused")}><CirclePause size={14} /> 暂停调度</Button>
         ) : (
           <Button variant="primary" loading={busy} disabled={readonly} onClick={() => onState("running")}>
-            <CirclePlay size={14} /> {snapshot.desired_state === "paused" ? "继续" : "启动"}
+            <CirclePlay size={14} /> {snapshot.desired_state === "paused" ? "继续调度" : "启动调度"}
           </Button>
         )}
-        {snapshot.desired_state !== "draining" ? (
+        {running ? (
           <Button size="small" variant="ghost" disabled={readonly || busy} onClick={() => onState("draining")} title="不再启动新任务，在手任务跑完后停止">
             <PauseCircle size={13} /> 排空后停止
           </Button>
@@ -492,7 +505,7 @@ function DispatchHeader({
   );
 }
 
-function CapacityStrip({ snapshot, inHand }: { snapshot: DispatchSnapshot; inHand: number }) {
+function CapacityStrip({ snapshot, inHand }: { snapshot: DispatchQueueSnapshot; inHand: number }) {
   const now = useNow();
   const pool = (name: string) => snapshot.pools[name] ?? { used: 0, limit: 0 };
   const creation = snapshot.creation;
@@ -544,7 +557,7 @@ function CapacityStrip({ snapshot, inHand }: { snapshot: DispatchSnapshot; inHan
               {cell.used}{cell.unbounded ? null : <small>/{cell.limit}</small>}
             </strong>
             <div className="dispatch-capacity-bar" aria-hidden="true">
-              <i style={{ width: `${cell.limit ? Math.min(100, (cell.used / cell.limit) * 100) : 0}%` }} />
+              <i style={{ transform: `scaleX(${cell.limit ? Math.min(1, cell.used / cell.limit) : 0})` }} />
             </div>
             <em>
               {cell.tone
@@ -577,7 +590,7 @@ function QueueLane({
   title,
   count,
   shown,
-  previewCount = 0,
+  candidateCount,
   caption,
   children,
 }: {
@@ -585,7 +598,7 @@ function QueueLane({
   title: string;
   count: number;
   shown: number;
-  previewCount?: number;
+  candidateCount?: number;
   caption: string;
   children: ReactNode;
 }) {
@@ -594,10 +607,9 @@ function QueueLane({
     <section className="dispatch-lane" data-zone={zone}>
       <header className="dispatch-lane-head">
         <div>
-          <span>{title === "待处理" ? "NEXT" : title === "正在处理" ? "LIVE" : "RECENT"}</span>
           <h2>
-            {title}<b>{count}</b>
-            {previewCount ? <em>+{previewCount} 候补</em> : null}
+            {title}<b>{count}{candidateCount !== undefined && " 已排队"}</b>
+            {!!candidateCount && <em>{candidateCount} 候补</em>}
           </h2>
           <p>{caption}</p>
         </div>
@@ -606,6 +618,13 @@ function QueueLane({
       {hidden ? <footer className="dispatch-lane-foot">另有 {hidden} 条未展开</footer> : null}
     </section>
   );
+}
+
+function pendingQueueHint({ desired_state, creation }: DispatchQueueSnapshot): string {
+  if (desired_state === "paused") return "调度已暂停。继续调度后，运行中的生产计划会按可用名额补入任务。";
+  if (desired_state === "draining") return "调度正在排空，已停止领取新任务。";
+  if (creation && !creation.allowed && creation.text) return creation.text;
+  return "运行中的生产计划会按可用名额领取工程。";
 }
 
 function LaneEmpty({ title, body }: { title: string; body: string }) {
@@ -617,27 +636,11 @@ function LaneEmpty({ title, body }: { title: string; body: string }) {
   );
 }
 
-function PreviewRow({ item, rank }: { item: DispatchPreviewItem; rank: number }) {
-  return (
-    <article className="dispatch-queue-row dispatch-preview-row" data-zone="pending" data-preview>
-      <span className="dispatch-queue-index mono">{String(rank).padStart(2, "0")}</span>
-      <div className="dispatch-queue-copy">
-        <strong title={item.task_name}>{item.task_name}</strong>
-        <span>候补工程 · {item.engineering_id}</span>
-        <small>{item.cycle ? `第 ${item.cycle + 1} 轮轮替` : "本轮首次进入"}</small>
-      </div>
-      <div className="dispatch-queue-meta mono">
-        <span>已用 {item.used}</span>
-        <em>{item.last_used_at ? "有历史" : "未使用"}</em>
-      </div>
-    </article>
-  );
-}
-
 function QueueRow({
   item,
   zone,
   rank,
+  last,
   eta,
   onExplain,
   onTrace,
@@ -648,6 +651,7 @@ function QueueRow({
   item: DispatchQueueItem;
   zone: QueueZone;
   rank: number;
+  last?: boolean;
   eta?: string;
   onExplain: () => void;
   onTrace: () => void;
@@ -655,7 +659,6 @@ function QueueRow({
   busy: boolean;
   readonly: boolean;
 }) {
-  const needs = item.status === "quarantined";
   const pending = zone === "pending";
   const until = item.wait_until || item.not_before;
   return (
@@ -663,29 +666,24 @@ function QueueRow({
       className="dispatch-queue-row"
       data-status={item.status}
       data-zone={zone}
-      data-next={pending && rank === 1 && !needs || undefined}
+      data-next={pending && rank === 1 || undefined}
     >
       <span className="dispatch-queue-index mono">{String(rank).padStart(2, "0")}</span>
       <div className="dispatch-queue-copy">
         <div className="dispatch-queue-status">
           <StatusDot
-            state={item.active ? "running" : needs ? "blocked" : item.status === "done" ? "exported" : zone === "processed" ? "idle" : "queued"}
-            label={needs ? "已失败" : STAGE_LABEL[item.stage] ?? item.stage}
+            state={item.active ? "running" : "queued"}
+            label={STAGE_LABEL[item.stage] ?? item.stage}
             pulse={item.active}
           />
-          {pending && !needs ? <span>下一道工程</span> : null}
-          {needs ? (
-            <span data-alert>
-              运行失败，稍后自动清理并补位
-            </span>
-          ) : null}
+          {pending && rank === 1 ? <span>队首</span> : null}
         </div>
         <Link className="dispatch-queue-name" to={`/tasks/${item.task_id}`} title={item.task_name}>
           {item.task_name}
         </Link>
         {zone === "processing" ? (
           <span className="dispatch-queue-note">
-            已运行 <Elapsed since={item.updated_at} />
+            更新于 <time dateTime={item.updated_at}>{formatDateTime(item.updated_at)}</time>
             {item.session_state === "waiting_continue"
               ? ` · 等待继续 · 已用 ${item.continue_used ?? 0}/2`
               : item.session_state === "holding"
@@ -696,13 +694,8 @@ function QueueRow({
                     ? " · 已提交，等待 SOLO2 质检反馈（不占会话名额）"
                     : ` · ${item.engineering_id || "工程信息同步中"}`}
           </span>
-        ) : zone === "processed" ? (
-          <span className="dispatch-queue-note" title={item.status === "failed" ? item.wait_text : undefined}>
-            {item.status === "done" ? "已完成" : item.status === "failed" ? "执行失败，已自动补新题" : "已结束"}
-            {" · "}{formatDateTime(item.updated_at)}
-          </span>
         ) : (
-          <button type="button" className="dispatch-queue-reason" onClick={onExplain} title="查看门禁明细">
+          <button type="button" className="dispatch-queue-reason" onClick={onExplain} title="查看等待原因">
             {item.reason}
           </button>
         )}
@@ -723,28 +716,13 @@ function QueueRow({
             <Radio size={12} /> 执行轨迹
           </Button>
         ) : null}
-        {zone !== "processed" ? (
+        {pending ? (
           <details className="dispatch-more">
             <summary title="更多操作" aria-label="更多操作"><MoreHorizontal size={14} /></summary>
             <div>
-              {pending ? (
-                <>
-                  <button type="button" disabled={readonly || busy} onClick={() => onAction("pin")} title="置顶">
-                    置顶<small>放到下一批队列最前面</small>
-                  </button>
-                  <button type="button" disabled={readonly || busy} onClick={() => onAction("up")} title="上移">
-                    上移<small>提前一位处理</small>
-                  </button>
-                  <button type="button" disabled={readonly || busy} onClick={() => onAction("down")} title="下移">
-                    下移<small>延后一位处理</small>
-                  </button>
-                </>
-              ) : null}
-              {!item.active ? (
-                <button type="button" onClick={onExplain}>
-                  门禁明细<small>逐条查看当前等待原因</small>
-                </button>
-              ) : null}
+              <button type="button" disabled={readonly || busy || rank === 1} onClick={() => onAction("pin")} title="置顶">置顶</button>
+              <button type="button" disabled={readonly || busy || rank === 1} onClick={() => onAction("up")} title="上移">上移一位</button>
+              <button type="button" disabled={readonly || busy || last} onClick={() => onAction("down")} title="下移">下移一位</button>
             </div>
           </details>
         ) : null}
@@ -761,7 +739,7 @@ function LimitForm({
   applying,
   onApply,
 }: {
-  snapshot: DispatchSnapshot;
+  snapshot: DispatchQueueSnapshot;
   draft: DispatchLimitsRequest;
   setDraft: (draft: DispatchLimitsRequest) => void;
   readonly: boolean;
@@ -769,7 +747,7 @@ function LimitForm({
   onApply: () => void;
 }) {
   const baseline = limitDraft(snapshot);
-  const dirty = JSON.stringify(draft) !== JSON.stringify(baseline);
+  const dirty = Object.keys(limitChanges(baseline, draft)).length > 0;
   const containers = draft.containers ?? snapshot.limits.containers;
   const maxTasks = draft.max_tasks ?? snapshot.limits.max_tasks;
   const cooldown = draft.create_cooldown_seconds ?? snapshot.limits.create_cooldown_seconds;
@@ -779,8 +757,11 @@ function LimitForm({
   const elasticEnabled = elastic.enabled ?? false;
   const elasticCeiling = elastic.ceiling ?? 8;
   const elasticStatus = snapshot.elastic;
+  const inRange = (n: number, min: number, max: number) => Number.isInteger(n) && n >= min && n <= max;
+  const valid = inRange(containers, 1, 8) && inRange(maxTasks, 1, 50) && inRange(cooldown, 20, 3600)
+    && (!elasticEnabled || inRange(elasticCeiling, containers, 8));
   return (
-    <fieldset className="dispatch-limit-form panel-body" disabled={readonly}>
+    <fieldset className="dispatch-limit-form panel-body" disabled={readonly || applying}>
       <div className="dispatch-limit-row dispatch-mode-row">
         <span>调度模式</span>
         <div className="dispatch-mode" role="radiogroup" aria-label="调度模式">
@@ -808,7 +789,7 @@ function LimitForm({
         onChange={(value) => setDraft({
           ...draft,
           containers: value,
-          elastic: { ...elastic, ceiling: Math.max(value, elasticCeiling) },
+          elastic: { ...elastic, ceiling: Number.isFinite(value) ? Math.max(value, elasticCeiling) : elasticCeiling },
         })}
       />
       <label className="dispatch-limit-row dispatch-mode-row" title="容器满且有任务等待时逐级扩容；429 重试等待超过阈值时自动缩容">
@@ -871,32 +852,41 @@ function LimitForm({
           : "弹性关闭：容器上限固定为最大容器数，不会自动增减。"}
       </p>
       <div className="dispatch-limit-actions" data-dirty={dirty || undefined}>
-        <span>{dirty ? "有未应用的修改" : ""}</span>
+        <span aria-live="polite">{!valid ? "请按范围填写整数" : dirty ? "有未应用的修改" : ""}</span>
         <Button size="small" variant="ghost" disabled={!dirty} onClick={() => setDraft(baseline)}>还原</Button>
-        <Button variant="primary" size="small" disabled={!dirty} loading={applying} onClick={onApply}>应用</Button>
+        <Button variant="primary" size="small" disabled={!dirty || !valid} loading={applying} onClick={onApply}>应用</Button>
       </div>
     </fieldset>
   );
 }
 
-function ExplainDrawer({ item, onClose }: { item: DispatchQueueItem; onClose: () => void }) {
+function TaskDrawer({ item, view, onClose }: { item: DispatchQueueItem; view: "wait" | "trace"; onClose: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+    const node = dialog.current;
+    const previous = document.activeElement;
+    node?.showModal();
+    return () => {
+      node?.close();
+      if (previous instanceof HTMLElement) previous.focus();
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, []);
+  const trace = view === "trace";
+  const title = trace ? "执行轨迹" : "等待原因";
   return (
-    <div className="dispatch-drawer-layer" onMouseDown={onClose}>
-      <aside className="dispatch-drawer" role="dialog" aria-label="门禁明细" onMouseDown={(event) => event.stopPropagation()}>
-        <header>
-          <div>
-            <span className="eyebrow">WHY NOT RUNNING</span>
-            <h2>{item.task_name}</h2>
-          </div>
-          <Button size="small" variant="ghost" onClick={onClose} title="关闭（Esc）"><X size={14} /></Button>
-        </header>
+    <dialog ref={dialog} className={`dispatch-drawer${trace ? " dispatch-trace-drawer" : ""}`}
+      aria-label={`${title} · ${item.task_name}`} onCancel={(event) => { event.preventDefault(); onClose(); }}
+      onClick={(event) => {
+        if (event.target === dialog.current && event.clientX < dialog.current.getBoundingClientRect().left) onClose();
+      }}>
+      <header>
+        <div><span className="eyebrow">{title}</span><h2>{item.task_name}</h2></div>
+        <div className="dispatch-trace-head-actions">
+          {trace && <Link to={`/tasks/${item.task_id}?tab=timeline`}>完整任务页</Link>}
+          <Button size="small" variant="ghost" onClick={onClose} aria-label="关闭详情"><X size={14} /></Button>
+        </div>
+      </header>
+      {trace ? <CoreTracePanel taskId={item.task_id} /> : <>
         <p className="dispatch-reason-large">{item.reason}</p>
         <ol className="dispatch-gate-list">
           {item.gate.checks?.map((check) => (
@@ -910,40 +900,8 @@ function ExplainDrawer({ item, onClose }: { item: DispatchQueueItem; onClose: ()
             </li>
           ))}
         </ol>
-      </aside>
-    </div>
-  );
-}
-
-function LiveTraceDrawer({ item, onClose }: { item: DispatchQueueItem; onClose: () => void }) {
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-  return (
-    <div className="dispatch-drawer-layer dispatch-trace-layer" onMouseDown={onClose}>
-      <aside
-        className="dispatch-drawer dispatch-trace-drawer"
-        role="dialog"
-        aria-label={`核心代码执行轨迹：${item.task_name}`}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <header>
-          <div>
-            <span className="eyebrow">CORE CODE TRACE</span>
-            <h2>{item.task_name}</h2>
-          </div>
-          <div className="dispatch-trace-head-actions">
-            <Link to={`/tasks/${item.task_id}?tab=timeline`}>完整任务页</Link>
-            <Button size="small" variant="ghost" onClick={onClose} title="关闭（Esc）"><X size={14} /></Button>
-          </div>
-        </header>
-        <CoreTracePanel taskId={item.task_id} />
-      </aside>
-    </div>
+      </>}
+    </dialog>
   );
 }
 
@@ -971,17 +929,17 @@ function LimitNumber({
   return (
     <label className="dispatch-limit-row" title={hint} data-inactive={inactive || undefined}>
       <span>{label}</span>
-      <input className="compact-number" type="number" aria-label={label} min={min} max={max} value={value} onChange={(event) => onChange(Number(event.target.value))} />
+      <input className="compact-number" type="number" aria-label={label} min={min} max={max} disabled={inactive} title={`${min}–${max}`} value={Number.isNaN(value) ? "" : value} onChange={(event) => onChange(event.target.valueAsNumber)} />
       <small>{inactive ? inactiveLabel : suffix ?? ""}</small>
     </label>
   );
 }
 
-function ProbeLine({ label, ok, value, onTest, busy }: { label: string; ok: boolean; value?: string; onTest?: () => void; busy?: boolean }) {
+function ProbeLine({ label, ok, value, onTest, busy }: { label: string; ok?: boolean; value?: string; onTest?: () => void; busy?: boolean }) {
   return (
     <div className="dispatch-probe-line">
-      <StatusDot state={ok ? "done" : "blocked"} label={label} />
-      <span>{value ?? (ok ? "正常" : "异常")}</span>
+      <StatusDot state={ok === undefined ? "idle" : ok ? "done" : "blocked"} label={label} />
+      <span>{value ?? (ok === undefined ? "待确认" : ok ? "正常" : "异常")}</span>
       {onTest ? <Button size="small" variant="ghost" loading={busy} onClick={onTest}>测试</Button> : <span />}
     </div>
   );
@@ -1006,79 +964,19 @@ function Countdown({ at }: { at: string }) {
   return <time dateTime={at}>{formatCountdown(at, now)}</time>;
 }
 
-function Elapsed({ since }: { since: string }) {
-  const now = useNow();
-  const start = new Date(since).getTime();
-  return <>{Number.isNaN(start) ? "—" : formatDuration((now - start) / 1000)}</>;
-}
-
 function groupQueue(queue: DispatchQueueItem[]): Record<QueueZone, DispatchQueueItem[]> {
-  const groups: Record<QueueZone, DispatchQueueItem[]> = { pending: [], processing: [], processed: [] };
+  const groups: Record<QueueZone, DispatchQueueItem[]> = { pending: [], processing: [] };
   for (const item of queue) {
-    if (item.active) groups.processing.push(item);
-    else if (FINISHED.has(item.status)) groups.processed.push(item);
-    else groups.pending.push(item);
+    if (HIDDEN_STATUSES.has(item.status)) continue;
+    groups[item.active ? "processing" : "pending"].push(item);
   }
-  groups.pending.sort((a, b) => {
-    const urgent = Number(b.status === "quarantined") - Number(a.status === "quarantined");
-    return urgent || (a.queue_position ?? 1e9) - (b.queue_position ?? 1e9);
-  });
-  groups.processing.sort((a, b) => (a.queue_position ?? 1e9) - (b.queue_position ?? 1e9));
-  groups.processed.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+  for (const items of Object.values(groups)) {
+    items.sort((a, b) => (a.queue_position ?? Infinity) - (b.queue_position ?? Infinity));
+  }
   return groups;
 }
 
-function arrangePendingQueue(items: DispatchQueueItem[], limit: number): DispatchQueueItem[] {
-  const groups = new Map<string, DispatchQueueItem[]>();
-  for (const item of items) {
-    const key = item.engineering_id || item.project_id || item.task_id;
-    const rows = groups.get(key) ?? [];
-    rows.push(item);
-    groups.set(key, rows);
-  }
-  const arranged: DispatchQueueItem[] = [];
-  let previous = "";
-  while (arranged.length < items.length && arranged.length < limit) {
-    let picked = false;
-    for (const [key, rows] of groups) {
-      if (!rows.length || key === previous) continue;
-      const item = rows.shift();
-      if (!item) continue;
-      arranged.push(item);
-      previous = key;
-      picked = true;
-      break;
-    }
-    if (!picked) {
-      const fallback = [...groups.entries()].find(([, rows]) => rows.length);
-      const item = fallback?.[1].shift();
-      if (!item) break;
-      arranged.push(item);
-      previous = fallback?.[0] ?? "";
-    }
-  }
-  return arranged;
-}
-
-function fillPreviewQueue(
-  items: Array<DispatchUpcomingItem | DispatchPreviewItem> | undefined,
-  current: number,
-  limit: number,
-): DispatchPreviewItem[] {
-  if (!items?.length || current >= limit) return [];
-  const previews = items.filter((item): item is DispatchPreviewItem => "preview" in item && item.preview === true);
-  const arranged: DispatchPreviewItem[] = [];
-  let previous = "";
-  for (const item of previews) {
-    if (arranged.length >= limit - current) break;
-    if (item.engineering_id === previous) continue;
-    arranged.push(item);
-    previous = item.engineering_id;
-  }
-  return arranged;
-}
-
-function limitDraft(snapshot: DispatchSnapshot): DispatchLimitsRequest {
+function limitDraft(snapshot: DispatchQueueSnapshot): DispatchLimitsRequest {
   return {
     mode: snapshot.limits.mode ?? "containers",
     containers: snapshot.limits.containers,
@@ -1089,6 +987,19 @@ function limitDraft(snapshot: DispatchSnapshot): DispatchLimitsRequest {
     max_tasks: snapshot.limits.max_tasks,
     create_cooldown_seconds: snapshot.limits.create_cooldown_seconds,
   };
+}
+
+function limitChanges(baseline: DispatchLimitsRequest, next: DispatchLimitsRequest): DispatchLimitsRequest {
+  const changes: DispatchLimitsRequest = {};
+  if (next.mode !== baseline.mode) changes.mode = next.mode;
+  for (const key of ["containers", "max_tasks", "create_cooldown_seconds"] as const) {
+    if (next[key] !== baseline[key]) changes[key] = next[key];
+  }
+  const elastic: DispatchLimitsRequest["elastic"] = {};
+  if (next.elastic?.enabled !== baseline.elastic?.enabled) elastic.enabled = next.elastic?.enabled;
+  if (next.elastic?.ceiling !== baseline.elastic?.ceiling) elastic.ceiling = next.elastic?.ceiling;
+  if (Object.keys(elastic).length) changes.elastic = elastic;
+  return changes;
 }
 
 function formatCountdown(value: string, now: number): string {

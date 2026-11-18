@@ -124,13 +124,20 @@ async def _execute(
     if plan["claimed"]:
         meta = _task_meta(ctx, root)
         try:
-            await ctx.source.release(str(meta["projectId"]), str(meta["engineeringId"]), str(meta["claimId"]))
+            await ctx.release_profile_claim(meta)
             ctx.repo.execute(
                 "UPDATE claims SET released_at = ? WHERE id = ?",
                 (datetime.now().astimezone().isoformat(), meta["claimId"]),
             )
         except Exception as exc:
-            release_error = str(exc)
+            already_released = isinstance(exc, ApiError) and exc.status_code == 404
+            if already_released:
+                ctx.repo.execute("UPDATE claims SET released_at = ? WHERE id = ?",
+                                 (datetime.now().astimezone().isoformat(), meta["claimId"]))
+            elif actor == "dispatch":
+                raise ApiError(503, "CLAIM_RELEASE_FAILED", "工程归还未确认，保留领取记录以便自动重试") from exc
+            else:
+                release_error = str(exc)
     moved_to = ""
     sources = [Path(path) for path in plan["paths"]]
     if permanent:

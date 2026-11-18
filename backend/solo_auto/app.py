@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 
 from solo_auto.api import (
+    account_view,
     audit,
     autopilot,
     batches,
@@ -24,6 +25,7 @@ from solo_auto.api import (
     evidence,
     feedback_export,
     intake,
+    profiles,
     prompt_library,
     purge,
     recording,
@@ -61,6 +63,8 @@ class SecurityHeadersMiddleware:
                         b"img-src 'self' data:; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'"
                     ),
                 }
+                if scope["path"].startswith(("/api/system/config", "/api/system/accounts", "/api/system/skill", "/api/system/solo2")):
+                    additions[b"cache-control"] = b"no-store"
                 existing = {key.lower() for key, _ in headers}
                 headers.extend((key, value) for key, value in additions.items() if key not in existing)
                 message["headers"] = headers
@@ -92,6 +96,8 @@ def create_app(home: Path | None = None, *, auto_start: bool = True) -> FastAPI:
     app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.add_middleware(SecurityHeadersMiddleware)
 
+    app.include_router(account_view.router)
+    app.include_router(profiles.router)
     app.include_router(system.router)
     app.include_router(purge.router)
     app.include_router(prompt_library.router)
@@ -133,7 +139,7 @@ def create_app(home: Path | None = None, *, auto_start: bool = True) -> FastAPI:
                 "error": {
                     "code": "VALIDATION_ERROR",
                     "message": "请求参数校验失败",
-                    "detail": exc.errors(),
+                    "detail": [{"loc": err["loc"], "type": err["type"], "msg": err["msg"]} for err in exc.errors()],
                 }
                 }
             ),

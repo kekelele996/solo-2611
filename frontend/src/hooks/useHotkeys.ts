@@ -64,10 +64,8 @@ export function useHotkeys(handlers: HotkeyHandlers = {}): void {
           h: "/",
           d: "/dispatch",
           l: "/logs",
-          a: "/audit",
           t: "/tasks",
           s: "/source",
-          e: "/export",
           ",": "/system",
         };
         const destination = destinations[event.key];

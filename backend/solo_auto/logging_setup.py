@@ -10,7 +10,7 @@ from typing import Any
 
 SECRET_PATTERN = re.compile(
     r"(?i)(sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_-]{8,}|"
-    r"Bearer\s+[A-Za-z0-9._~+/=-]{12,}|password[\"'=:\s]+[^\s\"']+)"
+    r"github_pat_[A-Za-z0-9_]+|(?:access_?tokens?|api_?key|csrf_token)[\"'=:\s]+[^\s\"',}]+|Bearer\s+[A-Za-z0-9._~+/=-]{12,}|password[\"'=:\s]+[^\s\"']+)"
 )
 
 

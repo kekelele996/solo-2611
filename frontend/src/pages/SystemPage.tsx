@@ -1,20 +1,24 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   DatabaseBackup,
-  Download,
+  Github,
   HardDrive,
+  LibraryBig,
+  LockKeyhole,
   PackageOpen,
   RefreshCw,
   RotateCcw,
   Search,
   ShieldCheck,
+  SquareArrowOutUpRight,
   TestTube2,
   Trash2,
+  Waypoints,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 import { api } from "../api/client";
-import type { ConfigResponse } from "../api/types";
+import type { AccountView, ConfigResponse } from "../api/types";
 import {
   Button,
   ErrorPanel,
@@ -22,35 +26,92 @@ import {
   LoadingLines,
   Panel,
   StatusDot,
+  TabBar,
 } from "../components/ui";
+import { PasswordField } from "../components/PasswordField";
+import { AccountProfiles } from "../components/AccountProfiles";
+import { AccountViewForm } from "../components/AccountViewPanel";
 import { useToast } from "../components/toast-context";
 import { errorText } from "../utils/display";
 import { formatDateTime } from "../utils/time";
 import { APP_BUILD_ID } from "../utils/build";
 
-type TestTarget = "skill" | "source" | "docker" | "solo2" | "api";
+type TestTarget = "skill" | "source" | "docker" | "solo2" | "github" | "api";
 type TestOutcome = { ok: boolean; message: string };
 
+const sections = [["accounts", "账号与连接"], ["runtime", "运行与交付"], ["backup", "备份与迁移"], ["maintenance", "维护与日志"]] as const;
+type Section = typeof sections[number][0];
+
+function sectionFromHash(): Section {
+  const hash = window.location.hash.slice(1);
+  if (hash === "trash") return "maintenance";
+  return sections.find(([key]) => key === hash)?.[0] ?? "accounts";
+}
+
+function secretHint(marker?: string) {
+  return marker === "<set>" ? "已保存，留空保留" : "尚未设置";
+}
+
+function Connection({ name, icon, saved, test, children }: {
+  name: string; icon: ReactNode; saved: boolean; test: ReactNode; children: ReactNode;
+}) {
+  return (
+    <section className="settings-connection" aria-label={name}>
+      <header className="connection-heading">
+        <h2>{icon}{name}</h2>
+        <span className="connection-state" data-saved={saved}>{saved ? "凭据已保存" : "待设置凭据"}</span>
+      </header>
+      <div className="connection-fields">{children}</div>
+      {test}
+    </section>
+  );
+}
+
 export function SystemPage() {
+  const [session, setSession] = useState<{ token: string; seconds: number } | null>(null);
+  useEffect(() => {
+    if (!session) return;
+    const timer = window.setTimeout(() => setSession(null), session.seconds * 1000);
+    return () => { window.clearTimeout(timer); void api.lockAccounts(session.token).catch(() => {}); };
+  }, [session]);
+  return <SystemSettings key={session?.token ?? "locked"} token={session?.token} onLock={() => setSession(null)}
+    onUnlock={view => { if (view.token) setSession({ token: view.token, seconds: view.expires_in }); }} />;
+}
+
+function SystemSettings({ token, onUnlock, onLock }: { token?: string; onUnlock: (view: AccountView) => void; onLock: () => void }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const config = useQuery({ queryKey: ["config"], queryFn: api.config });
-  const logs = useQuery({ queryKey: ["logs"], queryFn: () => api.logs(200), refetchInterval: 5000 });
-  const status = useQuery({ queryKey: ["system-status"], queryFn: api.systemStatus, refetchInterval: 3000 });
+  const [section, setSection] = useState<Section>(sectionFromHash);
+  const configKey = ["config", token ?? "public"];
+  const config = useQuery({ queryKey: configKey, queryFn: () => api.config(token), gcTime: 0 });
+  const logs = useQuery({ queryKey: ["logs"], queryFn: () => api.logs(200), enabled: section === "maintenance", refetchInterval: 5000 });
+  const status = useQuery({ queryKey: ["system-status"], queryFn: api.systemStatus, enabled: section === "runtime", refetchInterval: 15000 });
   const [form, setForm] = useState<ConfigResponse | null>(null);
   const [password, setPassword] = useState("");
+  const [githubToken, setGithubToken] = useState("");
+  const [modelKey, setModelKey] = useState("");
+  const [backupPassword, setBackupPassword] = useState("");
   const [solo2Password, setSolo2Password] = useState("");
   const [logQuery, setLogQuery] = useState("");
   const [logLevel, setLogLevel] = useState("");
   const [dirty, setDirty] = useState(false);
   const [tests, setTests] = useState<Partial<Record<TestTarget, TestOutcome>>>({});
   const [webhook, setWebhook] = useState("");
-  const trash = useQuery({ queryKey: ["trash"], queryFn: api.trash, refetchInterval: 15_000 });
+  const trash = useQuery({ queryKey: ["trash"], queryFn: api.trash, enabled: section === "maintenance", refetchInterval: 15_000 });
+
+  const formReady = !!form;
+  const formProfile = form?.active_profile;
+  const hasChanges = dirty || !!(password || githubToken || solo2Password || modelKey || webhook);
 
   useEffect(() => {
-    // 表单有未保存的修改时，不让后台刷新把它冲掉
-    if (config.data && !dirty) setForm(config.data);
-  }, [config.data, dirty]);
+    if (!config.data) return;
+    if (formProfile && config.data.active_profile !== formProfile) {
+      setPassword(""); setSolo2Password(""); setGithubToken(""); setModelKey("");
+      setTests({}); setDirty(false); setForm(config.data);
+    } else if (!dirty) {
+      setForm(config.data);
+    }
+  }, [config.data, dirty, formProfile]);
   const update = (next: ConfigResponse) => {
     setForm(next);
     setDirty(true);
@@ -59,39 +120,43 @@ export function SystemPage() {
   const save = useMutation({
     mutationFn: () => {
       if (!form) throw new Error("配置尚未加载");
+      const saved = config.data;
+      const changed = <K extends keyof ConfigResponse>(key: K) =>
+        JSON.stringify(form[key]) !== JSON.stringify(saved?.[key]) ? form[key] : undefined;
       return api.patchConfig({
-        port: form.port,
-        skill_root: form.skill_root,
-        tasks_dir: form.tasks_dir,
-        source: {
-          base_url: form.source.base_url,
-          auth_mode: "cookie",
-          username: form.source.username,
-          timeout_seconds: form.source.timeout_seconds,
-        },
-        execution: form.execution,
-        storage: form.storage,
-        recording: form.recording,
-        submission: form.submission,
-        autopilot: form.autopilot,
-        audit: form.audit,
-        intake: form.intake,
-        trash: form.trash,
-        slim: form.slim,
-        notify: { macos: form.notify.macos, webhook_url: webhook || undefined },
-        solo2: form.solo2,
-        secrets: password || solo2Password
+        skill_root: changed("skill_root"),
+        tasks_dir: changed("tasks_dir"),
+        skill: changed("model_base_url") !== undefined ? { base_url: form.model_base_url } : undefined,
+        source: changed("source") ? { base_url: form.source.base_url, username: form.source.username } : undefined,
+        execution: changed("execution"),
+        storage: changed("storage"),
+        recording: changed("recording"),
+        submission: changed("submission"),
+        autopilot: changed("autopilot"),
+        intake: changed("intake"),
+        trash: changed("trash"),
+        slim: changed("slim"),
+        notify: changed("notify") || webhook ? { macos: form.notify.macos, webhook_url: webhook || undefined } : undefined,
+        solo2: changed("solo2") ? {username: form.solo2.username, base_url: form.solo2.base_url, locked_domain: form.solo2.locked_domain} : undefined,
+        secrets: password || solo2Password || githubToken || modelKey
           ? {
+              ...(modelKey ? { gateway_key: modelKey } : {}),
+              ...(githubToken ? { github_token: githubToken } : {}),
               ...(password ? { source_password: password } : {}),
               ...(solo2Password ? { solo2_password: solo2Password } : {}),
             }
           : undefined,
-      });
+      }, token, form.active_profile);
     },
-    onSuccess: () => {
-      toast("已保存。自动提交、自动交付、抽检和计划设置将在下一次阶段或抽样时生效；通知立即生效。", "ok");
+    onSuccess: (saved) => {
+      queryClient.setQueryData(configKey, saved);
+      setForm(saved);
+      setTests({});
+      toast("配置已保存", "ok");
+      setModelKey("");
       setPassword("");
       setSolo2Password("");
+      setGithubToken("");
       setWebhook("");
       setDirty(false);
       void queryClient.invalidateQueries();
@@ -99,7 +164,7 @@ export function SystemPage() {
     onError: (error) => toast(errorText(error), "error"),
   });
   const test = useMutation({
-    mutationFn: (target: TestTarget) => api.testConfig(target),
+    mutationFn: (target: TestTarget) => token ? api.testConfig(target, token) : api.testConfig(target),
     // 结果留在按钮旁边：原文不截断，也不会像 toast 一样消失
     onSuccess: (result, target) => setTests((prev) => ({ ...prev, [target]: { ok: result.ok, message: result.message } })),
     onError: (error, target) => setTests((prev) => ({ ...prev, [target]: { ok: false, message: errorText(error) } })),
@@ -111,6 +176,28 @@ export function SystemPage() {
       void queryClient.invalidateQueries();
     },
     onError: (error) => toast(errorText(error), "error"),
+  });
+  const migrateAccount = useMutation({
+    mutationFn: () => api.migrateAccounts(token),
+    onSuccess: data => { queryClient.setQueryData(configKey, data); setForm(data); setTests({}); toast("旧配置已迁入", "ok"); },
+    onError: error => toast(errorText(error), "error"),
+  });
+  const exportAccount = useMutation({
+    mutationFn: () => api.exportAccounts(backupPassword, token),
+    onSuccess: bundle => {
+      const url = URL.createObjectURL(new Blob([JSON.stringify(bundle, null, 2)], {type: "application/json"}));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "solo-账号配置.json";
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    },
+    onError: error => toast(errorText(error), "error"),
+  });
+  const importAccount = useMutation({
+    mutationFn: async (file: File) => api.importAccounts(JSON.parse(await file.text()), backupPassword, token),
+    onSuccess: data => { queryClient.setQueryData(configKey, data); setForm(data); setTests({}); toast("账号配置已导入", "ok"); },
+    onError: error => toast(errorText(error), "error"),
   });
   const backup = useMutation({
     mutationFn: api.backup,
@@ -161,19 +248,20 @@ export function SystemPage() {
   });
 
   useEffect(() => {
-    const revealTrash = () => {
-      if (window.location.hash === "#trash") {
-        window.setTimeout(() => document.getElementById("trash")?.scrollIntoView(), 100);
-      }
-    };
-    revealTrash();
-    window.addEventListener("hashchange", revealTrash);
-    return () => window.removeEventListener("hashchange", revealTrash);
+    const sync = () => setSection(sectionFromHash());
+    window.addEventListener("hashchange", sync);
+    return () => window.removeEventListener("hashchange", sync);
   }, []);
+  useEffect(() => {
+    if (section === "maintenance" && window.location.hash === "#trash") {
+      document.getElementById("trash")?.scrollIntoView?.();
+    }
+  }, [section, formReady]);
 
   if (config.isPending) return <div className="page"><LoadingLines rows={8} /></div>;
-  if (config.isError) return <div className="page"><ErrorPanel error={config.error} onRetry={() => void config.refetch()} /></div>;
+  if (config.isError && !config.data) return <div className="page"><ErrorPanel error={config.error} onRetry={() => void config.refetch()} /></div>;
   if (!form) return null;
+  const accountsLocked = config.data?.accounts_locked || form.accounts_locked;
   const visibleLogs = [...(logs.data?.items ?? [])]
     .reverse()
     .filter((event) => !logLevel || event.level === logLevel)
@@ -181,18 +269,19 @@ export function SystemPage() {
 
   const testRow = (target: TestTarget, label: string) => {
     const outcome = tests[target];
+    const unsaved = hasChanges;
     return (
       <div className="test-row">
         <Button
           size="small"
-          disabled={dirty}
-          title={dirty ? "测试用的是已保存的配置，请先保存" : undefined}
+          disabled={unsaved || test.isPending}
+          title={unsaved ? "测试用的是已保存的配置，请先保存" : undefined}
           loading={test.isPending && test.variables === target}
           onClick={() => test.mutate(target)}
         >
           <TestTube2 size={13} /> {label}
         </Button>
-        {outcome ? (
+        {outcome && !unsaved ? (
           <span className={`test-result ${outcome.ok ? "is-ok" : "is-bad"}`} role="status">
             {outcome.message}
           </span>
@@ -201,123 +290,123 @@ export function SystemPage() {
     );
   };
 
-  return (
-    <div className="page system-page">
-      <header className="page-head">
-        <div>
-          <span className="eyebrow">SYSTEM / LOCAL ONLY</span>
-          <h1>设置</h1>
-        </div>
-        <div className="page-actions">
-          <Button onClick={() => backup.mutate()} loading={backup.isPending}>
-            <DatabaseBackup size={14} /> 备份索引
-          </Button>
-          <Button onClick={() => prune.mutate({ dryRun: true })} loading={prune.isPending}>
-            清理预演
-          </Button>
-          <Button onClick={() => diagnostics.mutate()} loading={diagnostics.isPending}>
-            <Download size={14} /> 诊断包
-          </Button>
-          <Button onClick={() => reconcile.mutate()} loading={reconcile.isPending}>
-            <RefreshCw size={14} /> 手动对账
-          </Button>
-          <Button
-            variant="primary"
-            data-primary
-            data-save
-            disabled={!dirty && !password && !solo2Password}
-            onClick={() => save.mutate()}
-            loading={save.isPending}
-          >
-            {dirty || password || solo2Password ? "保存配置" : "配置已保存"}
-          </Button>
-        </div>
-      </header>
-
-      <div className="system-grid">
-        <Panel title="技能">
-          <Field label="脚本目录">
-            <input value={form.skill_root} onChange={(event) => update({ ...form, skill_root: event.target.value })} />
-          </Field>
-          <div className="config-facts">
-            <StatusDot state="done" label={`版本 ${form.skill_version}`} />
-            <span>Schema solo-2611/1</span>
-          </div>
-          {testRow("skill", "测试技能")}
-          {testRow("api", "探测 API")}
-        </Panel>
-
-        <Panel title="题源">
-          <Field label="Base URL">
-            <input
-              value={form.source.base_url}
-              onChange={(event) => update({ ...form, source: { ...form.source, base_url: event.target.value } })}
-            />
-          </Field>
-          <Field label="用户名">
-            <input
-              value={form.source.username}
-              onChange={(event) => update({ ...form, source: { ...form.source, username: event.target.value } })}
-            />
-          </Field>
-          <Field label="密码" hint={`当前：${form.source.password}`}>
-            <input
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder="留空则不修改 Keychain"
-            />
-          </Field>
-          {testRow("source", "测试连接")}
-        </Panel>
-
-        <Panel title="提交平台">
+  const accountConnections = !accountsLocked && (
+    <div className="settings-connections">
+        <Connection name="SOLO2 提交平台" icon={<SquareArrowOutUpRight size={17} aria-hidden="true" />}
+          saved={form.solo2.password === "<set>"} test={testRow("solo2", "测试登录")}>
           <Field label="平台地址">
             <input
               value={form.solo2.base_url}
-              onChange={(event) => update({ ...form, solo2: { ...form.solo2, base_url: event.target.value } })}
+              onChange={(event) => update({ ...form, solo2: { ...form.solo2, locked_domain: "", base_url: event.target.value } })}
             />
           </Field>
           <Field label="平台账号">
             <input
               autoComplete="username"
               value={form.solo2.username}
-              onChange={(event) => update({ ...form, solo2: { ...form.solo2, username: event.target.value } })}
+              onChange={(event) => update({ ...form, solo2: { ...form.solo2, locked_domain: "", username: event.target.value } })}
             />
           </Field>
-          <Field label="平台密码" hint={`当前：${form.solo2.password}`}>
-            <input
-              type="password"
-              autoComplete="current-password"
-              value={solo2Password}
-              onChange={(event) => setSolo2Password(event.target.value)}
-              placeholder="留空则不修改 Keychain"
-            />
+          <PasswordField label="平台密码" hint={secretHint(form.solo2.password)} placeholder="输入新密码"
+            value={solo2Password} onChange={setSolo2Password} saved={token && form.active_profile && form.solo2.password === "<set>"
+              && form.solo2.username === config.data?.solo2.username && form.solo2.base_url === config.data?.solo2.base_url
+              ? { token, profile: form.active_profile, target: "solo2" } : undefined} />
+          <Field label="账号绑定领域" hint="技能使用此领域出题和提交">
+            <select value={form.solo2.locked_domain || ""} onChange={e => update({...form, solo2: {...form.solo2, locked_domain: e.target.value as typeof form.solo2.locked_domain}})}>
+              {["", "安全", "游戏、图形与多媒体", "数据工程"].map(value => <option key={value} value={value}>{value || "未绑定"}</option>)}
+            </select>
           </Field>
-          <label className="check-inline">
-            <input
-              type="checkbox"
-              checked={form.submission.auto_submit}
-              onChange={(event) =>
-                update({
-                  ...form,
-                  submission: { ...form.submission, auto_submit: event.target.checked },
-                })
-              }
-            />
-            自动提交到 SOLO2 <span className="effect-tag">默认开启</span>
-          </label>
-          <p className="form-note">
-            导出通过门禁后直接上传轨迹和录屏、提交并轮询质检；需要排障时再关闭或显式执行 dry-run。
-            遇到待返修会保留平台原文并进入返修流程。
-          </p>
-          {testRow("solo2", "测试登录")}
-        </Panel>
+        </Connection>
 
+        <Connection name="题源账号" icon={<LibraryBig size={17} aria-hidden="true" />}
+          saved={form.source.password === "<set>"} test={testRow("source", "测试连接")}>
+          <div className="connection-address">
+            <Field label="题源地址">
+              <input
+                value={form.source.base_url}
+                onChange={(event) => update({ ...form, source: { ...form.source, base_url: event.target.value } })}
+              />
+            </Field>
+          </div>
+          <Field label="用户名">
+            <input
+              value={form.source.username}
+              onChange={(event) => update({ ...form, source: { ...form.source, username: event.target.value } })}
+            />
+          </Field>
+          <PasswordField label="密码" hint={secretHint(form.source.password)} placeholder="输入新密码"
+            value={password} onChange={setPassword} saved={token && form.active_profile && form.source.password === "<set>"
+              && form.source.username === config.data?.source.username && form.source.base_url === config.data?.source.base_url
+              ? { token, profile: form.active_profile, target: "source" } : undefined} />
+        </Connection>
+
+        <Connection name="GitHub 快照仓库" icon={<Github size={17} aria-hidden="true" />}
+          saved={form.github_token === "<set>"} test={testRow("github", "测试 GitHub 连接")}>
+          <PasswordField label="GitHub 凭据" hint={secretHint(form.github_token)} placeholder="输入新凭据"
+            value={githubToken} onChange={setGithubToken}
+            saved={token && form.active_profile && form.github_token === "<set>"
+              ? { token, profile: form.active_profile, target: "github" } : undefined} />
+        </Connection>
+
+        <Connection name="模型网关" icon={<Waypoints size={17} aria-hidden="true" />}
+          saved={form.gateway_key === "<set>"} test={testRow("api", "探测 API")}>
+          <Field label="网关地址"><input value={form.model_base_url} onChange={e => update({...form, model_base_url: e.target.value})} /></Field>
+          <PasswordField label="团队密钥" hint={secretHint(form.gateway_key)} placeholder="输入新密钥"
+            value={modelKey} onChange={setModelKey} saved={token && form.active_profile && form.gateway_key === "<set>"
+              && form.model_base_url === config.data?.model_base_url
+              ? { token, profile: form.active_profile, target: "gateway" } : undefined} />
+        </Connection>
+    </div>
+  );
+
+  return (
+    <div className="page system-page">
+      <header className="page-head">
+        <div>
+          <h1>设置</h1>
+        </div>
+        {(section !== "accounts" || !accountsLocked || hasChanges) && <div className="page-actions">
+          <Button
+            variant="primary"
+            data-primary
+            data-save
+            disabled={!hasChanges || test.isPending}
+            onClick={() => save.mutate()}
+            loading={save.isPending}
+          >
+            {hasChanges ? "保存配置" : "配置已保存"}
+          </Button>
+        </div>}
+      </header>
+
+      <TabBar shortcuts={false} label="设置分类" tabs={sections} value={section} onChange={next => {
+        setSection(next);
+        window.history.replaceState(window.history.state, "", `#${next}`);
+      }} />
+      <fieldset className="settings-content" disabled={save.isPending || migrateAccount.isPending || importAccount.isPending}>
+      {section === "accounts" && <div className="account-settings" role="tabpanel" aria-label="账号与连接">
+        {(!token || accountsLocked) && <section className="accounts-access" aria-labelledby="account-code-heading">
+          <div className="accounts-access-intro">
+            <LockKeyhole size={20} aria-hidden="true" />
+            <h2 id="account-code-heading">账号查看码</h2>
+            <p>解锁后可切换用户配置，编辑 SOLO2、题源、GitHub 和模型网关的连接信息。</p>
+          </div>
+          <AccountViewForm onUnlock={onUnlock} />
+        </section>}
+        {token && !accountsLocked ? <AccountProfiles token={token} canCreate
+          disabled={hasChanges || test.isPending}
+          switchHint={hasChanges ? "请先保存修改，再切换用户配置" : undefined}
+          onLock={onLock}
+          details={(_, profile) => form.active_profile === profile ? accountConnections : config.isRefetchError
+            ? <ErrorPanel error={config.error} onRetry={() => void config.refetch()} />
+            : <LoadingLines rows={5} />}
+        /> : accountConnections}
+      </div>}
+      {section === "backup" && accountsLocked && <Panel title="账号查看码"><AccountViewForm onUnlock={onUnlock} /></Panel>}
+      {section === "runtime" && <div className="system-grid" role="tabpanel" aria-label="运行与交付">
         <Panel title="执行">
           <div className="form-note">
             容器并发、会话并发、在手上限、启动间隔与失败策略已移到 <a className="text-link" href="/dispatch">调度页</a>。
-            v4 起一题只有一次会话机会，中断时在同一会话发送“继续”，不再整题重跑。
           </div>
           <Field label="运行模式">
             <select
@@ -431,45 +520,26 @@ export function SystemPage() {
               }
             />
           </Field>
-          <p className="form-note">旧配置中的尝试次数已弃用：v4 起固定一次会话。</p>
           <Field label="任务目录">
             <input value={form.tasks_dir} onChange={(event) => update({ ...form, tasks_dir: event.target.value })} />
           </Field>
           {testRow("docker", "测试 Docker")}
         </Panel>
 
-        <Panel title="存储与录屏">
-          <Field label="磁盘阈值 GB">
+        <Panel title="自动交付">
+          <label className="check-inline">
             <input
-              type="number"
-              value={form.storage.disk_floor_gb}
+              type="checkbox"
+              checked={form.submission.auto_submit}
               onChange={(event) =>
                 update({
                   ...form,
-                  storage: { ...form.storage, disk_floor_gb: Number(event.target.value) },
+                  submission: { ...form.submission, auto_submit: event.target.checked },
                 })
               }
             />
-          </Field>
-          <Field label="录屏上限">
-            <input type="number" value={form.recording.max_seconds} disabled />
-          </Field>
-          <Field label="Chrome URL">
-            <input
-              value={form.recording.chrome_url}
-              onChange={(event) =>
-                update({ ...form, recording: { ...form.recording, chrome_url: event.target.value } })
-              }
-            />
-          </Field>
-          <div className="inline-metrics">
-            <span><HardDrive size={14} /> 剩余 {status.data?.disk_free_gb ?? "—"} GB</span>
-            <span><ShieldCheck size={14} /> 仅监听 127.0.0.1</span>
-            <span>GitHub Token {form.github_token}</span>
-          </div>
-        </Panel>
-
-        <Panel title="自动交付">
+            自动提交到 SOLO2 <span className="effect-tag">默认开启</span>
+          </label>
           <label className="check-inline">
             <input
               type="checkbox"
@@ -598,26 +668,47 @@ export function SystemPage() {
           </label>
         </Panel>
 
-        <Panel title="抽检与生产计划">
-          <Field label="抽检策略" hint="默认按任务类型分层抽样 30%">
-            <select
-              value={form.audit.mode}
-              onChange={(event) => update({
-                ...form,
-                audit: { ...form.audit, mode: event.target.value as typeof form.audit.mode },
-              })}
-            >
-              <option value="sample">按比例抽样</option>
-              <option value="all">全检</option>
-              <option value="off">不抽检</option>
-            </select>
+        <Panel title="技能">
+          <Field label="脚本目录">
+            <input value={form.skill_root} onChange={(event) => update({ ...form, skill_root: event.target.value })} />
           </Field>
-          <Field label="抽样比例" hint="下次抽样生效">
-            <input type="number" min={0} max={1} step={0.05} value={form.audit.sample_rate} onChange={(event) => update({
-              ...form,
-              audit: { ...form.audit, sample_rate: Number(event.target.value) },
-            })} />
+          <div className="config-facts">
+            <StatusDot state="done" label={`版本 ${form.skill_version}`} />
+          </div>
+          {testRow("skill", "测试技能")}
+        </Panel>
+
+        <Panel title="存储与录屏">
+          <Field label="磁盘阈值 GB">
+            <input
+              type="number"
+              value={form.storage.disk_floor_gb}
+              onChange={(event) =>
+                update({
+                  ...form,
+                  storage: { ...form.storage, disk_floor_gb: Number(event.target.value) },
+                })
+              }
+            />
           </Field>
+          <Field label="录屏上限">
+            <input type="number" value={form.recording.max_seconds} disabled />
+          </Field>
+          <Field label="Chrome URL">
+            <input
+              value={form.recording.chrome_url}
+              onChange={(event) =>
+                update({ ...form, recording: { ...form.recording, chrome_url: event.target.value } })
+              }
+            />
+          </Field>
+          <div className="inline-metrics">
+            <span><HardDrive size={14} /> 剩余 {status.data?.disk_free_gb ?? "—"} GB</span>
+            <span><ShieldCheck size={14} /> 仅监听 127.0.0.1</span>
+          </div>
+        </Panel>
+
+        <Panel title="生产计划">
           <Field label="计划排除标签" hint="逗号分隔；计划选择候选时排除">
             <input value={form.intake.exclude_tags.join(", ")} onChange={(event) => update({
               ...form,
@@ -645,13 +736,39 @@ export function SystemPage() {
           </Field>
           <p className="form-note">Webhook 仅发送标题、任务名与状态，不发送题面、路径或 SessionID。</p>
         </Panel>
+      </div>}
+      {section === "backup" && !accountsLocked && <div className="system-grid" role="tabpanel" aria-label="备份与迁移">
+        <Panel title="账号配置备份">
+          <Field label="账号备份密码" hint="备份 SOLO2 账号、领域和平台地址。填写密码时一并加密保存 SOLO2 密码和 GitHub 凭据。"><input type="password" autoComplete="new-password" value={backupPassword} onChange={e => setBackupPassword(e.target.value)} /></Field>
+          <Button onClick={() => exportAccount.mutate()} disabled={hasChanges} loading={exportAccount.isPending}>导出账号配置</Button>
+          <Field label="导入账号配置"><input type="file" accept="application/json,.json" disabled={hasChanges || importAccount.isPending} onChange={event => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (file) importAccount.mutate(file);
+          }} /></Field>
+        </Panel>
 
+        <Panel title="旧设备配置迁移">
+          <p className="form-note">在本机首次升级时使用。迁入旧技能的领域、GitHub 凭据和模型配置，已设置的账号凭据会保留。</p>
+          <Button onClick={() => migrateAccount.mutate()} disabled={hasChanges} loading={migrateAccount.isPending}>迁入旧技能配置</Button>
+        </Panel>
+      </div>}
+      {section === "maintenance" && <div className="system-grid" role="tabpanel" aria-label="维护与日志">
         <Panel title="服务与诊断">
           <div className="inline-metrics">
             <span><ShieldCheck size={14} /> 仅监听 127.0.0.1</span>
             <span className="mono">build {APP_BUILD_ID}</span>
           </div>
           <div className="form-actions">
+          <Button onClick={() => backup.mutate()} loading={backup.isPending}>
+            <DatabaseBackup size={14} /> 备份索引
+          </Button>
+          <Button onClick={() => prune.mutate({ dryRun: true })} loading={prune.isPending}>
+            清理预演
+          </Button>
+          <Button onClick={() => reconcile.mutate()} loading={reconcile.isPending}>
+            <RefreshCw size={14} /> 手动对账
+          </Button>
             <Button onClick={() => { void navigator.clipboard.writeText("make install-service"); }}>复制安装命令</Button>
             <Button onClick={() => restart.mutate(false)} loading={restart.isPending}><RefreshCw size={13} /> 重启后端</Button>
             <Button onClick={() => diagnostics.mutate()} loading={diagnostics.isPending}><PackageOpen size={13} /> 导出诊断包</Button>
@@ -730,9 +847,9 @@ export function SystemPage() {
             </div>
           ) : <p className="empty-inline">回收站为空。</p>}
         </Panel>
-      </div>
-
-      <Panel title="最近事件与日志" className="logs-panel">
+      </div>}
+      </fieldset>
+      {section === "maintenance" && <Panel title="最近事件与日志" className="logs-panel">
         <div className="table-toolbar logs-toolbar">
           <label className="search-box">
             <Search size={14} />
@@ -762,7 +879,7 @@ export function SystemPage() {
         ) : logs.isPending ? null : (
           <div className="empty-inline">{logQuery || logLevel ? "没有匹配的事件" : "暂无事件"}</div>
         )}
-      </Panel>
+      </Panel>}
     </div>
   );
 }

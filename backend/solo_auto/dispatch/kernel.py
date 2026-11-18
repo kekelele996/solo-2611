@@ -220,44 +220,21 @@ class Dispatcher:
         await self._refresh_waits()
 
     async def sync_skill_limit(self, *, sync: bool = True) -> dict[str, Any]:
-        desired = self.effective_container_limit
-        requested = desired
-        result = await self.gateway.call(["config", "show"], timeout=30)
-        actual = 0
-        if result.code == 0 and result.data:
-            claude = result.data.get("claude")
-            if isinstance(claude, dict):
-                try:
-                    actual = int(claude.get("maxContainers") or 0)
-                except (TypeError, ValueError):
-                    actual = 0
-        self.skill_limit = actual
-        self.limit_synced = actual == requested
-        if actual != requested:
-            self.repo.add_event(
-                "limit.drift",
-                f"技能容器上限 {actual or '未知'} 与平台 {requested} 不一致",
-                level="warn",
-                actor="dispatch",
-                details={"actual": actual, "requested": requested},
-            )
-            self.limit_resync_until = (datetime.now(UTC) + timedelta(seconds=20)).replace(microsecond=0).isoformat()
-            if sync:
-                updated = await self.gateway.call(["config", "set", f"claude.maxContainers={requested}"], timeout=30)
-                if updated.code == 0:
-                    actual = requested
-                    self.skill_limit = actual
-                    self.limit_synced = True
+        # 技能每次启动从工作台读取当前生效的容器上限。
+        self.skill_limit = self.effective_container_limit
+        self.limit_synced = True
         return {
-            "requested": requested,
-            "actual": actual,
-            "synced": self.limit_synced,
+            "requested": self.skill_limit,
+            "actual": self.skill_limit,
+            "synced": True,
             "ceiling": self.elastic.ceiling,
         }
 
     async def request_container(self, task_id: str) -> GateDecision:
+        return self.reserve_container(task_id, await self.facts.snapshot())
+
+    def reserve_container(self, task_id: str, snapshot: FactsSnapshot) -> GateDecision:
         item = self.queue.get(task_id) or self.queue.enqueue(task_id)
-        snapshot = await self.facts.snapshot()
         self.pools_book.occupy_from_facts(snapshot)
         self._configure_pools()
         decision = evaluate_container_gates(
@@ -301,7 +278,7 @@ class Dispatcher:
         self._publish()
         return decision
 
-    def container_demand(self, *, extra: int = 0) -> dict[str, Any]:
+    def container_demand(self, *, extra: int = 0, items: list[DispatchItem] | None = None) -> dict[str, Any]:
         """容器占用 = 运行中的受管容器 + 在手任务里还没拿到容器、但仍需要容器的数量。
 
         沿用 sg-auto 的容器优先口径：刚建好还没起容器的题按 1 计，跑完容器阶段（ran 之后）计 0。
@@ -312,8 +289,10 @@ class Dispatcher:
         live = set(snapshot.docker.containers) if snapshot is not None else set()
         waiting: list[str] = []
         now = self.clock.wall().timestamp()
-        for task_id in self._in_hand_task_ids():
-            task = self.repo.get_task(task_id) or {}
+        ids = self._in_hand_task_ids(items)
+        tasks = self.repo.tasks_by_ids(ids)
+        for task_id in ids:
+            task = tasks.get(task_id) or {}
             root = str(task.get("task_root") or "")
             if not root:
                 waiting.append(task_id)
@@ -338,10 +317,12 @@ class Dispatcher:
 
     def creation_decision(self, *, in_hand: int, extra_demand: int = 0) -> GateDecision:
         """领题建题前调用：只回答“现在能不能再建一题”，不改任何状态。"""
+        return self._creation_decision(in_hand, self.container_demand(extra=extra_demand))
+
+    def _creation_decision(self, in_hand: int, demand: dict[str, Any]) -> GateDecision:
         snapshot = self._fact_snapshot
         if snapshot is None:
             snapshot = FactsSnapshot(docker=self.facts._docker, disk_free_gb=self.config.disk.floor_gb, observed_at=0)
-        demand = self.container_demand(extra=extra_demand)
         return evaluate_creation_gates(
             settings=self.config,
             desired_state=self.desired_state,
@@ -370,7 +351,7 @@ class Dispatcher:
         )
         self._publish()
 
-    def _in_hand_task_ids(self) -> list[str]:
+    def _in_hand_task_ids(self, items: list[DispatchItem] | None = None) -> list[str]:
         jobs = getattr(self.autopilot, "jobs", None) if self.autopilot is not None else None
         if isinstance(jobs, dict) and jobs:
             ids: list[str] = []
@@ -381,11 +362,15 @@ class Dispatcher:
                     continue
                 ids.append(str(task_id))
             return ids
-        return [item.task_id for item in self.queue.all_items(include_terminal=False) if item.status in IN_HAND]
+        if items is None:
+            items = self.queue.all_items(include_terminal=False)
+        return [item.task_id for item in items if item.status in IN_HAND]
 
-    def creation_view(self, *, in_hand: int | None = None, extra_demand: int = 0) -> dict[str, Any]:
-        count = self.in_hand_count() if in_hand is None else in_hand
-        decision = self.creation_decision(in_hand=count, extra_demand=extra_demand)
+    def creation_view(self, *, in_hand: int | None = None, extra_demand: int = 0,
+                      items: list[DispatchItem] | None = None) -> dict[str, Any]:
+        count = self.in_hand_count(items) if in_hand is None else in_hand
+        demand = self.container_demand(extra=extra_demand, items=items)
+        decision = self._creation_decision(count, demand)
         cooldown = max(20, self.config.create_cooldown_seconds)
         next_at = ""
         if self.last_created_at > 0:
@@ -407,7 +392,7 @@ class Dispatcher:
             "in_hand": count,
             "mode": self.config.mode,
             "max_tasks": self.config.max_tasks,
-            "containers": self.container_demand(extra=extra_demand),
+            "containers": demand,
         }
 
     def mark_container_started(self, task_id: str) -> None:
@@ -678,7 +663,10 @@ class Dispatcher:
         if item is None:
             return
         status = "done" if outcome in {"done", "awaiting_audit"} else outcome
-        if item.status == status:
+        if item.status == status and (status != "failed" or self.repo.query_one(
+            "SELECT 1 FROM dispatch_outcomes WHERE task_id=? AND julianday(finished_at) >= julianday(?) AND outcome=? LIMIT 1",
+            (task_id, item.enqueued_at, status),
+        )):
             return
         self.queue.update(
             task_id,
@@ -687,14 +675,16 @@ class Dispatcher:
             wait_text=detail,
         )
         finished_at = datetime.now(UTC).replace(microsecond=0)
-        elapsed = max(0.0, self.clock.monotonic() - self.started_monotonic)
+        elapsed = _duration_since(item.enqueued_at, finished_at)
+        first = self.repo.query_one("SELECT MIN(started_at) AS at FROM autopilot_stages WHERE task_id=? AND started_at>=?", (task_id, item.enqueued_at)) or {}
+        first_stage = _parse_dt(str(first.get("at") or ""))
         stage_seconds = self._stage_seconds(task_id)
         self.throughput.record(
             Outcome(
                 task_id=task_id,
                 finished_at=finished_at.isoformat(),
                 outcome=status,
-                queued_s=_duration_since(item.enqueued_at, finished_at),
+                queued_s=_duration_since(item.enqueued_at, first_stage) if first_stage else 0,
                 authoring_s=stage_seconds.get("authoring", 0.0) + stage_seconds.get("chatgpt", 0.0),
                 running_s=stage_seconds.get("running", 0.0),
                 delivering_s=stage_seconds.get("delivering", 0.0),
@@ -795,32 +785,40 @@ class Dispatcher:
         self._publish()
         return result
 
-    def snapshot(self, *, compact: bool = False, include_queue: bool = True) -> dict[str, Any]:
-        items = self.queue.all_items()
+    def status_summary(self) -> dict[str, Any]:
+        """顶栏与健康检查只需要当前任务和资源占用。"""
+        items = self.queue.all_items(include_terminal=False)
+        return {
+            "engine": self.config.engine,
+            "effective_state": self._effective_state(items),
+            "sentence": self.status_sentence(items),
+            "pools": self.pools_book.snapshot(),
+            "counts": {"waiting": sum(item.status in {"queued", "launching", "backoff", "interrupted"} for item in items),
+                       "needs_action": sum(item.status == "quarantined" for item in items)},
+        }
+
+    def snapshot(self, *, compact: bool = False, include_queue: bool = True, metrics: bool = True) -> dict[str, Any]:
+        items = self.queue.all_items(include_terminal=not compact)
         active = [item for item in items if item.active]
         waiting = [item for item in items if item.status in {"queued", "launching", "backoff", "interrupted"}]
         needs = [item for item in items if item.status == "quarantined"]
         finished = [item for item in items if item.status in {"done", "failed", "removed"}]
-        display_items = self._display_order(items)
+        finished_count = len(finished)
+        all_count = len(items)
+        if compact:
+            totals = self.repo.query_one("SELECT COUNT(*) AS n, COUNT(CASE WHEN status IN ('done','failed','removed') THEN 1 END) AS finished FROM dispatch_items") or {}
+            finished_count, all_count = int(totals.get("finished") or 0), int(totals.get("n") or 0)
+        ordered = self.queue.order_items(items) if include_queue else []
+        display_items = self._display_order(items) if include_queue and not compact else []
 
         # 轮询接口只带看板实际会展示的条目；计数仍来自完整队列。
         if not include_queue:
             selected_items: list[DispatchItem] = []
         elif compact:
-            selected_items = list(
-                {
-                    item.task_id: item
-                    for item in [
-                        *[entry for entry in display_items if entry.active][:20],
-                        *[entry for entry in display_items if not entry.active and entry.status not in {"done", "failed", "removed"}][:20],
-                        *[entry for entry in display_items if entry.status in {"done", "failed", "removed"}][:20],
-                    ]
-                }.values()
-            )
+            selected_items = ordered
         else:
             selected_items = display_items
 
-        ordered = self.queue.ordered() if selected_items else []
         positions = {item.task_id: index + 1 for index, item in enumerate(ordered)}
         task_map = self.repo.tasks_by_ids([item.task_id for item in selected_items])
         queue_view = [
@@ -830,17 +828,20 @@ class Dispatcher:
         holds = [asdict(hold) for hold in self.holds.active()]
         guards = [hit.view() for hit in self.guards.scan()] if include_queue else []
         effective = self._effective_state(items)
+        creation = self.creation_view(items=items)
         waiting_sessions = [
             item
             for item in items
             if item.session_state in {"waiting_continue", "holding", "manual_input"}
         ]
+        profile = self.settings.profiles.get(self.settings.active_profile)
         return {
             "engine": self.config.engine,
+            "active_profile_name": profile.name if profile else None,
             "enabled": self.config.enabled,
             "desired_state": self.desired_state,
             "effective_state": effective,
-            "sentence": self.status_sentence(items),
+            "sentence": self.status_sentence(items, creation=creation),
             "started_at": self.clock.wall().replace(microsecond=0).isoformat(),
             "uptime_seconds": round(self.clock.monotonic() - self.started_monotonic, 1),
             "settings": self.config.model_dump(),
@@ -857,7 +858,7 @@ class Dispatcher:
             },
             "elastic": self.elastic.status(now=self.clock.wall().timestamp()),
             "pools": self.pools_book.snapshot(),
-            "creation": self.creation_view(),
+            "creation": creation,
             "session_capacity": {
                 "waiting": len(waiting_sessions),
                 "running": max(0, len(active) - len(waiting_sessions)),
@@ -872,8 +873,8 @@ class Dispatcher:
                 "active": len(active),
                 "waiting": len(waiting),
                 "needs_action": len(needs),
-                "finished": len(finished),
-                "all": len(items),
+                "finished": finished_count,
+                "all": all_count,
             },
             "queue": queue_view,
             "upcoming": [] if compact else self.upcoming(),
@@ -882,8 +883,8 @@ class Dispatcher:
                 "count": len(guards),
                 "hits": guards,
             },
-            "throughput": self.throughput.summary(),
-            "capacity": self.throughput.capacity(include_items=not compact),
+            **({"throughput": self.throughput.summary(),
+                "capacity": self.throughput.capacity(include_items=not compact)} if metrics else {}),
             "plan": self.plan,
             "loops": self.health.snapshot(),
             "keep_awake": self.config.keep_awake,
@@ -977,7 +978,7 @@ class Dispatcher:
         """会话上限：任务优先跟随最大任务数；容器优先时任务数可以浮动，只受会话硬上限约束。"""
         return max(1, min(MAX_SESSIONS, self.effective_in_hand))
 
-    def in_hand_count(self) -> int:
+    def in_hand_count(self, items: list[DispatchItem] | None = None) -> int:
         """已领取、仍会继续推进的任务数；需人工处理和已结束的不占在手。"""
         jobs = getattr(self.autopilot, "jobs", {}) if self.autopilot is not None else {}
         awaiting = (
@@ -990,17 +991,21 @@ class Dispatcher:
             else set()
         )
         # 已提交到 SOLO2、只等质检反馈的题不再占在手。
+        if items is None:
+            items = self.queue.all_items(include_terminal=False)
         return sum(
             1
-            for item in self.queue.all_items(include_terminal=False)
+            for item in items
             if item.status in IN_HAND and item.task_id not in awaiting
         )
 
-    def status_sentence(self, items: list[DispatchItem] | None = None) -> str:
-        current_items = self.queue.all_items() if items is None else items
+    def status_sentence(self, items: list[DispatchItem] | None = None, *, creation: dict[str, Any] | None = None) -> str:
+        current_items = self.queue.all_items(include_terminal=False) if items is None else items
+        if creation is None:
+            creation = self.creation_view(items=current_items)
         pools = self.pools_book.snapshot()
         containers = pools["containers"]
-        in_hand = self.in_hand_count()
+        in_hand = creation["in_hand"]
         prefix = {
             "paused": "已暂停",
             "draining": "排空中",
@@ -1009,7 +1014,7 @@ class Dispatcher:
             "idle": "空闲",
             "running": "运行中",
         }[self._effective_state(current_items)]
-        demand = self.container_demand()
+        demand = creation["containers"]
         parts = [
             prefix,
             "任务优先" if self.tasks_first else "容器优先",
@@ -1555,7 +1560,8 @@ class Dispatcher:
 
     def _publish(self) -> None:
         self.bus.publish("dispatch.updated", {"seq": self.bus.sequence})
-        self.bus.publish("autopilot.updated", {"active": sum(1 for item in self.queue.all_items() if item.active)})
+        active = self.repo.query_one("SELECT COUNT(*) AS n FROM dispatch_items WHERE status IN ('active','launching')")
+        self.bus.publish("autopilot.updated", {"active": int((active or {}).get("n") or 0)})
 
 
 NEEDS_CONTAINER = frozenset({"", "created", "prepared", "prompt_ready", "running"})

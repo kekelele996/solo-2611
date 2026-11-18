@@ -61,7 +61,18 @@ def test_prompt_template_rejects_bypass_instruction(tmp_path: Path) -> None:
     assert error.value.code == "PROMPT_TEMPLATE_UNSAFE"
 
 
-def test_default_chatgpt_template_requires_platform_submission(tmp_path: Path) -> None:
+@pytest.mark.parametrize("stage", prompt_templates.STAGES)
+def test_dispatch_prompt_starts_with_brief_and_reuses_loaded_skill(tmp_path: Path, stage: str) -> None:
+    paths = app_paths(tmp_path / "app")
+    templates = PromptTemplates(paths)
+    text = templates.render(stage, root=tmp_path / "task", skill_root=tmp_path / "skill", missing=[])
+    assert 'status --task-root "$ROOT" --brief' in text
+    assert "尚未加载时才读一次" in text and "先完整阅读" not in text
+    if stage == "chatgpt":
+        assert "--wait-until attention" in text and "已接受则复用" in text
+
+
+def test_default_chatgpt_template_leaves_submission_to_workbench(tmp_path: Path) -> None:
     templates = PromptTemplates(app_paths(tmp_path / "app"))
     prompt = templates.render(
         "chatgpt",
@@ -69,11 +80,10 @@ def test_default_chatgpt_template_requires_platform_submission(tmp_path: Path) -
         skill_root=tmp_path / "skill",
         missing=[],
     )
-    assert "python3 $S submit --task-root ROOT --execute --watch" in prompt
-    assert "用户名使用工作台配置的用户" in prompt
-    assert "绝对不要写入正式题面文件" in prompt
+    assert "python3 $S submit --task-root ROOT --execute --watch" not in prompt
+    assert "工作台独立负责导出、提交和查询回执" in prompt
+    assert "record auto" in prompt and "pageCommand" in prompt
     assert "AUTOPILOT: BLOCKED" in prompt
-    assert "不要执行 export" not in prompt
 
 
 def test_default_prompt_templates_migrate_only_untouched_legacy_copies(
@@ -312,6 +322,7 @@ async def test_audit_redo_feedback_returns_to_agent_before_reack(
     )
     ctx.autopilot.agent_command = [sys.executable, str(agent)]
     await ctx.autopilot.enroll([task_id])
+    ctx.settings.submission.auto_submit = False
     ctx.autopilot.jobs[task_id].stage = "awaiting_audit"
     try:
         await ctx.audits.decide(
@@ -329,7 +340,7 @@ async def test_audit_redo_feedback_returns_to_agent_before_reack(
         await ctx.autopilot.tick()
         assert ack.exists()
         assert json.loads(ack.read_text(encoding="utf-8"))["ackedBy"] == "autopilot"
-        assert ctx.autopilot.jobs[task_id].stage == "awaiting_audit"
+        assert ctx.autopilot.jobs[task_id].stage == "done"
         assert ctx.repo.audit(task_id)["verdict"] is None
     finally:
         await ctx.shutdown()
@@ -354,7 +365,7 @@ async def test_batch_blocks_duplicate_session_ids(
 
 
 @pytest.mark.asyncio
-async def test_batch_blocks_sampled_task_without_pass(
+async def test_batch_ignores_retired_sample_gate(
     fixture_factory: Any,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -366,7 +377,7 @@ async def test_batch_blocks_sampled_task_without_pass(
         ctx.audits.settings.mode = "all"
         ctx.audits.assess(task_id)
         report = ctx.batch.check([task_id])
-        assert any(item["code"] == "AUDIT_NOT_PASSED" for item in report["blockers"])
+        assert not any(item["code"] == "AUDIT_NOT_PASSED" for item in report["blockers"])
     finally:
         await ctx.shutdown()
 
@@ -940,6 +951,9 @@ async def test_intake_releases_finished_task_and_allows_reuse(
                 "page_size": 100,
             }
 
+    receipt = Path(task["task_root"]) / "monitor/submission/api-result.json"
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    receipt.write_text(json.dumps({"status": "qc_passed", "submissionId": 12}))
     ctx.intake.source = ReusableSource()  # type: ignore[assignment]
     ctx.intake.plan = {
         "id": "reuse-source",

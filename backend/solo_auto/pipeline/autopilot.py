@@ -37,17 +37,18 @@ from solo_auto.pipeline.desktop_chatgpt import (
     rollout_last_assistant,
     thread_id_from_rollout,
 )
+from solo_auto.pipeline.desktop_interrupt import interrupt_turn
 from solo_auto.pipeline.export_service import ExportService
 from solo_auto.pipeline.feedback_service import FeedbackService
 from solo_auto.pipeline.notify import Notifier
 from solo_auto.pipeline.project_memory import ProjectMemory
 from solo_auto.pipeline.prompt_history import PromptHistory
-from solo_auto.pipeline.prompt_templates import PromptTemplates
+from solo_auto.pipeline.prompt_templates import DEFAULT_TEMPLATES, PromptTemplates
 from solo_auto.pipeline.reaper import reap_and_record, reaped_note
 from solo_auto.pipeline.reconcile import Reconciler
 from solo_auto.pipeline.scheduler import RunScheduler
 from solo_auto.pipeline.steps import evaluate_steps
-from solo_auto.settings import AutopilotSettings, Paths
+from solo_auto.settings import AutopilotSettings, Paths, SubmissionSettings
 from solo_auto.store.repo import Repository
 from solo_auto.store.state import load_state
 
@@ -57,7 +58,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 ACTOR = "autopilot"
-ACTIVE_STAGES = ("pending", "chatgpt", "authoring", "running", "delivering", "exporting")
+ACTIVE_STAGES = ("pending", "chatgpt", "authoring", "running", "delivering", "exporting", "reviewing", "waiting_quota")
 POST_SUBMIT_WAIT_STATUSES = frozenset({"SUBMITTED", "QC_RUNNING", "QC_PASSED", "PASSED"})
 AGENT_STAGES = ("authoring", "delivering")
 STAGE_LABELS = {
@@ -67,6 +68,8 @@ STAGE_LABELS = {
     "running": "容器单轮执行",
     "delivering": "Agent 复核、录屏与 Feedback",
     "exporting": "自动确认并导出",
+    "reviewing": "等待平台审核",
+    "waiting_quota": "待次日提交",
     "awaiting_audit": "等待人工抽检",
     "done": "已交付",
     "failed": "失败",
@@ -200,6 +203,10 @@ class Job:
     desktop_recovery_error: str = ""
     # 已提交到 SOLO2、会话只是在轮询质检结果：不再占用会话名额，也不计入在手。
     awaiting_platform: bool = False
+    quota_retry_at: str = ""
+    quota_wait_seconds: float = 0.0
+    repair_version: str = ""
+    repair_ready: bool = False
 
     @property
     def active(self) -> bool:
@@ -240,6 +247,7 @@ class Autopilot:
         exports: ExportService,
         settings: AutopilotSettings,
         gateway: SkillGateway,
+        submission: SubmissionSettings | None = None,
         dispatcher: Dispatcher | None = None,
     ) -> None:
         self.paths = paths
@@ -251,6 +259,8 @@ class Autopilot:
         self.feedback = feedback
         self.exports = exports
         self.gateway = gateway
+        self.submission = submission
+        self.review_tasks: dict[str, asyncio.Task[None]] = {}
         self.dispatcher = dispatcher
         self.settings = settings
         self.usage_limited_until = 0.0
@@ -438,6 +448,10 @@ class Autopilot:
             self._loop_task.cancel()
             await asyncio.gather(self._loop_task, return_exceptions=True)
             self._loop_task = None
+        for watcher in self.review_tasks.values():
+            watcher.cancel()
+        await asyncio.gather(*self.review_tasks.values(), return_exceptions=True)
+        self.review_tasks.clear()
         for task_id in list(self.agents):
             await self._kill_agent(task_id)
         for task in list(self.desktop_followers.values()):
@@ -455,7 +469,7 @@ class Autopilot:
 
     # ---- public API ------------------------------------------------
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, *, compact: bool = False) -> dict[str, Any]:
         jobs = sorted(self.jobs.values(), key=lambda job: job.started_at, reverse=True)
         return {
             "enabled": self.settings.enabled,
@@ -476,12 +490,12 @@ class Autopilot:
             "stage_timeout_seconds": self.settings.stage_timeout_seconds,
             "task_timeout_seconds": self.settings.task_timeout_seconds,
             "chatgpt_timeout_seconds": self.settings.chatgpt_timeout_seconds,
-            "jobs": [self._job_view(job) for job in jobs],
+            "jobs": [self._job_view(job, compact=compact) for job in jobs],
         }
 
-    def job(self, task_id: str) -> dict[str, Any] | None:
+    def job(self, task_id: str, *, compact: bool = False) -> dict[str, Any] | None:
         job = self.jobs.get(task_id)
-        return self._job_view(job) if job else None
+        return self._job_view(job, compact=compact) if job else None
 
     async def enroll(self, task_ids: list[str]) -> dict[str, Any]:
         async with self._lock:
@@ -596,6 +610,11 @@ class Autopilot:
             job = self.jobs.get(task_id)
             if not job or not job.active:
                 continue
+            watcher = self.review_tasks.get(task_id)
+            if watcher:
+                watcher.cancel()
+                await asyncio.gather(watcher, return_exceptions=True)
+            chatgpt_detail = await self._stop_owned_desktop(job)
             await self._kill_agent(task_id)
             await self._stop_desktop_follower(task_id)
             desktop_stopped = job.desktop_running
@@ -621,11 +640,6 @@ class Autopilot:
                         if cleanup.code == 0
                         else f"；容器清理失败：{cleanup.err.strip() or cleanup.code}"
                     )
-            chatgpt_detail = (
-                "；平台已停止跟踪。ChatGPT 会话需要你在 ChatGPT 里手动停止，停止前它仍计入会话名额"
-                if desktop_stopped
-                else ""
-            )
             self._finish(job, "stopped", "已手动停止" + cleanup_detail + chatgpt_detail)
             stopped.append(task_id)
         self._changed()
@@ -775,10 +789,23 @@ class Autopilot:
                     LOGGER.exception("refresh live ChatGPT sessions failed")
             if not self.settings.enabled or self.paused or self.breaker.tripped:
                 return
-            for job in list(self.jobs.values()):
-                if not job.active:
+            pending = [job for job in self.jobs.values() if job.active]
+            if len(pending) > 1 and self.dispatcher is not None and self.dispatcher.v3_enabled:
+                priorities = self.dispatcher.queue.manual_priorities()
+                pending.sort(key=lambda job: -priorities.get(job.task_id, 0))
+            for job in pending:
+                if not job.active or job.task_id in self.review_tasks:
                     continue
                 try:
+                    if job.stage == "waiting_quota":
+                        retry_at = _parse_datetime(job.quota_retry_at)
+                        if retry_at and datetime.now().astimezone() < retry_at:
+                            continue
+                        started = _parse_datetime(job.stage_started_at)
+                        if started:
+                            job.quota_wait_seconds += max(0.0, (datetime.now().astimezone() - started).total_seconds())
+                        job.quota_retry_at = ""
+                        self._stage(job, "reviewing", "恢复昨日暂存的提交")
                     if await self._enforce_task_timeout(job):
                         continue
                     await self._advance(job)
@@ -799,19 +826,58 @@ class Autopilot:
         started = _parse_datetime(job.started_at)
         if started is None:
             return False
-        elapsed = (datetime.now().astimezone() - started).total_seconds()
+        elapsed = (datetime.now().astimezone() - started).total_seconds() - job.quota_wait_seconds
         if elapsed < self.settings.task_timeout_seconds:
             return False
 
         hours = self.settings.task_timeout_seconds / 3600
-        detail = f"任务累计运行超过 {hours:g} 小时仍未完成，已终止并释放容器"
+        detail = f"任务累计运行超过 {hours:g} 小时仍未完成，开始清理"
         await self._terminate_job(job, detail=detail, kind="agent.timeout")
         return True
 
+    async def _stop_owned_desktop(self, job: Job) -> str:
+        if not job.desktop_running:
+            return ""
+        info = self._tracked_rollout(job)
+        if info is None or info.marker != job.desktop_marker or info.task_id != job.task_id:
+            return "；桌面会话归属未确认，保留活跃会话占用"
+        if info.terminal:
+            return "；桌面会话已结束"
+        thread_id = thread_id_from_rollout(info.path)
+        if not thread_id or not info.turn_id:
+            return "；缺少可核对的桌面回合编号，保留活跃会话占用"
+        message = await interrupt_turn(thread_id, info.turn_id)
+        if message.startswith("已请求"):
+            turn_id = info.turn_id
+            for _ in range(10):
+                await asyncio.sleep(0.2)
+                current = self.rollouts.update(info.path)
+                if current.turn_id == turn_id and current.terminal:
+                    return "；已确认本题桌面回合停止"
+        if message.startswith("已请求"):
+            return "；停止请求已发出，未收到终止轨迹，保留活跃会话占用"
+        return "；" + message
+
     async def _terminate_job(self, job: Job, *, detail: str, kind: str) -> None:
         """Terminate and quarantine a job, always releasing its container."""
+        if kind == "feedback.conflict":
+            task = self.repo.get_task(job.task_id)
+            if task:
+                from solo_auto.logging_setup import redact
+
+                path = Path(task["task_root"]) / "monitor/submission/feedback-consistency-review.json"
+                record = self._read_json(path)
+                opinion = record.get("traceOpinion") or {}
+                self.repo.add_event("feedback.conflict", "反馈与原始轨迹冲突", level="error", actor=ACTOR, task_id=job.task_id,
+                                    details={"project_id": task.get("project_id"), "evidence_path": str(path),
+                                             "feedback": redact(record.get("feedback") or ""),
+                                             "trace_excerpt": redact(opinion.get("finalAssistantEvidence") or "") if isinstance(opinion, dict) else "",
+                                             "conflicts": [redact(item) for item in record.get("conflicts") or []]})
         await self._kill_agent(job.task_id)
-        desktop_was_running = job.desktop_running
+        try:
+            desktop_result = await self._stop_owned_desktop(job)
+        except OSError:
+            desktop_result = "；桌面控制连接不可用，保留活跃会话占用"
         if job.desktop_running or job.desktop_stage_id:
             await self._finish_desktop_stage(
                 job,
@@ -828,33 +894,47 @@ class Autopilot:
             if job.task_id in self.scheduler.active or self.scheduler.queue_position(job.task_id) is not None:
                 with suppress(ApiError):
                     await self.scheduler.stop_task(job.task_id, force=True)
-            reaped = await reap_and_record(self.repo, task["task_root"], task_id=job.task_id, actor=ACTOR)
-            cleanup = await self.gateway.call(
-                ["cleanup", "--task-root", str(task["task_root"]), "--force"],
-                timeout=120,
-                task_id=job.task_id,
-            )
-            cleanup_detail = reaped_note(reaped) + (
-                "；容器已释放"
-                if cleanup.code == 0
-                else f"；容器释放失败：{cleanup.err.strip() or cleanup.code}"
-            )
-        if desktop_was_running:
-            cleanup_detail += "；ChatGPT 会话无法由平台关闭，它停止写入之前仍计入会话名额，不会因此多开新会话"
+            try:
+                reaped = await reap_and_record(self.repo, task["task_root"], task_id=job.task_id, actor=ACTOR)
+                cleanup = await self.gateway.call(
+                    ["cleanup", "--task-root", str(task["task_root"]), "--force"],
+                    timeout=120,
+                    task_id=job.task_id,
+                )
+                cleanup_detail = reaped_note(reaped) + (
+                    "；容器已释放"
+                    if cleanup.code == 0
+                    else f"；容器释放失败：{cleanup.err.strip() or cleanup.code}"
+                )
+            except Exception as exc:
+                cleanup_detail = f"；清理未获确认（{type(exc).__name__}）"
+        cleanup_detail += desktop_result
         job.failure_kind = kind
         job.ignored = True
         self._finish(job, "failed", detail + cleanup_detail)
-        if self.dispatcher is not None and self.dispatcher.v3_enabled:
-            self.dispatcher.on_job_finished(job.task_id, outcome="failed", detail=detail + cleanup_detail)
+
 
     async def _advance(self, job: Job) -> None:
-        if job.task_id in self.agents:
+        if job.task_id in self.agents or job.task_id in self.review_tasks:
             return
         task = self.repo.get_task(job.task_id)
         if not task:
             self._finish(job, "failed", "任务已不存在")
             return
         root = Path(task["task_root"])
+        evidence = root / "monitor/submission/feedback-consistency-review.json"
+        if evidence.is_file() and self._read_json(evidence).get("status") in {"pending", "rejected"}:
+            await self._terminate_job(job, detail=f"反馈与轨迹冲突，记录 {evidence}", kind="feedback.conflict")
+            return
+        if job.stage == "reviewing":
+            await self._complete_or_audit(job, task, root)
+            return
+        if job.repair_version and job.repair_ready:
+            await self._complete_or_audit(job, task, root)
+            return
+        if job.repair_version and not job.repair_ready:
+            await self._launch(job, "delivering", root, ["返修原提交"])
+            return
         if self.settings.agent_mode == "chatgpt":
             await self._advance_chatgpt(job, task, root)
             return
@@ -920,7 +1000,7 @@ class Autopilot:
                     if check.get("local_review_status") == "pending"
                     else "Feedback 与轨迹结论核验未通过"
                 )
-                self._stage(job, "exporting", message)
+                await self._terminate_job(job, detail=f"{message}，见 monitor/submission/feedback-consistency-review.json", kind="feedback.conflict")
                 return
             if not check["ok"]:
                 reasons = [str(item) for item in check["errors"]] or ["Feedback 检查未通过"]
@@ -938,21 +1018,67 @@ class Autopilot:
     async def _complete_or_audit(self, job: Job, task: dict[str, Any], root: Path) -> None:
         job.reconfirm_required = False
         self.prompt_history.remember(job.task_id, root)
-        ack = self._read_json(root / "monitor" / "review-ack.json")
-        if ack.get("ackedBy") == ACTOR and self.audit_service is not None:
-            audit = self.audit_service.assess(job.task_id, str(task.get("task_type") or ""))
-            job.audit = audit
-            if audit.get("sampled") and not audit.get("verdict"):
-                self._stage(job, "awaiting_audit", "自动交付完成，等待人工抽检")
+        if self.submission is None or not self.submission.auto_submit:
+            self._finish(job, "done", "交付表已生成，自动提交已关闭")
+            return
+        if job.task_id not in self.review_tasks:
+            job.awaiting_platform = True
+            self._stage(job, "reviewing", "工作台处理平台提交与审核")
+            self.review_tasks[job.task_id] = asyncio.create_task(self._watch_submission(job, root))
+
+    async def _watch_submission(self, job: Job, root: Path) -> None:
+        try:
+            args = ["--task-root", str(root)]
+            receipt = self._read_json(root / "monitor" / "submission" / "api-result.json")
+            submission_id = receipt.get("submissionId")
+            status = str(receipt.get("status") or "").lower()
+            if job.repair_ready and status == "pending_fix" and submission_id:
+                command = ["repair", *args, "--submission-id", str(submission_id), "--execute", "--watch",
+                           "--comment", "按本次平台返修意见修订，见原提交记录"]
+            elif submission_id and status in {"submitted", "already_submitted", "qc_waiting", "qc_running", "fix_submitted"}:
+                command = ["submission-status", *args, "--submission-id", str(submission_id)]
+            elif not submission_id and status in {"", "dry_run", "quota_deferred"}:
+                command = ["submit", *args, "--execute", "--watch"]
+            else:
+                command = []
+            if command:
+                assert self.submission is not None
+                command.extend(["--poll-interval", str(min(300, self.submission.poll_interval_seconds)),
+                                "--poll-timeout", str(min(600, self.submission.poll_timeout_seconds))])
+                result = await self.gateway.call(command, timeout=1200, task_id=job.task_id)
+                receipt = result.data or {}
+                status = str(receipt.get("status") or "").lower()
+                if not status:
+                    raise ValueError(result.err.strip() or "平台未返回可用回执")
+                # 认领已有提交时，技能可能只返回当前状态。继续跟踪同一个提交号。
+                if status in {"submitted", "qc_running", "qc_waiting", "fix_submitted"} and receipt.get("submissionId"):
+                    query = ["submission-status", *args, "--submission-id", str(receipt["submissionId"]), *command[-4:]]
+                    result = await self.gateway.call(query, timeout=610, task_id=job.task_id)
+                    receipt = result.data or {}
+                    status = str(receipt.get("status") or "").lower()
+            if status == "quota_deferred" and not receipt.get("submissionId"):
+                if not _parse_datetime(receipt.get("retryAt", "")):
+                    raise ValueError("限额回执缺少恢复时间")
+                job.quota_retry_at = str(receipt["retryAt"])
+                self._stage(job, "waiting_quota", str(receipt.get("message") or "主号和副号今日均已满，次日 00:00 续交"))
+            elif status == "qc_passed":
                 if self.ledger:
                     self.ledger.mark_delivered(job.task_id)
-                return
-            if audit.get("sampled") and audit.get("verdict") == "reject":
-                self._finish(job, "failed", f"人工抽检打回：{audit.get('reason') or '未通过'}")
-                return
-        if self.ledger:
-            self.ledger.mark_delivered(job.task_id)
-        self._finish(job, "done", "十一项交付与抽检策略均已通过")
+                self._finish(job, "done", "平台质检通过")
+            elif status == "pending_fix":
+                version = f"{receipt.get('submissionId')}:{receipt.get('currentVersion')}"
+                if version == job.repair_version and job.repair_ready:
+                    raise ValueError("同一版本的返修已处理，保留平台回执")
+                job.repair_version, job.repair_ready = version, False
+                self._stage(job, "delivering", "平台要求返修，核对原记录与可修改字段")
+            else:
+                raise ValueError(f"平台处理结束：{status or '未知状态'}")
+        except Exception as exc:
+            await self._terminate_job(job, detail=str(exc), kind="submission.failed")
+        finally:
+            job.awaiting_platform = False
+            self.review_tasks.pop(job.task_id, None)
+            self._changed()
 
     def _reject_duplicate(self, job: Job, root: Path) -> bool:
         duplicate = self.prompt_history.duplicate(job.task_id, root)
@@ -1010,7 +1136,7 @@ class Autopilot:
             self._ensure_desktop_follower(job)
             self._track_platform_wait(job, root)
             info = self._tracked_rollout(job)
-            progress = _meaningful_progress_at(root)
+            progress = await asyncio.to_thread(_meaningful_progress_at, root)
             if info is not None and info.last_tool_at:
                 # 工具调用和命令输出说明会话在真实干活（例如轮询数小时的容器运行），
                 # 只有纯推理、不调用工具的空转才算没有进展。
@@ -1049,15 +1175,14 @@ class Autopilot:
                 detail = (
                     f"ChatGPT 会话报错：{error_text}" if kind == "usage_limited" else final_text or error_text
                 ) or f"ChatGPT 会话终止：{terminal}"
-                await self._finish_desktop_stage(job, outcome="failed", kind=kind, detail=detail)
-                self._finish(job, "failed", f"ChatGPT 会话未完成前 10 项：{detail[:300]}")
+                await self._terminate_job(job, kind=kind, detail=f"ChatGPT 会话未完成前 10 项：{detail[:300]}")
                 return
             started = _parse_datetime(job.desktop_started_at) or _parse_datetime(job.stage_started_at)
             last_progress = _parse_datetime(job.desktop_last_progress_at) or started
             now = datetime.now().astimezone()
             if last_progress and (now - last_progress).total_seconds() >= self.settings.chatgpt_timeout_seconds:
                 minutes = max(1, self.settings.chatgpt_timeout_seconds // 60)
-                detail = f"任务连续 {minutes} 分钟没有有效进展，已终止并释放容器"
+                detail = f"任务连续 {minutes} 分钟没有有效进展，阶段 {job.stage}，最后有效动作时间 {last_progress.isoformat()}，最近工具活动 {datetime.fromtimestamp(info.last_tool_at).astimezone().isoformat() if info and info.last_tool_at else '未记录'}"
                 await self._terminate_job(
                     job,
                     detail=detail,
@@ -1441,7 +1566,7 @@ class Autopilot:
                     trace_tail=detail,
                     context={"failure_kind": _dispatch_failure_kind(kind)},
                 ),
-                actor=ACTOR,
+                actor=ACTOR, final=True,
             )
         self._changed()
 
@@ -1466,6 +1591,9 @@ class Autopilot:
             return
         self._stage(job, "exporting", "ChatGPT 已通过前 10 项，平台检查并导出")
         check = await self.feedback.check(job.task_id)
+        if check.get("exit_code") == 4 or check.get("local_review_status") in {"pending", "rejected"}:
+            await self._terminate_job(job, detail="反馈与轨迹冲突，见 monitor/submission/feedback-consistency-review.json", kind="feedback.conflict")
+            return
         if not check["ok"]:
             await self._launch_chatgpt(
                 job,
@@ -1511,6 +1639,11 @@ class Autopilot:
             history=self.prompt_history.notes(job.task_id) if stage == "authoring" else None,
             memory=self.project_memory.notes(job.task_id),
         )
+        if job.repair_version:
+            prompt = (f"使用 solo-2611 复核并准备返修。任务目录 {root}。读取 monitor/submission/fix-request.json 和 "
+                      "api-result.json 的平台意见、锁定字段及原始轨迹，只修订允许的交付材料。"
+                      "需要专家确认或没有足够证据时保留原因，返回 AUTOPILOT: BLOCKED。"
+                      "按技能要求验证、导出交付表时使用 --no-submit。材料就绪返回 AUTOPILOT: OK。提交由工作台处理。")
         stage_id = self.repo.start_autopilot_stage(
             task_id=job.task_id,
             stage=stage,
@@ -1580,9 +1713,14 @@ class Autopilot:
             )
         if succeeded:
             self.breaker.record_success()
+            if stage == "delivering" and job.repair_version:
+                job.repair_ready = True
             if stage == "delivering" and job.redo_feedback:
                 job.redo_feedback = False
         else:
+            if job.repair_version:
+                await self._terminate_job(job, detail=verdict, kind="submission.repair_failed")
+                return
             tripped = False
             if self.dispatcher is not None and self.dispatcher.v3_enabled:
                 verdict = (
@@ -1590,7 +1728,7 @@ class Autopilot:
                     if verdict.startswith(("OK", "FAILED", "BLOCKED"))
                     else f"AUTOPILOT: FAILED {verdict}"
                 )
-                await self.dispatcher.on_failure(
+                _, decision, _ = await self.dispatcher.on_failure(
                     job.task_id,
                     Evidence(
                         stage=stage,
@@ -1602,11 +1740,16 @@ class Autopilot:
                         if log.is_file()
                         else "",
                     ),
-                    actor=ACTOR,
+                    actor=ACTOR, final=True,
                 )
+                if decision.action == "give_up":
+                    await self._terminate_job(job, detail=verdict, kind=failure_kind)
+                    return
             else:
                 tripped = self.breaker.record_failure(failure_kind, verdict or f"exit {code}")
             job.failure_kind = failure_kind
+            if self.dispatcher is None or not self.dispatcher.v3_enabled:
+                await self._terminate_job(job, detail=verdict, kind=failure_kind)
             if tripped:
                 self.paused = True
                 self.bus.publish(
@@ -1684,11 +1827,23 @@ class Autopilot:
     def _stage(self, job: Job, stage: str, detail: str) -> None:
         if job.stage == stage and job.detail == detail:
             return
+        if job.stage != stage:
+            self._record_stage_time(job)
+            job.stage_started_at = _now()
         job.stage, job.detail, job.updated_at = stage, detail, _now()
-        job.stage_started_at = job.updated_at
         self._changed()
 
+    def _record_stage_time(self, job: Job) -> None:
+        if not job.active:
+            return
+        started = _parse_datetime(job.stage_started_at)
+        if started:
+            self.repo.add_event("autopilot.stage_duration", STAGE_LABELS.get(job.stage, job.stage), actor=ACTOR,
+                                task_id=job.task_id, details={"stage": job.stage, "started_at": job.stage_started_at,
+                                "ended_at": _now(), "attempt": job.attempts.get(job.stage, 1)})
+
     def _finish(self, job: Job, stage: str, detail: str) -> None:
+        self._record_stage_time(job)
         job.stage, job.detail = stage, detail
         job.updated_at = job.finished_at = _now()
         if (
@@ -1706,14 +1861,11 @@ class Autopilot:
             job.failure_kind = job.failure_kind or self._failure_kind("", detail, None)
             if newly_classified and not (self.dispatcher is not None and self.dispatcher.v3_enabled):
                 self.breaker.record_failure(job.failure_kind, detail)
+            if self.dispatcher is not None and self.dispatcher.v3_enabled:
+                self.dispatcher.on_job_finished(job.task_id, outcome="failed", detail=detail)
             if self.ledger:
                 self.ledger.mark_failure(job.task_id, job.failure_kind)
-            if self.notifier:
-                self.notifier.notify(
-                    title="solo-auto 自动交付失败",
-                    status=job.failure_kind or "失败",
-                    task_name=job.task_name,
-                )
+            job.ignored = True
         elif stage == "done":
             self.breaker.record_success()
             job.failure_kind = ""
@@ -1730,7 +1882,7 @@ class Autopilot:
             self.project_memory.sync_task(job.task_id)
         self._changed()
 
-    def _job_view(self, job: Job) -> dict[str, Any]:
+    def _job_view(self, job: Job, *, compact: bool = False) -> dict[str, Any]:
         try:
             elapsed = max(
                 0,
@@ -1744,6 +1896,11 @@ class Autopilot:
             "active": job.active,
             "agent_running": job.task_id in self.agents or job.desktop_running,
             "elapsed_seconds": round(elapsed, 1),
+            **({} if compact else self._job_details(job)),
+        }
+
+    def _job_details(self, job: Job) -> dict[str, Any]:
+        return {
             "stages": self.repo.autopilot_stages(job.task_id),
             "retry_stages": self._retry_stages(job),
             "retry_options": [
@@ -1755,7 +1912,7 @@ class Autopilot:
                 }
                 for stage in ("authoring", "running", "delivering", "exporting")
             ],
-            "audit": self.repo.audit(job.task_id),
+            "audit": job.audit,
         }
 
     def _retry_stages(self, job: Job) -> list[str]:
@@ -1812,6 +1969,8 @@ class Autopilot:
             if isinstance(item, dict) and item.get("task_id"):
                 self.jobs[str(item["task_id"])] = Job(**{key: value for key, value in item.items() if key in known})
         for job in self.jobs.values():
+            if job.stage == "awaiting_audit":
+                job.stage = "exporting"
             if job.agent_pid and job.stage in AGENT_STAGES:
                 with suppress(ProcessLookupError, PermissionError):
                     os.killpg(job.agent_pid, signal.SIGKILL)
@@ -1958,38 +2117,10 @@ def _render_log(path: Path, limit: int) -> list[dict[str, str]]:
 
 
 def build_prompt(stage: str, *, root: Path, skill_root: Path, missing: list[str], previous: str = "") -> str:
-    script = skill_root / "scripts" / "solo2611.py"
-    head = f"""你在无人值守模式下工作：全程不要提问，不会有人回复你，遇到选择自己按技能规则决定。
-使用 solo-2611 技能。先完整阅读 {skill_root / "SKILL.md"}，以及它在对应环节要求阅读的 references。
-任务目录 ROOT={root}
-脚本 S={script}
-"""
-    if stage == "authoring":
-        body = """本次只做「出题」阶段：
-1. 读 ROOT/workspace 里的真实源码，按技能的出题规则设计一道「困难」或「地狱」题。
-2. 执行 python3 $S prompt --task-root ROOT --init，填好题面草稿和两份审核 JSON，再执行 prompt 安装，直到门禁通过。
-3. 执行 python3 $S repo --task-root ROOT，把初始快照推到远端。
-4. 执行 python3 $S status --task-root ROOT，确认前三项通过。
-边界：不执行 run、interactive、collect，单轮会话由平台排队执行。门禁不过就改题面重来。"""
-    else:
-        body = """单轮会话已经结束。本次只做「复核、录屏、Feedback」阶段：
-1. 读原始轨迹、轨迹时间线和初始快照到产物快照的 diff，并在本机真实运行产物做复核（技能工作流第 6 步）。
-2. 录屏：record plan 生成计划，填写后 record check-plan，再用 python3 $S record auto --task-root ROOT 一次录完。
-   Web 题按 references/recording.md 的独立 Chrome 流程录。产物跑不起来也照录，画面保留真实报错。
-3. 执行 feedback --init，按 references/feedback-guide.md 起草 Feedback（文件位置以技能说明为准），
-   再执行 feedback --check，改到没有错误为止。
-4. 执行 python3 $S status --task-root ROOT，确认第 9 项通过、Feedback 机器检查通过。
-边界：不执行 run、reset、export、cleanup。复核时产生的临时文件用完清掉，不提交、不推送。
-这次交付没有人工复核，你写下的分数和事实就是最终内容。每个结论都要能回查到轨迹或你亲手跑出的结果，拿不准的不写。"""
-    rules = """通用边界：不修改技能目录、校验器和平台文件；不使用任何强制通过、允许缺项之类绕过门禁的参数；
-不伪造任何证据文件。门禁确实过不去时如实报告失败。
-全部结束后，最后一行只输出下面三种之一：
-AUTOPILOT: OK
-AUTOPILOT: FAILED <一句话原因，可在后续尝试中恢复>
-AUTOPILOT: BLOCKED <一句话原因，按规则停止并需要人工处理>"""
-    notes = ""
+    template = DEFAULT_TEMPLATES["authoring" if stage == "authoring" else "delivering"]
+    notes = []
     if missing:
-        notes += "\n平台当前看到的缺项：\n" + "\n".join(f"- {item}" for item in missing[:6])
+        notes.extend(["平台当前看到的缺项：", *(f"- {item}" for item in missing[:6])])
     if previous and "未完成" in previous:
-        notes += f"\n上一次尝试的结果：{previous}"
-    return f"{head}\n{body}\n\n{rules}{notes}\n"
+        notes.append(f"上一次尝试的结果：{previous}")
+    return template.format(root=root, skill_root=skill_root, script=skill_root / "scripts/solo2611.py", notes="\n".join(notes))

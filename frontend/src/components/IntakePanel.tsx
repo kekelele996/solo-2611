@@ -25,7 +25,7 @@ export function IntakePanel() {
   const [planOpen, setPlanOpen] = useState(false);
   const [capOpen, setCapOpen] = useState(false);
   const [capDraft, setCapDraft] = useState(CONTINUOUS_DAILY_CAP);
-  const intake = useQuery({ queryKey: ["intake"], queryFn: api.intake, refetchInterval: 3000 });
+  const intake = useQuery({ queryKey: ["intake"], queryFn: api.intake, refetchInterval: (query) => query.state.data?.plan?.status === "running" ? 5000 : 15_000 });
 
   const action = useMutation({
     mutationFn: (kind: "pause" | "resume" | "stop") =>
@@ -101,7 +101,7 @@ export function IntakePanel() {
     <Panel
       title="生产计划"
       actions={
-        !active ? (
+        !active && data && !intake.isError ? (
           <Button size="small" variant="primary" onClick={() => setPlanOpen(true)}>
             <WandSparkles size={13} /> 下达计划
           </Button>
@@ -109,10 +109,10 @@ export function IntakePanel() {
       }
     >
       <div className="panel-body dispatch-plan">
-        {!plan || !active ? (
+        {intake.isError ? <div role="status">生产计划读取失败。 <Button size="small" onClick={() => void intake.refetch()}>重试</Button></div> : !data ? "正在读取计划…" : !plan || !active ? (
           <span className="dispatch-plan-empty">
-            {plan ? `上一个计划${STATUS_LABEL[plan.status] ?? plan.status}。` : "当前没有生产计划，调度只处理已加入队列的任务。"}
-            下达计划后会按在手上限补位领取，不会一次囤积。
+            {plan ? `上一个计划${STATUS_LABEL[plan.status] ?? plan.status}。` : "当前没有生产计划。"}
+            下达计划后会按剩余名额自动领取工程。
           </span>
         ) : (
           <>

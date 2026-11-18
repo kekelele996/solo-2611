@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -48,6 +49,9 @@ COMMANDS = {
     "feedback",
     "export",
     "export-batch",
+    "submit",
+    "submission-status",
+    "repair",
     "bundle",
     "repo",
     "cleanup",
@@ -98,8 +102,11 @@ class SkillGateway:
         self.script = self.skill_root / "scripts" / "solo2611.py"
         self.log_root = log_root
         self.python = python
+        self.workbench_port = 8099
+        self.app_home: Path | None = None
         self.metadata_cache_ttl_seconds = max(0.0, metadata_cache_ttl_seconds)
         self._active_processes: dict[str, asyncio.subprocess.Process] = {}
+        self._config_fingerprint = ""
         self._metadata_cache: dict[tuple[str, ...], tuple[float, SkillResult]] = {}
         self._metadata_locks: dict[tuple[str, ...], asyncio.Lock] = {}
         if not self.script.is_file():
@@ -113,6 +120,11 @@ class SkillGateway:
     def clean_env(self) -> dict[str, str]:
         allowed = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "SYSTEMROOT")
         env = {key: os.environ[key] for key in allowed if key in os.environ}
+        if self.app_home is not None:
+            env["SOLO_AUTO_HOME"] = str(self.app_home)
+        if os.environ.get("SOLO_AUTO_DISABLE_KEYCHAIN") == "1":
+            env["SOLO_AUTO_DISABLE_KEYCHAIN"] = "1"
+        env["SOLO_AUTO_PORT"] = str(self.workbench_port)
         env.setdefault("PATH", "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin")
         return env
 
@@ -183,6 +195,11 @@ class SkillGateway:
         )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.CancelledError:
+            if proc.returncode is None:
+                proc.kill()
+            await proc.wait()
+            raise
         except TimeoutError:
             proc.terminate()
             try:
@@ -196,7 +213,7 @@ class SkillGateway:
         stdout = stdout_b.decode("utf-8", errors="replace")
         stderr = stderr_b.decode("utf-8", errors="replace")
         code = proc.returncode if proc.returncode is not None else 1
-        data = self._parse_json(stdout) if code in {0, 2} else None
+        data = self._parse_json(stdout) if code in {0, 2, 3, 4} else None
         self._write_log(argv, code, elapsed, stdout, stderr, task_id)
         return SkillResult(code=code, out=stdout, err=stderr, duration=elapsed, data=data)
 
@@ -327,7 +344,7 @@ class SkillGateway:
         code = proc.returncode if proc.returncode is not None else 1
         stdout = "\n".join(stdout_parts)
         stderr = "\n".join(stderr_parts)
-        data = self._parse_json(stdout) if code in {0, 2} else None
+        data = self._parse_json(stdout) if code in {0, 2, 3, 4} else None
         self._write_log(argv, code, elapsed, stdout, stderr, task_id)
         return StreamResult(
             result=SkillResult(code=code, out=stdout, err=stderr, duration=elapsed, data=data),
@@ -404,6 +421,22 @@ class SkillGateway:
         day = datetime.now().strftime("%Y-%m-%d")
         directory = self.log_root / (task_id or "_system")
         directory.mkdir(parents=True, exist_ok=True)
+        if argv == ["config", "show"] and code == 0:
+            fingerprint = hashlib.sha256(stdout.encode()).hexdigest()
+            if self._config_fingerprint and self._config_fingerprint != fingerprint:
+                stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S-%f")
+                (directory / f"{stamp}-config-changed.log").write_text("读取到新的配置版本\n")
+            self._config_fingerprint = fingerprint
+            hour = datetime.now().strftime("%Y-%m-%d-%H")
+            path = directory / f"{hour}-config-reads.log"
+            try:
+                count = int(path.read_text().strip())
+            except (OSError, ValueError):
+                count = 0
+            temp = path.with_suffix(".tmp")
+            temp.write_text(f"{count + 1}\n")
+            temp.replace(path)
+            return
         stamp = datetime.now().strftime("%H%M%S-%f")
         name = re.sub(r"[^A-Za-z0-9_.-]+", "-", argv[0]) if argv else "unknown"
         path = directory / f"{day}-{name}-{stamp}.log"
@@ -413,9 +446,9 @@ class SkillGateway:
                 f"duration={duration:.3f}s",
                 f"exit_code={code}",
                 "--- stdout (first 4KB) ---",
-                redact(stdout[:4096]),
+                redact(stdout)[:4096],
                 "--- stderr (first 4KB) ---",
-                redact(stderr[:4096]),
+                redact(stderr)[:4096],
                 "",
             ]
         )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import uuid
@@ -271,12 +272,20 @@ def now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
+def _legacy_version(value: str | None) -> bool:
+    if not value:
+        return False
+    parts = [int(match.group()) if (match := re.match(r"\d+", part)) else 0 for part in value.split(".")[:3]]
+    return tuple((parts + [0, 0, 0])[:3]) < (0, 2, 3)
+
+
 class Repository:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self._lock = threading.RLock()
         self._connection = sqlite3.connect(path, check_same_thread=False)
+        self._connection.create_function("legacy_version", 1, _legacy_version, deterministic=True)
         self._connection.row_factory = sqlite3.Row
         with self._connection:
             self._connection.execute("PRAGMA journal_mode=WAL")
@@ -445,9 +454,11 @@ class Repository:
             merged = dict(existing)
             merged.update(record)
             merged["id"] = task_id
-            merged["updated_at"] = timestamp
             if notes is not None:
                 merged["notes"] = notes
+            if all(merged.get(k) == v for k, v in existing.items() if k not in {"updated_at", "created_at"}):
+                return task_id
+            merged["updated_at"] = timestamp
             with self.transaction() as conn:
                 conn.execute(
                     """
@@ -493,15 +504,16 @@ class Repository:
         return task_id
 
     def replace_steps(self, task_id: str, steps: list[dict[str, Any]]) -> None:
-        stamp = now()
+        desired = [(int(step["number"]), str(step["state"]), str(step.get("detail") or "")) for step in steps]
         with self.transaction() as conn:
+            stored = conn.execute("SELECT step_no, state, detail FROM steps WHERE task_id = ? ORDER BY step_no", (task_id,))
+            if [tuple(row) for row in stored] == desired:
+                return
+            stamp = now()
             conn.execute("DELETE FROM steps WHERE task_id = ?", (task_id,))
             conn.executemany(
                 "INSERT INTO steps(task_id, step_no, state, detail, updated_at) VALUES(?, ?, ?, ?, ?)",
-                [
-                    (task_id, int(step["number"]), str(step["state"]), str(step.get("detail") or ""), stamp)
-                    for step in steps
-                ],
+                [(task_id, number, state, detail, stamp) for number, state, detail in desired],
             )
 
     def set_job_status(self, task_id: str, status: str, *, notes: str | None = None) -> None:
@@ -521,8 +533,7 @@ class Repository:
         ids = list(dict.fromkeys(str(task_id) for task_id in task_ids if task_id))
         if not ids:
             return {}
-        placeholders = ",".join("?" for _ in ids)
-        rows = self.query(f"SELECT * FROM tasks WHERE id IN ({placeholders})", tuple(ids))
+        rows = self.query("SELECT * FROM tasks WHERE id IN (SELECT value FROM json_each(?))", (json.dumps(ids),))
         return {str(row["id"]): row for row in rows}
 
     def get_task_by_root(self, root: Path) -> dict[str, Any] | None:
@@ -535,6 +546,9 @@ class Repository:
         self,
         *,
         status: str | None = None,
+        task_ids: list[str] | None = None,
+        view: str = "",
+        failed_ids: list[str] | None = None,
         q: str | None = None,
         project: str | None = None,
         date: str | None = None,
@@ -543,6 +557,18 @@ class Repository:
     ) -> tuple[list[dict[str, Any]], int]:
         clauses: list[str] = []
         params: list[Any] = []
+        if view == "missing":
+            clauses.append("presence = 'missing'")
+        elif view == "legacy":
+            clauses.append("legacy_version(skill_version)")
+        elif view == "failed":
+            clauses.append("(job_status = 'blocked' OR id IN (SELECT value FROM json_each(?)))")
+            params.append(json.dumps(failed_ids or []))
+        if task_ids is not None:
+            if not task_ids:
+                return [], 0
+            clauses.append("id IN (SELECT value FROM json_each(?))")
+            params.append(json.dumps(task_ids))
         if status:
             clauses.append("job_status = ?")
             params.append(status)
@@ -562,12 +588,20 @@ class Repository:
         offset = (max(1, page) - 1) * page_size
         rows = self.query(
             f"SELECT * FROM tasks {where} ORDER BY CASE job_status "
-            "WHEN 'blocked' THEN 0 WHEN 'running' THEN 1 WHEN 'queued' THEN 2 ELSE 3 END, updated_at DESC "
+            "WHEN 'blocked' THEN 0 WHEN 'running' THEN 1 WHEN 'queued' THEN 2 ELSE 3 END, updated_at DESC, id "
             "LIMIT ? OFFSET ?",
             tuple([*params, page_size, offset]),
         )
+        steps_by_task: dict[str, list[dict[str, Any]]] = {str(row["id"]): [] for row in rows}
+        if rows:
+            ids = list(steps_by_task)
+            for offset in range(0, len(ids), 500):
+                batch = ids[offset : offset + 500]
+                placeholders = ",".join("?" for _ in batch)
+                for step in self.query(f"SELECT * FROM steps WHERE task_id IN ({placeholders}) ORDER BY task_id, step_no", tuple(batch)):
+                    steps_by_task[step["task_id"]].append(step)
         for row in rows:
-            row["steps"] = self.steps(str(row["id"]))
+            row["steps"] = steps_by_task[row["id"]]
         return rows, total
 
     def session_counts(self) -> dict[str, int]:

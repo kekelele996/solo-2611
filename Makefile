@@ -1,4 +1,5 @@
 SHELL := /bin/zsh
+SKILL_ROOT := $(if $(SOLO_AUTO_SKILL_ROOT),$(SOLO_AUTO_SKILL_ROOT),$(if $(CODEX_HOME),$(CODEX_HOME),$(HOME)/.codex)/skills/solo-2611)
 
 .PHONY: setup install check backend-check frontend-check contract-check gen-api grep-check test-linux dev app install-service uninstall-service
 
@@ -6,10 +7,12 @@ setup:
 	python3.12 -m venv backend/.venv
 	backend/.venv/bin/python -m pip install -e 'backend[dev]'
 	cd frontend && npm install
+	"$(SKILL_ROOT)/bin/solo2611" self-check --allow-offline
 
 install:
 	backend/.venv/bin/python -m pip install -e 'backend[dev]'
 	cd frontend && npm ci
+	"$(SKILL_ROOT)/bin/solo2611" self-check --allow-offline
 
 check: backend-check contract-check frontend-check grep-check
 

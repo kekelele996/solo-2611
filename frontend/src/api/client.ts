@@ -1,4 +1,10 @@
 import type {
+  AccountView,
+  RevealTarget,
+  ProfileCatalog,
+  ProfileDraft,
+  StandbyCheck,
+  StandbyDraft,
   AuditDetail,
   AuditRow,
   AutopilotRecovery,
@@ -13,6 +19,7 @@ import type {
   DispatchLimitsRequest,
   DispatchLogRow,
   DispatchSnapshot,
+  DispatchQueueSnapshot,
   DispatchUpcomingResponse,
   EngineeringRow,
   EventRow,
@@ -113,6 +120,10 @@ function qs(params: Record<string, string | number | boolean | string[] | null |
   return encoded ? `?${encoded}` : "";
 }
 
+function accountHeaders(token?: string, profile?: string | null): HeadersInit {
+  return { ...(token ? { "X-Account-View": token } : {}), ...(profile ? { "X-Account-Profile": profile } : {}) };
+}
+
 export const api = {
   health: () => request<{ ok: boolean; uptime_s: number; version: string; build_id: string }>("/api/health"),
   version: async () => {
@@ -129,17 +140,47 @@ export const api = {
   },
   systemStatus: () => request<SystemStatus>("/api/system/status"),
   reconcile: () => request<{ corrected: number }>("/api/system/reconcile", { method: "POST" }),
-  config: () => request<ConfigResponse>("/api/system/config"),
-  patchConfig: (payload: ConfigPatchRequest) =>
+  lockAccounts: (token: string) => request<void>("/api/system/accounts/view/lock", { method: "POST", headers: accountHeaders(token) }),
+  revealPassword: (token: string, profile: string, target: RevealTarget, signal: AbortSignal) =>
+    request<{ password: string }>(`/api/system/accounts/profiles/${encodeURIComponent(profile)}/password/${target}`, {
+      method: "POST", headers: accountHeaders(token), cache: "no-store", signal,
+    }),
+  profiles: (token: string) => request<ProfileCatalog>("/api/system/accounts/profiles", { headers: accountHeaders(token) }),
+  createProfile: (token: string, draft: ProfileDraft) => request<ProfileCatalog>("/api/system/accounts/profiles", {
+    method: "POST", headers: accountHeaders(token), body: JSON.stringify(draft),
+  }),
+  saveStandby: (token: string, primaryId: string, draft: StandbyDraft) =>
+    request<ProfileCatalog>(`/api/system/accounts/profiles/${encodeURIComponent(primaryId)}/standby`, {
+      method: "PUT", headers: accountHeaders(token), body: JSON.stringify(draft),
+    }),
+  testStandby: (token: string, primaryId: string, draft: StandbyDraft) =>
+    request<StandbyCheck>(`/api/system/accounts/profiles/${encodeURIComponent(primaryId)}/standby/test`, {
+      method: "POST", headers: accountHeaders(token), body: JSON.stringify(draft),
+    }),
+  activateProfile: (token: string, id: string) => request<ProfileCatalog>(`/api/system/accounts/profiles/${encodeURIComponent(id)}/activate`, {
+    method: "POST", headers: accountHeaders(token),
+  }),
+  viewCodeStatus: () => request<{ configured: boolean }>("/api/system/accounts/view/status"),
+  setViewCode: (current: string, next: string) => request<void>("/api/system/accounts/view/code", {
+    method: "PUT", body: JSON.stringify({ current, new: next }),
+  }),
+  unlockAccounts: (code: string, purpose: "profiles" | "settings") => request<AccountView>("/api/system/accounts/view/unlock", {
+    method: "POST", body: JSON.stringify({ code, purpose }),
+  }),
+  config: (token?: string) => request<ConfigResponse>("/api/system/config", { headers: accountHeaders(token) }),
+  patchConfig: (payload: ConfigPatchRequest, token?: string, profile?: string | null) =>
     request<ConfigResponse>("/api/system/config", {
-      method: "PATCH",
+      method: "PATCH", headers: accountHeaders(token, profile),
       body: JSON.stringify(payload),
     }),
-  testConfig: (target: "skill" | "source" | "docker" | "solo2" | "api") =>
+  testConfig: (target: "skill" | "source" | "docker" | "solo2" | "github" | "api", token?: string) =>
     request<{ ok: boolean; message: string; detail: Record<string, unknown> }>("/api/system/config/test", {
-      method: "POST",
+      method: "POST", headers: accountHeaders(token),
       body: JSON.stringify({ target }),
     }),
+  exportAccounts: (password: string, token?: string) => request<Record<string, unknown>>("/api/system/accounts/export", { method: "POST", headers: accountHeaders(token), body: JSON.stringify({ password }) }),
+  importAccounts: (bundle: unknown, password: string, token?: string) => request<ConfigResponse>("/api/system/accounts/import", { method: "POST", headers: accountHeaders(token), body: JSON.stringify({ bundle, password }) }),
+  migrateAccounts: (token?: string) => request<ConfigResponse>("/api/system/accounts/migrate", { method: "POST", headers: accountHeaders(token) }),
   backup: () =>
     request<{ path: string; size: number }>("/api/system/backup", {
       method: "POST",
@@ -193,8 +234,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  taskCounts: () => request<{passed:number; submitted:number; exported:number; discarded:number; retrying:number; waiting:number; average_seconds:number}>("/api/task-counts"),
   tasks: (filters: Record<string, string | number | undefined> = {}) =>
-    request<TaskListResponse>(`/api/tasks${qs(filters)}`),
+    request<TaskListResponse>(`/api/tasks${qs({ compact: 1, ...filters })}`),
   task: (id: string) => request<TaskDetail>(`/api/tasks/${encodeURIComponent(id)}`),
   taskEvents: (id: string) => request<{ items: EventRow[] }>(`/api/tasks/${encodeURIComponent(id)}/events`),
   abortTask: (id: string, reason: string) =>
@@ -288,6 +330,7 @@ export const api = {
     request<{
       initial: { sha: string; permalink: string };
       artifact: { sha: string; permalink: string; short_stat: string };
+      changes?: {added: number; modified: number; deleted: number; renamed: number} | null;
       ancestor_ok: boolean;
     }>(`/api/tasks/${encodeURIComponent(id)}/snapshots`),
   enqueue: (id: string, pinned = false) =>
@@ -405,7 +448,8 @@ export const api = {
       body: JSON.stringify({ confirm: true }),
     }),
   autopilot: () => request<AutopilotSnapshot>("/api/autopilot"),
-  dispatch: () => request<DispatchSnapshot>("/api/dispatch?compact=1"),
+  autopilotSummary: () => request<AutopilotSnapshot>("/api/autopilot?compact=true"),
+  dispatch: () => request<DispatchQueueSnapshot>("/api/dispatch?compact=1&metrics=false"),
   dispatchState: (desired: "running" | "paused" | "draining") =>
     request<DispatchSnapshot>("/api/dispatch/state", {
       method: "POST",
@@ -429,8 +473,8 @@ export const api = {
     request<{ task_id?: string; sentence: string; decision: Record<string, unknown> | null }>(
       `/api/dispatch/explain${qs({ task_id: taskId })}`,
     ),
-  dispatchUpcoming: (limit = 20) =>
-    request<DispatchUpcomingResponse>(`/api/dispatch/upcoming${qs({ limit })}`),
+  dispatchUpcoming: (limit = 20, signal?: AbortSignal) =>
+    request<DispatchUpcomingResponse>(`/api/dispatch/upcoming${qs({ limit })}`, { signal }),
   dispatchThroughput: (hours = 24) =>
     request<DispatchSnapshot["throughput"] & { hours: number }>(`/api/dispatch/throughput${qs({ hours })}`),
   dispatchCapacity: (hours = 24) =>
@@ -668,3 +712,8 @@ export const api = {
   usageRecords: (engineeringId: string) =>
     request<{ items: UsageRow[]; total: number }>(`/api/usage/engineering/${encodeURIComponent(engineeringId)}`),
 };
+
+export function downloadExport(path: string) {
+  const name = path.split("/").pop();
+  if (name) window.location.assign(`/api/exports/${encodeURIComponent(name)}/download`);
+}

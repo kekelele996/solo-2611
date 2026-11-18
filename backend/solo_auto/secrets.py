@@ -13,10 +13,16 @@ SERVICE = "solo-auto"
 
 
 class SecretStore:
-    def __init__(self, home: Path) -> None:
+    def __init__(self, home: Path, profile_id: str = "default") -> None:
+        self.profile_id = profile_id
         self.home = home
         self.fallback_path = home / "secrets.json"
         self.home.mkdir(parents=True, exist_ok=True)
+
+    def _account_key(self, account: str) -> str:
+        if self.profile_id != "default" and account.startswith(("projecthub.", "solo2.", "github.", "model.")):
+            return f"profile.{self.profile_id}.{account}"
+        return account
 
     def _use_keychain(self) -> bool:
         if os.environ.get("SOLO_AUTO_DISABLE_KEYCHAIN") == "1":
@@ -24,6 +30,7 @@ class SecretStore:
         return platform.system() == "Darwin" and shutil_which("security") is not None
 
     def get(self, account: str) -> str | None:
+        account = self._account_key(account)
         if self._use_keychain():
             proc = subprocess.run(
                 ["security", "find-generic-password", "-s", SERVICE, "-a", account, "-w"],
@@ -41,6 +48,7 @@ class SecretStore:
         return self._fallback().get(account)
 
     def set(self, account: str, value: str) -> None:
+        account = self._account_key(account)
         if self._use_keychain():
             proc = subprocess.run(
                 [
@@ -64,6 +72,7 @@ class SecretStore:
         self._write_fallback(account, value)
 
     def delete(self, account: str) -> None:
+        account = self._account_key(account)
         if self._use_keychain():
             subprocess.run(
                 ["security", "delete-generic-password", "-s", SERVICE, "-a", account],
@@ -83,10 +92,14 @@ class SecretStore:
         try:
             return json.loads(value)
         except json.JSONDecodeError:
-            return default
+            # macOS security prints passwords containing non-ASCII bytes as hex.
+            try:
+                return json.loads(bytes.fromhex(value))
+            except ValueError:
+                return default
 
     def set_json(self, account: str, value: Any) -> None:
-        self.set(account, json.dumps(value, ensure_ascii=False))
+        self.set(account, json.dumps(value, ensure_ascii=True))
 
     def _fallback(self) -> dict[str, str]:
         if not self.fallback_path.is_file():

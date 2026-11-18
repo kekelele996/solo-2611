@@ -23,7 +23,7 @@ async def test_solo2_login_uses_keychain_password_and_reports_account(
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        return httpx.Response(200, json={"user": {"username": "reviewer"}})
+        return httpx.Response(200, json={"user": {"username": "input-user"}})
 
     client = Solo2Client(
         Solo2Settings(
@@ -36,8 +36,8 @@ async def test_solo2_login_uses_keychain_password_and_reports_account(
     result = await client.test()
 
     assert result["ok"] is True
-    assert result["message"] == "Solo2 登录成功：reviewer"
-    assert result["detail"]["account"] == "reviewer"
+    assert result["message"] == "Solo2 登录成功：input-user。平台未返回领域，绑定未核验"
+    assert result["detail"]["account"] == "input-user"
     assert str(seen[0].url) == "https://solo2.jzxhnh.com/api/v1/auth/login"
     assert seen[0].headers["origin"] == "https://solo2.jzxhnh.com"
     assert seen[0].headers["referer"] == "https://solo2.jzxhnh.com/app"

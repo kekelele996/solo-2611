@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from solo_auto.store.state import SoloState, load_state
+from solo_auto.store.state import SoloState, StateEnvelope, load_state
 
 STEP_NAMES = (
     "初始快照",
@@ -125,8 +125,9 @@ def evaluate_steps(
     *,
     duplicate_sessions: dict[str, int] | None = None,
     require_review_ack: bool = True,
+    envelope: StateEnvelope | None = None,
 ) -> Evaluation:
-    envelope = load_state(task_root)
+    envelope = envelope or load_state(task_root)
     if not envelope.compatible or envelope.state is None:
         detail = envelope.error or "状态不可读"
         blocked_steps = [

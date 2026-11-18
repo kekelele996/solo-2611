@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query, Request
 
 from solo_auto.api.dependencies import context
+from solo_auto.api.profiles import standby_record, submission_quota_directory
 from solo_auto.api.types import (
     DispatchInterruptRequest,
     DispatchLimitsRequest,
@@ -32,9 +36,22 @@ router = APIRouter(prefix="/api/dispatch", dependencies=[Depends(require_v3_engi
 @router.get("")
 async def snapshot(
     compact: bool = Query(default=True),
+    metrics: bool = Query(default=True),
     ctx: AppContext = Depends(context),
 ) -> dict[str, Any]:
-    return ctx.dispatcher.snapshot(compact=compact)
+    day = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    record = standby_record(ctx)
+    primary = {"account": ctx.settings.solo2.username, "domain": ctx.settings.solo2.locked_domain,
+               "quota_directory": submission_quota_directory(ctx, ctx.settings.solo2.username)}
+    standby = ({"account": str(record['username']), "domain": str(record.get('domain') or ''),
+                "quota_directory": submission_quota_directory(ctx, str(record['username']))}
+               if record and record.get('username') and record.get('username') != ctx.settings.solo2.username else None)
+    primary_marker = (Path(primary["quota_directory"]) / day).is_file()
+    standby_marker = bool(standby and (Path(standby["quota_directory"]) / day).is_file())
+    return {**ctx.dispatcher.snapshot(compact=compact, metrics=metrics),
+            "submission_quota": {"open": not (primary_marker and (not standby or standby_marker)), "date": day, "limit": 70,
+                                 "primary": {**primary, "open": not primary_marker},
+                                 "standby": None if standby is None else {**standby, "open": not standby_marker}}}
 
 
 @router.post("/state")
@@ -201,24 +218,19 @@ async def clear_finished(ctx: AppContext = Depends(context)) -> dict[str, Any]:
 
 @router.post("/queue/{task_id}/pin")
 async def pin(task_id: str, ctx: AppContext = Depends(context)) -> dict[str, Any]:
-    item = ctx.dispatcher.queue.get(task_id)
-    if item is None:
-        raise ApiError(404, "DISPATCH_ITEM_NOT_FOUND", "任务不在调度队列")
-    ctx.dispatcher.queue.update(task_id, priority=max(100, item.priority + 100), position=-1000.0)
-    return {"ok": True, "snapshot": ctx.dispatcher.snapshot()}
+    return _move_waiting(ctx, task_id, "top")
 
 
 @router.post("/queue/{task_id}/move")
 async def move(task_id: str, payload: DispatchMoveRequest, ctx: AppContext = Depends(context)) -> dict[str, Any]:
-    ordered = ctx.dispatcher.queue.ordered(include_unavailable=True)
-    index = next((number for number, item in enumerate(ordered) if item.task_id == task_id), -1)
-    if index < 0:
-        raise ApiError(404, "DISPATCH_ITEM_NOT_FOUND", "任务不在调度队列")
-    target = 0 if payload.direction == "top" else max(0, index - 1 if payload.direction == "up" else index + 1)
-    if target != index and target < len(ordered):
-        ordered.insert(target, ordered.pop(index))
-        for position, item in enumerate(ordered):
-            ctx.dispatcher.queue.update(item.task_id, position=float(position * 10))
+    return _move_waiting(ctx, task_id, payload.direction)
+
+
+def _move_waiting(ctx: AppContext, task_id: str, direction: str) -> dict[str, Any]:
+    if not ctx.dispatcher.queue.move_waiting(task_id, direction):
+        if ctx.dispatcher.queue.get(task_id) is None:
+            raise ApiError(404, "DISPATCH_ITEM_NOT_FOUND", "任务不在调度队列")
+        raise ApiError(409, "DISPATCH_ITEM_NOT_WAITING", "该任务已离开待处理队列")
     return {"ok": True, "snapshot": ctx.dispatcher.snapshot()}
 
 

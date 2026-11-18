@@ -81,6 +81,29 @@ async def test_api_fact_routes_without_real_skill(
             assert "saved-password" not in saved.text
             assert context.secrets.get("solo2.password") == "saved-password"
 
+            # 保存后，技能读取同一份配置，设置页面和运行参数均不返回密钥。
+            import secrets
+            token = secrets.token_hex(16)
+            credentials = {"github_token": token, "gateway_key": token[::-1]}
+            updated = await client.patch("/api/system/config", json={
+                "solo2": {"locked_domain": "数据工程"}, "secrets": credentials,
+            })
+            assert updated.status_code == 200
+            runtime = await client.get("/api/system/skill/config")
+            assert runtime.json()["submission"]["lockedDomain"] == "数据工程"
+            assert runtime.json()["claude"]["openTerminalOnRun"] is True
+            assert runtime.json()["claude"]["maxContainers"] == context.dispatcher.effective_container_limit
+            for value in credentials.values():
+                assert value not in updated.text + runtime.text + context.paths.config.read_text()
+            for purpose, expected in [("github", token), ("model", token[::-1])]:
+                url = f"http://127.0.0.1/api/system/skill/credential/{purpose}"
+                assert (await client.post(url)).status_code == 403
+                headers = {"x-solo-skill": "solo-2611"}
+                assert (await client.post(url, headers={**headers, "origin": "https://example.org"})).status_code == 403
+                received = await client.post(url, headers=headers)
+                assert received.json() == {"value": expected}
+                assert received.headers["cache-control"] == "no-store"
+
             async def fake_solo2_test() -> dict[str, object]:
                 return {"ok": True, "message": "Solo2 登录成功：reviewer", "detail": {"status": 200}}
 

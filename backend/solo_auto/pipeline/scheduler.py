@@ -139,6 +139,10 @@ class RunScheduler:
         )
 
     async def refresh_limit(self) -> int:
+        if self.dispatcher is not None:
+            self.limit = (self.dispatcher.effective_container_limit if self.dispatcher.v3_enabled
+                          else self.dispatcher.settings.execution.max_containers)
+            return self.limit
         result = await self.gateway.call(["config", "show"], timeout=30)
         if result.code == 0 and result.data:
             claude = result.data.get("claude")
@@ -369,7 +373,14 @@ class RunScheduler:
         if self.dispatcher is not None and self.dispatcher.v3_enabled:
             if not self.queue:
                 return
-            decision = await self.dispatcher.request_container(self.queue[0].task_id)
+            facts = await self.dispatcher.facts.snapshot()
+            # 探测期间用户可以移出或置顶任务。按此刻的队首申请名额并立即出队。
+            if not self.queue or self._stopping:
+                return
+            if len(self.queue) > 1:
+                priorities = self.dispatcher.queue.manual_priorities()
+                self.queue.sort(key=lambda item: (not item.pinned, -priorities.get(item.task_id, 0), item.enqueued_at))
+            decision = self.dispatcher.reserve_container(self.queue[0].task_id, facts)
             if not decision.allowed:
                 return
         else:
@@ -380,6 +391,8 @@ class RunScheduler:
             if used >= self.limit or not self.queue:
                 return
             if not containers and not self.active and not await _docker_ok():
+                return
+            if not self.queue or self._stopping:
                 return
         entry = self.queue.pop(0)
         run = ActiveRun(entry=entry, started_at=time.time())

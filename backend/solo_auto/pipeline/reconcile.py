@@ -35,17 +35,27 @@ class Reconciler:
         self.tasks_dir = tasks_dir
         self.container_probe = container_probe or _docker_container_alive
         self.gateway = gateway
+        self._run_lock = asyncio.Lock()
 
     async def run(self) -> int:
+        async with self._run_lock:
+            return await self._reconcile()
+
+    async def _reconcile(self) -> int:
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
         roots = sorted(path.parent.parent for path in self.tasks_dir.glob("*/monitor/state.json"))
+        indexed = set(roots)
         extras = sorted(
             path
             for path in self.tasks_dir.iterdir()
-            if path.is_dir() and path not in roots and not path.name.startswith(".")
+            if path.is_dir() and path not in indexed and not path.name.startswith(".")
         )
         all_roots = [*roots, *extras]
-        envelopes = {root: load_state(root) for root in all_roots}
+        envelopes = await asyncio.to_thread(lambda: {root: load_state(root) for root in all_roots})
+        staging_by_root: dict[str, dict[str, Any]] = {}
+        for path in self.paths.staging.glob("*/meta.json"):
+            meta = _read_json(path)
+            staging_by_root.setdefault(str(meta.get("taskRoot") or ""), meta)
         session_counts: dict[str, int] = {}
         for envelope in envelopes.values():
             if envelope.state and envelope.state.session and envelope.state.session.sessionId:
@@ -56,12 +66,12 @@ class Reconciler:
         for root, envelope in envelopes.items():
             previous = self.repo.get_task_by_root(root)
             if envelope.state is None:
-                task_id = self.repo.task_id_for_root(root)
+                task_id = str(previous["id"]) if previous else self.repo.task_id_for_root(root)
                 job_status = "orphan" if not envelope.raw else "blocked"
                 record = _record_for_incompatible(task_id, root, envelope.raw, job_status)
                 notes = str(previous.get("notes") or "") if previous else None
                 self.repo.upsert_task(record, notes=notes)
-                eval_result = evaluate_steps(root, duplicate_sessions=session_counts)
+                eval_result = await asyncio.to_thread(evaluate_steps, root, duplicate_sessions=session_counts, envelope=envelope)
                 self.repo.replace_steps(task_id, [step.as_dict() for step in eval_result.steps])
                 if previous is None:
                     self.repo.add_event(
@@ -73,7 +83,7 @@ class Reconciler:
                     )
                 continue
             state = envelope.state
-            task_id = self.repo.task_id_for_root(root)
+            task_id = str(previous["id"]) if previous else self.repo.task_id_for_root(root)
             session_status: dict[str, Any] = {}
             session_lost = False
             if (
@@ -122,7 +132,7 @@ class Reconciler:
             if session_lost or session_status.get("status") == "session_lost":
                 live = False
             ack = _read_json(root / "monitor" / "review-ack.json")
-            eval_result = evaluate_steps(root, duplicate_sessions=session_counts)
+            eval_result = await asyncio.to_thread(evaluate_steps, root, duplicate_sessions=session_counts, envelope=envelope)
             job_status = derive_job_status(
                 state,
                 container_live=live,
@@ -137,7 +147,7 @@ class Reconciler:
                 job_status = str(previous["job_status"])
             if session_lost or session_status.get("status") == "session_lost":
                 job_status = "blocked"
-            meta = _task_meta(self.paths, root)
+            meta = staging_by_root.get(str(root)) or _read_json(self.paths.run / "task-meta" / f"{root.name}.json")
             record = _record_for_state(task_id, root, state, job_status, meta, ack)
             if record.get("session_id") and session_counts.get(str(record["session_id"]), 0) > 1:
                 record["session_id"] = None
@@ -263,15 +273,6 @@ def _record_for_incompatible(
         "created_at": str(raw.get("createdAt") or ""),
         "presence": "present" if root.is_dir() else "missing",
     }
-
-
-def _task_meta(paths: Paths, root: Path) -> dict[str, Any]:
-    for meta_path in paths.staging.glob("*/meta.json"):
-        meta = _read_json(meta_path)
-        if str(meta.get("taskRoot") or "") == str(root):
-            return meta
-    task_meta = paths.home / "run" / "task-meta" / f"{root.name}.json"
-    return _read_json(task_meta)
 
 
 def _read_json(path: Path) -> dict[str, Any]:

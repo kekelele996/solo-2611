@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 from datetime import datetime
@@ -23,6 +24,7 @@ from solo_auto.api.types import (
 )
 from solo_auto.context import AppContext
 from solo_auto.errors import ApiError
+from solo_auto.pipeline.platform_result import platform_status
 from solo_auto.pipeline.steps import evaluate_steps
 from solo_auto.store.state import load_state
 
@@ -35,38 +37,53 @@ async def list_tasks(
     q: str = "",
     project: str = "",
     date: str = "",
+    compact: bool = False,
+    view: str = "",
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     ctx: AppContext = Depends(context),
 ) -> dict[str, Any]:
-    queued_ids = {entry.task_id for entry in ctx.scheduler.queue}
-    if status == "queued":
-        all_rows, _ = ctx.repo.list_tasks(
-            q=q or None,
-            project=project or None,
-            date=date or None,
-            page=1,
-            page_size=1000,
-        )
-        filtered = [row for row in all_rows if str(row["id"]) in queued_ids]
-        total = len(filtered)
-        offset = (page - 1) * page_size
-        rows = filtered[offset : offset + page_size]
-    else:
-        rows, total = ctx.repo.list_tasks(
-            status=status or None,
-            q=q or None,
-            project=project or None,
-            date=date or None,
-            page=page,
-            page_size=page_size,
-        )
+    positions = {entry.task_id: index for index, entry in enumerate(ctx.scheduler.queue, 1)}
+    rows, total = ctx.repo.list_tasks(
+        status=status if status and status != "queued" else None,
+        task_ids=list(positions) if status == "queued" else None,
+        view=view, failed_ids=[job.task_id for job in ctx.autopilot.jobs.values() if job.stage == "failed"] if view == "failed" else None,
+        q=q or None, project=project or None, date=date or None, page=page, page_size=page_size,
+    )
     for row in rows:
-        row["queue_position"] = ctx.scheduler.queue_position(str(row["id"]))
+        row["platform_status"] = platform_status(row["task_root"])
+        job = ctx.autopilot.jobs.get(row["id"])
+        row["stage_started_at"] = job.stage_started_at if job and job.active else None
+        row["queue_position"] = positions.get(row["id"])
         if row["queue_position"]:
             row["job_status"] = "queued"
-        row["run"] = ctx.scheduler.run_status(str(row["id"]), Path(str(row["task_root"])))
+        if not compact:
+            row["run"] = ctx.scheduler.run_status(row["id"], Path(row["task_root"]))
     return {"items": rows, "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/task-counts")
+async def task_counts(ctx: AppContext = Depends(context)) -> dict[str, int]:
+    counts = {"passed": 0, "submitted": 0, "exported": 0, "discarded": 0, "retrying": 0}
+    aggregate = ctx.repo.query_one("""SELECT
+        COUNT(CASE WHEN job_status IN ('authored','prompt_ok','ready','ran','recorded','reviewed') THEN 1 END) AS waiting,
+        ROUND(AVG(CASE WHEN julianday(exported_at) >= julianday(created_at)
+            THEN (julianday(exported_at) - julianday(created_at))*86400 END)) AS average_seconds FROM tasks""") or {}
+    counts["waiting"] = int(aggregate.get("waiting") or 0)
+    counts["average_seconds"] = int(aggregate["average_seconds"]) if aggregate.get("average_seconds") is not None else -1
+    retrying = ctx.repo.query_one("SELECT COUNT(*) AS n FROM dispatch_items WHERE status='backoff'")
+    counts["retrying"] = int((retrying or {}).get("n", 0))
+    for row in ctx.repo.query("SELECT task_root, exported_at FROM tasks"):
+        status = platform_status(row["task_root"])
+        if status == "qc_passed":
+            counts["passed"] += 1
+        elif status in {"discarded", "qc_discarded"}:
+            counts["discarded"] += 1
+        elif status in {"submitted", "qc_running", "qc_waiting", "fix_submitted"}:
+            counts["submitted"] += 1
+        elif status in {"", "dry_run"} and row.get("exported_at"):
+            counts["exported"] += 1
+    return counts
 
 
 @router.get("/tasks/{task_id}")
@@ -85,6 +102,10 @@ async def task_detail(task_id: str, ctx: AppContext = Depends(context)) -> dict[
     task["queue_position"] = ctx.scheduler.queue_position(task_id)
     meta = _task_meta(ctx, root)
     task["source"] = meta
+    task["platform_status"] = platform_status(str(root))
+    timings = ctx.repo.query("SELECT id, details FROM events WHERE task_id=? AND action='autopilot.stage_duration' ORDER BY id DESC", (task_id,))
+    task["stage_history"] = ([{"id": row["id"], **json.loads(row["details"])} for row in timings]
+                             if timings else ctx.repo.autopilot_stages(task_id))
     return task
 
 
@@ -167,7 +188,7 @@ async def archive_task(task_id: str, ctx: AppContext = Depends(context)) -> dict
     release_error = ""
     if meta.get("projectId") and meta.get("engineeringId") and meta.get("claimId"):
         try:
-            await ctx.source.release(str(meta["projectId"]), str(meta["engineeringId"]), str(meta["claimId"]))
+            await ctx.release_profile_claim(meta)
             ctx.repo.execute(
                 "UPDATE claims SET released_at = ? WHERE id = ?",
                 (datetime.now().astimezone().isoformat(), meta["claimId"]),
@@ -347,7 +368,7 @@ async def snapshots(task_id: str, ctx: AppContext = Depends(context)) -> dict[st
     artifact = state.artifact.sha if state.artifact else ""
     ancestor = False
     if initial and artifact:
-        proc = await __import__("asyncio").create_subprocess_exec(
+        proc = await asyncio.create_subprocess_exec(
             "git",
             "-C",
             state.workspace,
@@ -355,11 +376,26 @@ async def snapshots(task_id: str, ctx: AppContext = Depends(context)) -> dict[st
             "--is-ancestor",
             initial,
             artifact,
-            stdout=__import__("asyncio").subprocess.DEVNULL,
-            stderr=__import__("asyncio").subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
         )
         await proc.wait()
         ancestor = proc.returncode == 0
+    changes = None
+    if initial and artifact and ancestor:
+        proc = await asyncio.create_subprocess_exec("git", "-C", state.workspace, "diff", "--name-status", "-z", "--find-renames", initial, artifact, "--", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        raw, _ = await proc.communicate()
+        if proc.returncode == 0:
+            changes = {"added": 0, "modified": 0, "deleted": 0, "renamed": 0}
+            records = iter(raw.split(b"\0"))
+            for record in records:
+                if not record:
+                    break
+                kind = {b"A": "added", b"D": "deleted", b"R": "renamed"}.get(record[:1], "modified")
+                changes[kind] += 1
+                next(records)
+                if record.startswith(b"R"):
+                    next(records)
     base = state.remote.web.rstrip("/")
     return {
         "initial": {
@@ -372,6 +408,7 @@ async def snapshots(task_id: str, ctx: AppContext = Depends(context)) -> dict[st
             "short_stat": state.artifact.shortStat if state.artifact else "",
         },
         "ancestor_ok": ancestor,
+        "changes": changes,
     }
 
 

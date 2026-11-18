@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, ClipboardCheck, Factory, Inbox, LogIn, Trash2 } from "lucide-react";
+import { AlertTriangle, Factory, Inbox, LogIn, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
@@ -16,12 +16,10 @@ type InboxItem = {
 };
 
 export function InboxPanel() {
-  const pilot = useQuery({ queryKey: ["autopilot"], queryFn: api.autopilot, refetchInterval: 5000 });
-  const audits = useQuery({ queryKey: ["audits", "pending"], queryFn: () => api.audits("pending"), refetchInterval: 5000 });
+  const pilot = useQuery({ queryKey: ["autopilot", "summary"], queryFn: api.autopilotSummary, refetchInterval: 5000 });
   const intake = useQuery({ queryKey: ["intake"], queryFn: api.intake, refetchInterval: 5000 });
   const status = useQuery({ queryKey: ["system-status"], queryFn: api.systemStatus, refetchInterval: 5000 });
   const trash = useQuery({ queryKey: ["trash"], queryFn: api.trash, refetchInterval: 30_000 });
-  const failed = (pilot.data?.jobs ?? []).filter((job) => job.stage === "failed");
   const expiring = (trash.data?.items ?? []).filter(
     (item) => item.remaining_days !== null && item.remaining_days !== undefined && item.remaining_days <= 2,
   );
@@ -35,17 +33,6 @@ export function InboxPanel() {
       detail: pilot.data.breaker.kind ? `类别：${pilot.data.breaker.kind}` : "生产线不再拉起新阶段",
       to: "/production",
       action: "查看原因",
-    });
-  }
-  if (audits.data?.total) {
-    items.push({
-      key: "audit",
-      tone: "warn",
-      icon: <ClipboardCheck size={16} />,
-      title: `待抽检 ${audits.data.total} 题`,
-      detail: "抽检通过前，被抽中的任务不能进入提交批次",
-      to: "/audit",
-      action: "开始抽检",
     });
   }
   if (intake.data?.plan?.status === "paused") {
@@ -68,17 +55,6 @@ export function InboxPanel() {
       detail: "历史任务仍可查看，自动领取已停止",
       to: "/source",
       action: "重新登录",
-    });
-  }
-  if (failed.length) {
-    items.push({
-      key: "failed",
-      tone: "warn",
-      icon: <AlertTriangle size={16} />,
-      title: `${failed.length} 题自动交付失败`,
-      detail: "每题都已有结构化失败类别，可从失败阶段续跑",
-      to: "/production",
-      action: "处理失败",
     });
   }
   if (expiring.length) {

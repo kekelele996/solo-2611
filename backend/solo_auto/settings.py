@@ -16,20 +16,12 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _default_tasks_dir() -> Path:
-    skill_config = Path.home() / ".codex" / "solo-2611" / "config.json"
-    try:
-        data = json.loads(skill_config.read_text(encoding="utf-8"))
-        value = data.get("tasksDir")
-        if value:
-            return Path(value).expanduser()
-    except (OSError, json.JSONDecodeError):
-        pass
     return Path.home() / "claude-runs" / "solo-2611"
 
 
 def detect_skill_path() -> Path:
     candidates = [
-        Path.home() / ".codex" / "skills" / "solo-2611",
+        Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser() / "skills" / "solo-2611",
         Path.home() / ".claude" / "skills" / "solo-2611",
     ]
     for candidate in candidates:
@@ -50,6 +42,26 @@ class SourceSettings(BaseModel):
     @classmethod
     def _base_url(cls, value: str) -> str:
         return value.rstrip("/")
+
+
+class SkillSettings(BaseModel):
+    base_url: str = "https://llm2.jzxhnh.com"
+    image: str = "adminfather/benzhi-claude-code2:20261110"
+    launch_spacing_seconds: int = 20
+    repl_timeout_seconds: int = 180
+    slot_wait_seconds: int = 1800
+    terminal_read_only: bool = True
+    terminal_activate: bool = False
+    git_name: str = "solo-2611"
+    git_email: str = "solo-2611@local"
+    sub_direction: str = "数仓与数据湖"
+    harness: str = "Claude Code"
+    os: str = "MacOS/Linux"
+    github_proxy: str = ""
+    auto_push: bool = True
+    review_score_delta: int = 2
+    review_similarity: float = 0.5
+    migrated: bool = False
 
 
 class ExecutionSettings(BaseModel):
@@ -130,11 +142,16 @@ class RecordingSettings(BaseModel):
 
 
 class SubmissionSettings(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", validate_assignment=True)
 
     auto_submit: bool = True
     poll_interval_seconds: int = Field(default=300, ge=10, le=3600)
-    poll_timeout_seconds: int = Field(default=86400, ge=60, le=604800)
+    poll_timeout_seconds: int = Field(default=600, ge=60, le=604800)
+
+    @field_validator("poll_timeout_seconds")
+    @classmethod
+    def cap_review_seconds(cls, value: int) -> int:
+        return min(600, value)
 
 
 class BreakerSettings(BaseModel):
@@ -184,7 +201,7 @@ class AutopilotSettings(BaseModel):
 class AuditSettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    mode: Literal["all", "sample", "off"] = "sample"
+    mode: Literal["all", "sample", "off"] = "off"
     sample_rate: float = Field(default=0.3, ge=0, le=1)
     stratify_by: str = "task_type"
 
@@ -222,6 +239,9 @@ class NotifySettings(BaseModel):
 class Solo2Settings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    managed_github: bool = False
+    managed_domain: bool = False
+    locked_domain: Literal["", "安全", "游戏、图形与多媒体", "数据工程"] = ""
     base_url: str = "https://solo2.jzxhnh.com/app"
     username: str = ""
     timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
@@ -378,6 +398,14 @@ class DispatchSettings(BaseModel):
         return self
 
 
+class AccountProfile(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    name: str
+    solo2: Solo2Settings = Field(default_factory=Solo2Settings)
+    source: SourceSettings = Field(default_factory=SourceSettings)
+    model_base_url: str = Field(default_factory=lambda: SkillSettings().base_url)
+
+
 class Settings(BaseSettings):
     """Configuration loaded from ``config.toml`` and a small env override set."""
 
@@ -392,6 +420,9 @@ class Settings(BaseSettings):
     port: int = Field(default=8099, ge=1024, le=65535)
     skill_root: Path = Field(default_factory=detect_skill_path)
     tasks_dir: Path = Field(default_factory=_default_tasks_dir)
+    active_profile: str = "default"
+    profiles: dict[str, AccountProfile] = Field(default_factory=lambda: {"default": AccountProfile(name="默认配置")})
+    skill: SkillSettings = Field(default_factory=SkillSettings)
     source: SourceSettings = Field(default_factory=SourceSettings)
     execution: ExecutionSettings = Field(default_factory=ExecutionSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
@@ -505,8 +536,11 @@ def config_toml(settings: Settings) -> str:
     lines = [
         f"host = {_toml_value(settings.host)}",
         f"port = {settings.port}",
+        f"active_profile = {_toml_value(settings.active_profile)}",
         f"skill_root = {_toml_value(settings.skill_root)}",
         f"tasks_dir = {_toml_value(settings.tasks_dir)}",
+        "",
+        *_dump_table("skill", settings.skill),
         "",
         *_dump_table("source", settings.source),
         "",
@@ -569,6 +603,11 @@ def config_toml(settings: Settings) -> str:
         *_dump_table("dispatch.window", settings.dispatch.window),
         "",
     ]
+    for key, profile in settings.profiles.items():
+        table = f"profiles.{_toml_value(key)}"
+        lines.extend([*_dump_table(table, profile, exclude={"solo2", "source"}), "",
+                      *_dump_table(f"{table}.solo2", profile.solo2), "",
+                      *_dump_table(f"{table}.source", profile.source), ""])
     return "\n".join(lines)
 
 

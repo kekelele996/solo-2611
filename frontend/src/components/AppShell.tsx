@@ -1,11 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
-  ClipboardCheck,
   AlertTriangle,
   Command,
   Gauge,
   Atom,
-  FileSpreadsheet,
   FolderSearch,
   LayoutDashboard,
   ListChecks,
@@ -22,7 +20,7 @@ import { useHotkeys } from "../hooks/useHotkeys";
 import { useUIStore } from "../stores/ui";
 import { CommandPalette } from "./CommandPalette";
 import { Button, EmptyState, Modal, StatusDot } from "./ui";
-import { useToast } from "./toast-context";
+import { DISPATCH_STATE_LABEL } from "../utils/display";
 import { APP_BUILD_ID } from "../utils/build";
 
 const navItems = [
@@ -30,17 +28,13 @@ const navItems = [
   { to: "/dispatch", label: "调度", icon: Gauge },
   { to: "/logs", label: "调度日志", icon: ScrollText },
   { to: "/tasks", label: "任务", icon: ListChecks },
-  { to: "/audit", label: "抽检", icon: ClipboardCheck },
   { to: "/source", label: "题源", icon: FolderSearch },
-  { to: "/export", label: "导出", icon: FileSpreadsheet },
   { to: "/system", label: "设置", icon: Settings },
 ];
 
 export function AppShell() {
   useEvents();
   useHotkeys();
-  const queryClient = useQueryClient();
-  const { toast } = useToast();
   const theme = useUIStore((state) => state.theme);
   const setTheme = useUIStore((state) => state.setTheme);
   const commandOpen = useUIStore((state) => state.commandOpen);
@@ -53,25 +47,8 @@ export function AppShell() {
     refetchInterval: 10_000,
   });
   const version = useQuery({ queryKey: ["version"], queryFn: api.version, staleTime: 60_000 });
-  const audits = useQuery({
-    queryKey: ["audits", "pending"],
-    queryFn: () => api.audits("pending"),
-    refetchInterval: 15_000,
-  });
-  // 与调度页共用缓存键，停留在调度页时不会重复拉取同一份快照。
-  const dispatch = useQuery({
-    queryKey: ["dispatch"],
-    queryFn: api.dispatch,
-    refetchInterval: 8000,
-  });
-  const toggleDispatch = useMutation({
-    mutationFn: () => api.dispatchState(dispatch.data?.desired_state === "running" ? "paused" : "running"),
-    onSuccess: () => {
-      toast("调度状态已更新", "ok");
-      void queryClient.invalidateQueries();
-    },
-    onError: (error) => toast(error instanceof Error ? error.message : "调度状态更新失败", "error"),
-  });
+  const dispatchState = status.data?.dispatch_effective_state;
+  const dispatchLabel = dispatchState ? DISPATCH_STATE_LABEL[dispatchState] : "待确认";
   const versionMismatch = Boolean(version.data && version.data.build_id !== APP_BUILD_ID);
 
   return (
@@ -83,23 +60,12 @@ export function AppShell() {
           <kbd>⌘K</kbd>
         </button>
         <div className="topbar-counts">
-          <button
-            type="button"
-            className="dispatch-topbar-badge"
-            data-state={dispatch.data?.effective_state}
-            onClick={() => toggleDispatch.mutate()}
-            disabled={toggleDispatch.isPending || dispatch.data?.engine === "v2"}
-            title={dispatch.data?.sentence || "打开调度"}
-          >
-            <StatusDot
-              state={dispatch.data?.effective_state === "running" ? "running" : dispatch.data?.effective_state === "held" ? "blocked" : "idle"}
-              label={dispatch.data?.effective_state === "running" ? "调度运行" : dispatch.data?.effective_state === "held" ? "调度挂起" : "调度暂停"}
-              pulse={dispatch.data?.effective_state === "running"}
-            />
-            <span className="mono">
-              {dispatch.data?.pools.containers.used ?? 0}/{dispatch.data?.pools.containers.limit ?? 0}
-            </span>
-          </button>
+          <NavLink to="/dispatch" className="dispatch-topbar-badge" data-state={dispatchState}
+            aria-label={`打开任务队列，调度${dispatchLabel}`} title={status.data?.dispatch_sentence || "打开任务队列"}>
+            <StatusDot state={dispatchState === "running" ? "running" : dispatchState === "held" || dispatchState === "degraded" ? "blocked" : "idle"}
+              label={`调度${dispatchLabel}`} pulse={dispatchState === "running"} />
+            {status.data?.containers_limit !== undefined && <span className="mono">{status.data.containers_used ?? "—"}/{status.data.containers_limit}</span>}
+          </NavLink>
           <NavLink to="/tasks?status=running">
             <StatusDot
               state={status.data?.running ? "running" : "idle"}
@@ -166,9 +132,6 @@ export function AppShell() {
               <NavLink key={item.to} to={item.to} end={item.to === "/"} title={item.label}>
                 <Icon size={19} />
                 <span>{item.label}</span>
-                {item.to === "/audit" && audits.data?.total ? (
-                  <i className="nav-badge">{audits.data.total}</i>
-                ) : null}
               </NavLink>
             );
           })}
@@ -181,7 +144,7 @@ export function AppShell() {
       <Modal open={helpOpen} title="快捷键" onClose={() => setHelpOpen(false)}>
         <div className="shortcut-grid">
           <span>⌘K</span><strong>命令面板</strong>
-          <span>g h / d / l / a / t / s / e / ,</span><strong>切换页面</strong>
+          <span>g h / d / l / t / s / ,</span><strong>切换页面</strong>
           <span>j / k · Enter</span><strong>任务列表上下移动 · 打开</strong>
           <span>x / 空格 · ⌘A</span><strong>勾选当前行 · 全选</strong>
           <span>/ · f · r</span><strong>搜索 · 只看卡住 · 刷新</strong>

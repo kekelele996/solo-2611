@@ -5,6 +5,367 @@
     "version": "0.4.0"
   },
   "paths": {
+    "/api/system/accounts/view/status": {
+      "get": {
+        "summary": "View Status",
+        "operationId": "view_status_api_system_accounts_view_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "type": "object",
+                  "title": "Response View Status Api System Accounts View Status Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/accounts/view/code": {
+      "put": {
+        "summary": "Set View Code",
+        "operationId": "set_view_code_api_system_accounts_view_code_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CodeChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/accounts/view/unlock": {
+      "post": {
+        "summary": "Unlock",
+        "operationId": "unlock_api_system_accounts_view_unlock_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Unlock"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/View"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/accounts/view/lock": {
+      "post": {
+        "summary": "Lock View",
+        "operationId": "lock_view_api_system_accounts_view_lock_post",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        }
+      }
+    },
+    "/api/system/accounts/profiles": {
+      "get": {
+        "summary": "List Profiles",
+        "operationId": "list_profiles_api_system_accounts_profiles_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profiles"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Profile",
+        "operationId": "create_profile_api_system_accounts_profiles_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewProfile"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profiles"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/accounts/profiles/{profile_id}/standby": {
+      "put": {
+        "summary": "Save Standby",
+        "operationId": "save_standby_api_system_accounts_profiles__profile_id__standby_put",
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Profile Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StandbyUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profiles"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/accounts/profiles/{profile_id}/standby/test": {
+      "post": {
+        "summary": "Test Standby",
+        "operationId": "test_standby_api_system_accounts_profiles__profile_id__standby_test_post",
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Profile Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StandbyUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StandbyCheck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/accounts/profiles/{profile_id}/password/{target}": {
+      "post": {
+        "summary": "Reveal Password",
+        "operationId": "reveal_password_api_system_accounts_profiles__profile_id__password__target__post",
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Profile Id"
+            }
+          },
+          {
+            "name": "target",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "solo2",
+                    "source",
+                    "gateway"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "enum": [
+                    "github"
+                  ],
+                  "const": "github",
+                  "type": "string"
+                }
+              ],
+              "title": "Target"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Reveal Password Api System Accounts Profiles  Profile Id  Password  Target  Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/accounts/profiles/{profile_id}/activate": {
+      "post": {
+        "summary": "Activate Profile",
+        "operationId": "activate_profile_api_system_accounts_profiles__profile_id__activate_post",
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Profile Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profiles"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/health": {
       "get": {
         "summary": "Health",
@@ -139,6 +500,25 @@
         }
       }
     },
+    "/api/system/skill/config": {
+      "get": {
+        "summary": "Skill Runtime",
+        "operationId": "skill_runtime_api_system_skill_config_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Skill Runtime Api System Skill Config Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/system/config": {
       "get": {
         "summary": "Get Config",
@@ -188,6 +568,108 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/accounts/export": {
+      "post": {
+        "summary": "Export Accounts",
+        "operationId": "export_accounts_api_system_accounts_export_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object",
+                "title": "Payload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Export Accounts Api System Accounts Export Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/accounts/import": {
+      "post": {
+        "summary": "Import Accounts",
+        "operationId": "import_accounts_api_system_accounts_import_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "title": "Payload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Import Accounts Api System Accounts Import Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/accounts/migrate": {
+      "post": {
+        "summary": "Migrate Account",
+        "operationId": "migrate_account_api_system_accounts_migrate_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Migrate Account Api System Accounts Migrate Post"
                 }
               }
             }
@@ -247,6 +729,45 @@
                 "schema": {
                   "type": "object",
                   "title": "Response Solo2 Session Api System Solo2 Session Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/solo2/standby-session": {
+      "post": {
+        "summary": "Solo2 Standby Session",
+        "operationId": "solo2_standby_session_api_system_solo2_standby_session_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StandbySessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Solo2 Standby Session Api System Solo2 Standby Session Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -963,6 +1484,26 @@
             }
           },
           {
+            "name": "compact",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Compact"
+            }
+          },
+          {
+            "name": "view",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "View"
+            }
+          },
+          {
             "name": "page",
             "in": "query",
             "required": false,
@@ -1437,6 +1978,28 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task-counts": {
+      "get": {
+        "summary": "Task Counts",
+        "operationId": "task_counts_api_task_counts_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "type": "object",
+                  "title": "Response Task Counts Api Task Counts Get"
                 }
               }
             }
@@ -4064,6 +4627,16 @@
               "default": true,
               "title": "Compact"
             }
+          },
+          {
+            "name": "metrics",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Metrics"
+            }
           }
         ],
         "responses": {
@@ -5107,6 +5680,18 @@
       "get": {
         "summary": "Status",
         "operationId": "status_api_autopilot_get",
+        "parameters": [
+          {
+            "name": "compact",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Compact"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -5115,6 +5700,16 @@
                 "schema": {
                   "type": "object",
                   "title": "Response Status Api Autopilot Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -6844,6 +7439,28 @@
         ],
         "title": "ClaimRequest"
       },
+      "CodeChange": {
+        "properties": {
+          "current": {
+            "type": "string",
+            "maxLength": 128,
+            "title": "Current",
+            "default": ""
+          },
+          "new": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 6,
+            "pattern": "\\S",
+            "title": "New"
+          }
+        },
+        "type": "object",
+        "required": [
+          "new"
+        ],
+        "title": "CodeChange"
+      },
       "CollectRequest": {
         "properties": {
           "container": {
@@ -6863,6 +7480,16 @@
       },
       "ConfigPatchRequest": {
         "properties": {
+          "skill": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SkillConfigPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "host": {
             "anyOf": [
               {
@@ -7054,6 +7681,7 @@
               "source",
               "docker",
               "solo2",
+              "github",
               "api"
             ],
             "title": "Target"
@@ -7064,6 +7692,91 @@
           "target"
         ],
         "title": "ConfigTestRequest"
+      },
+      "Connection": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "account": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account"
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain"
+          },
+          "credential_saved": {
+            "type": "boolean",
+            "title": "Credential Saved"
+          },
+          "password_target": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "solo2",
+                  "source",
+                  "gateway"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password Target"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "credential_saved"
+        ],
+        "title": "Connection"
+      },
+      "ConnectionCheck": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ok",
+          "message"
+        ],
+        "title": "ConnectionCheck"
       },
       "CreateTaskRequest": {
         "properties": {
@@ -7794,6 +8507,35 @@
         "type": "object",
         "title": "IntakeStopRequest"
       },
+      "NewProfile": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 60,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Name"
+          },
+          "solo2": {
+            "$ref": "#/components/schemas/Solo2Settings"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceSettings"
+          },
+          "model_base_url": {
+            "type": "string",
+            "title": "Model Base Url"
+          },
+          "secrets": {
+            "$ref": "#/components/schemas/SecretConfigPatch"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "NewProfile"
+      },
       "NotifyConfigPatch": {
         "properties": {
           "macos": {
@@ -7839,6 +8581,63 @@
           "task_ids"
         ],
         "title": "PrivacyRecheckRequest"
+      },
+      "ProfileItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ProfileItem"
+      },
+      "Profiles": {
+        "properties": {
+          "active": {
+            "type": "string",
+            "title": "Active"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProfileItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "connections": {
+            "items": {
+              "$ref": "#/components/schemas/Connection"
+            },
+            "type": "array",
+            "title": "Connections"
+          },
+          "standby": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StandbyAccount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "active",
+          "items",
+          "connections"
+        ],
+        "title": "Profiles"
       },
       "PromptDedupeRequest": {
         "properties": {
@@ -8162,6 +8961,28 @@
       },
       "SecretConfigPatch": {
         "properties": {
+          "gateway_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gateway Key"
+          },
+          "github_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Github Token"
+          },
           "source_password": {
             "anyOf": [
               {
@@ -8223,6 +9044,23 @@
         "type": "object",
         "title": "SessionContinueRequest"
       },
+      "SkillConfigPatch": {
+        "properties": {
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          }
+        },
+        "type": "object",
+        "title": "SkillConfigPatch"
+      },
       "SlimConfigPatch": {
         "properties": {
           "enabled": {
@@ -8267,6 +9105,23 @@
       },
       "Solo2ConfigPatch": {
         "properties": {
+          "locked_domain": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "",
+                  "安全",
+                  "游戏、图形与多媒体",
+                  "数据工程"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locked Domain"
+          },
           "base_url": {
             "anyOf": [
               {
@@ -8303,6 +9158,50 @@
         },
         "type": "object",
         "title": "Solo2ConfigPatch"
+      },
+      "Solo2Settings": {
+        "properties": {
+          "managed_github": {
+            "type": "boolean",
+            "title": "Managed Github",
+            "default": false
+          },
+          "managed_domain": {
+            "type": "boolean",
+            "title": "Managed Domain",
+            "default": false
+          },
+          "locked_domain": {
+            "type": "string",
+            "enum": [
+              "",
+              "安全",
+              "游戏、图形与多媒体",
+              "数据工程"
+            ],
+            "title": "Locked Domain",
+            "default": ""
+          },
+          "base_url": {
+            "type": "string",
+            "title": "Base Url",
+            "default": "https://solo2.jzxhnh.com/app"
+          },
+          "username": {
+            "type": "string",
+            "title": "Username",
+            "default": ""
+          },
+          "timeout_seconds": {
+            "type": "number",
+            "maximum": 300.0,
+            "minimum": 1.0,
+            "title": "Timeout Seconds",
+            "default": 30.0
+          }
+        },
+        "type": "object",
+        "title": "Solo2Settings"
       },
       "SourceConfigPatch": {
         "properties": {
@@ -8373,6 +9272,159 @@
         },
         "type": "object",
         "title": "SourceLoginRequest"
+      },
+      "SourceSettings": {
+        "properties": {
+          "base_url": {
+            "type": "string",
+            "title": "Base Url",
+            "default": "http://localhost:8088"
+          },
+          "auth_mode": {
+            "type": "string",
+            "enum": [
+              "cookie"
+            ],
+            "const": "cookie",
+            "title": "Auth Mode",
+            "default": "cookie"
+          },
+          "username": {
+            "type": "string",
+            "title": "Username",
+            "default": ""
+          },
+          "timeout_seconds": {
+            "type": "number",
+            "maximum": 300.0,
+            "minimum": 1.0,
+            "title": "Timeout Seconds",
+            "default": 20.0
+          }
+        },
+        "type": "object",
+        "title": "SourceSettings"
+      },
+      "StandbyAccount": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Username"
+          },
+          "domain": {
+            "type": "string",
+            "enum": [
+              "数据工程",
+              "安全",
+              "游戏、图形与多媒体"
+            ],
+            "title": "Domain"
+          },
+          "revision": {
+            "type": "string",
+            "title": "Revision",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "domain"
+        ],
+        "title": "StandbyAccount"
+      },
+      "StandbyCheck": {
+        "properties": {
+          "solo2": {
+            "$ref": "#/components/schemas/ConnectionCheck"
+          },
+          "github": {
+            "$ref": "#/components/schemas/ConnectionCheck"
+          }
+        },
+        "type": "object",
+        "required": [
+          "solo2",
+          "github"
+        ],
+        "title": "StandbyCheck"
+      },
+      "StandbySessionRequest": {
+        "properties": {
+          "primary_username": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Primary Username"
+          },
+          "primary_address": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Primary Address"
+          }
+        },
+        "type": "object",
+        "required": [
+          "primary_username",
+          "primary_address"
+        ],
+        "title": "StandbySessionRequest"
+      },
+      "StandbyUpdate": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Username"
+          },
+          "domain": {
+            "type": "string",
+            "enum": [
+              "数据工程",
+              "安全",
+              "游戏、图形与多媒体"
+            ],
+            "title": "Domain"
+          },
+          "revision": {
+            "type": "string",
+            "title": "Revision",
+            "default": ""
+          },
+          "primary_username": {
+            "type": "string",
+            "title": "Primary Username"
+          },
+          "primary_address": {
+            "type": "string",
+            "title": "Primary Address"
+          },
+          "password": {
+            "type": "string",
+            "title": "Password",
+            "default": ""
+          },
+          "github_token": {
+            "type": "string",
+            "title": "Github Token",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "domain",
+          "primary_username",
+          "primary_address"
+        ],
+        "title": "StandbyUpdate"
       },
       "StorageConfigPatch": {
         "properties": {
@@ -8473,6 +9525,31 @@
         "type": "object",
         "title": "TrashConfigPatch"
       },
+      "Unlock": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Code"
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "settings",
+              "dispatch",
+              "profiles"
+            ],
+            "title": "Purpose",
+            "default": "dispatch"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "title": "Unlock"
+      },
       "ValidationError": {
         "properties": {
           "loc": {
@@ -8518,6 +9595,38 @@
           "cmd"
         ],
         "title": "VerifyRequest"
+      },
+      "View": {
+        "properties": {
+          "connections": {
+            "items": {
+              "$ref": "#/components/schemas/Connection"
+            },
+            "type": "array",
+            "title": "Connections"
+          },
+          "expires_in": {
+            "type": "integer",
+            "title": "Expires In"
+          },
+          "token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "connections",
+          "expires_in"
+        ],
+        "title": "View"
       },
       "WindowStartRequest": {
         "properties": {

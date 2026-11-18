@@ -463,6 +463,7 @@ class RolloutInfo:
     marker: str = ""
     task_id: str = ""
     cwd: str = ""
+    turn_id: str = ""
     turn_state: str = ""
     error_text: str = ""
     last_tool_at: float = 0.0
@@ -586,6 +587,8 @@ class RolloutIndex:
             return
         if kind == "event_msg" and item_type in TURN_EVENTS:
             info.turn_state = item_type
+            if item_type == "task_started":
+                info.turn_id = str(payload.get("turn_id") or "")
             if item_type in {"stream_error", "error", "turn_aborted"}:
                 message = payload.get("message") or payload.get("reason") or payload
                 info.error_text = (message if isinstance(message, str) else json.dumps(message, ensure_ascii=False))[:2000]

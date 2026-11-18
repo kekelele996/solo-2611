@@ -232,6 +232,7 @@ export function OverviewTab({ task, onRun, running }: { task: TaskDetail; onRun:
           </div>
         </Panel>
         <Panel title="快照链路">
+          <KeyValue label="阶段耗时" value={task.stage_history?.length ? task.stage_history.map(row => <div key={row.id}>{row.stage} · 第 {row.attempt} 次 · {row.ended_at ? `${Math.max(0, Math.round((Date.parse(row.ended_at) - Date.parse(row.started_at))/1000))} 秒` : "结束时间未记录"}</div>) : "未记录"} />
           {snapshots.isPending ? <LoadingLines /> : null}
           {snapshots.isError ? <ErrorPanel error={snapshots.error} onRetry={() => void snapshots.refetch()} /> : null}
           {snapshots.data ? (
@@ -242,6 +243,7 @@ export function OverviewTab({ task, onRun, running }: { task: TaskDetail; onRun:
                 label="祖先关系"
                 value={snapshots.data.ancestor_ok ? <Badge tone="ok">通过</Badge> : <Badge tone="danger">未通过</Badge>}
               />
+              <KeyValue label="变更文件" value={snapshots.data.changes ? `共 ${Object.values(snapshots.data.changes).reduce((a, b) => a + b, 0)} 个（新增 ${snapshots.data.changes.added}，修改 ${snapshots.data.changes.modified}，删除 ${snapshots.data.changes.deleted}，重命名 ${snapshots.data.changes.renamed}）` : "暂无数据"} />
               <KeyValue label="Diff" value={shortDetail(snapshots.data.artifact.short_stat)} mono />
             </div>
           ) : null}

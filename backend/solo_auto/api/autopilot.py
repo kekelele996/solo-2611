@@ -29,8 +29,8 @@ async def _require_preflight(ctx: AppContext) -> dict[str, Any]:
 
 
 @router.get("")
-async def status(ctx: AppContext = Depends(context)) -> dict[str, Any]:
-    return ctx.autopilot.snapshot()
+async def status(compact: bool = False, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    return ctx.autopilot.snapshot(compact=compact)
 
 
 @router.post("/preflight")

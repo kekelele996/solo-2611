@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { LucideIcon } from "lucide-react";
 import {
-  ClipboardCheck,
   Command,
   Gauge,
   FolderSearch,
@@ -19,7 +18,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { api } from "../api/client";
+import { api, downloadExport } from "../api/client";
 import { useUIStore } from "../stores/ui";
 import { errorText, statusLabel } from "../utils/display";
 import { todayShanghai } from "../utils/time";
@@ -29,10 +28,8 @@ const pageCommands = [
   { label: "作业看板", to: "/", icon: LayoutDashboard },
   { label: "调度中心", to: "/dispatch", icon: Gauge },
   { label: "调度日志", to: "/logs", icon: History },
-  { label: "人工抽检", to: "/audit", icon: ClipboardCheck },
   { label: "任务列表", to: "/tasks", icon: ListChecks },
   { label: "题源领取", to: "/source", icon: FolderSearch },
-  { label: "导出与统计", to: "/export", icon: Upload },
   { label: "使用统计", to: "/usage", icon: History },
   { label: "回收站", to: "/system#trash", icon: Trash2 },
   { label: "系统设置", to: "/system", icon: Settings },
@@ -90,7 +87,7 @@ export function CommandPalette() {
       else toast(`今天没有可导出的任务，跳过 ${result.skipped.length} 题`, "warn");
       void queryClient.invalidateQueries();
       close();
-      void navigate("/export");
+      if (result.file) downloadExport(result.file);
     },
     onError: (error) => toast(errorText(error), "error"),
   });
@@ -146,13 +143,6 @@ export function CommandPalette() {
         icon: Pause,
         disabled: pause.isPending,
         run: () => pause.mutate(),
-      },
-      {
-        key: "audit",
-        group: "命令",
-        label: "去抽检",
-        icon: ClipboardCheck,
-        run: go("/audit"),
       },
       {
         key: "production",

@@ -80,7 +80,7 @@ def evaluate_container_gates(
         _intent_gate(desired_state),
         _window_gate(settings, now),
         _hold_gate(holds, ["containers"]),
-        GateResult("G5", startup_elapsed >= settings.startup_grace_seconds),
+        _startup_gate(settings, startup_elapsed),
         _docker_gate(facts),
         _disk_gate(facts, settings),
         _resync_gate(limit_resync_until, now),
@@ -122,9 +122,7 @@ def evaluate_creation_gates(
         GateResult("G1", settings.enabled, "dispatch.disabled", "调度总开关已关闭") if not settings.enabled else GateResult("G1", True),
         _intent_gate(desired_state),
         _hold_gate(holds, ["containers"]),
-        GateResult("G5", True)
-        if startup_elapsed >= settings.startup_grace_seconds
-        else GateResult("G5", False, "startup.grace", "服务刚启动，等待状态核对完成"),
+        _startup_gate(settings, startup_elapsed),
         _docker_gate(facts),
         GateResult("C1", True)
         if not tasks_first or in_hand < task_limit
@@ -200,7 +198,7 @@ def evaluate_session_gates(
         GateResult("G1", settings.enabled, "dispatch.disabled", "调度总开关已关闭") if not settings.enabled else GateResult("G1", True),
         _intent_gate(desired_state),
         _hold_gate(holds, ["sessions", "authoring", "delivering"]),
-        GateResult("G5", startup_elapsed >= settings.startup_grace_seconds),
+        _startup_gate(settings, startup_elapsed),
         _capacity_gate(pools.get("sessions", {})),
         _session_spacing_gate(last_session_at, now),
         _item_gate(item, now),
@@ -231,6 +229,12 @@ def evaluate_agent_gates(
         if not check.ok:
             return GateDecision(item.task_id, item.stage, False, check.code, check.text, check.until, check.gate, checks)
     return GateDecision(item.task_id, item.stage, True, checks=checks)
+
+
+def _startup_gate(settings: DispatchSettings, elapsed: float) -> GateResult:
+    if elapsed < settings.startup_grace_seconds:
+        return GateResult("G5", False, "startup.grace", "服务刚启动，等待状态核对完成")
+    return GateResult("G5", True)
 
 
 def _intent_gate(desired_state: str) -> GateResult:

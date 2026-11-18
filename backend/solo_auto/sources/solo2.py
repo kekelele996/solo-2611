@@ -33,9 +33,10 @@ class Solo2Client:
         self.secrets = secrets
         self.transport = transport
 
-    async def test(self) -> dict[str, Any]:
+    async def test(self, *, password: str | None = None) -> dict[str, Any]:
         username = self.settings.username.strip()
-        password = self.secrets.get(PASSWORD_ACCOUNT) or ""
+        if password is None:
+            password = self.secrets.get(PASSWORD_ACCOUNT)
         if not username or not password:
             return {
                 "ok": False,
@@ -72,14 +73,7 @@ class Solo2Client:
             }
 
         if response.status_code in {401, 403}:
-            message = "Solo2 账号或密码错误"
-            try:
-                payload = response.json()
-                detail = payload.get("detail") if isinstance(payload, dict) else None
-                if isinstance(detail, str) and detail.strip():
-                    message = detail.strip()
-            except ValueError:
-                pass
+            message = "账号或密码错误"
             return {
                 "ok": False,
                 "message": message,
@@ -92,7 +86,8 @@ class Solo2Client:
                 "detail": {"status": response.status_code},
             }
 
-        account = username
+        account = ""
+        domain = ""
         try:
             payload = response.json()
             if isinstance(payload, dict):
@@ -101,16 +96,24 @@ class Solo2Client:
                 for candidate in candidates:
                     user = candidate.get("user")
                     if isinstance(user, dict) and user.get("username"):
+                        domain = str(user.get("domain") or "")
                         account = str(user["username"])
                         break
                     if candidate.get("username"):
+                        domain = str(candidate.get("domain") or "")
                         account = str(candidate["username"])
                         break
         except ValueError:
             pass
+        if account != username:
+            return {"ok": False, "message": "平台返回的账号与配置不一致或身份未核验", "detail": {"status": response.status_code}}
+        if domain and self.settings.locked_domain and domain != self.settings.locked_domain:
+            return {"ok": False, "message": f"平台领域为{domain}，与本地绑定不一致", "detail": {"account": account}}
         return {
             "ok": True,
-            "message": f"Solo2 登录成功：{account}",
+            "message": f"Solo2 登录成功：{account}。" + (
+                "账号领域已核验" if domain and domain == self.settings.locked_domain else
+                f"平台领域：{domain}，请核对账号绑定" if domain else "平台未返回领域，绑定未核验"),
             "detail": {
                 "status": response.status_code,
                 "platform": self.settings.base_url,
@@ -118,7 +121,7 @@ class Solo2Client:
             },
         }
 
-    async def login_session(self) -> dict[str, Any]:
+    async def login_session(self, *, password: str | None = None) -> dict[str, Any]:
         """Return one in-memory SOLO2 session derived only from workbench settings.
 
         The workbench is the sole owner of the configured username, platform URL
@@ -127,7 +130,8 @@ class Solo2Client:
         stale or cross-account session.
         """
         username = self.settings.username.strip()
-        password = self.secrets.get(PASSWORD_ACCOUNT) or ""
+        if password is None:
+            password = self.secrets.get(PASSWORD_ACCOUNT)
         if not username or not password:
             return {
                 "ok": False,
@@ -184,7 +188,7 @@ class Solo2Client:
                 "message": "Solo2 登录响应不是 JSON",
                 "detail": {"status": response.status_code},
             }
-        csrf = str(payload.get("csrf_token") or "").strip()
+        csrf = str(payload.get("csrf_token") or "").strip() if isinstance(payload, dict) else ""
         account = ""
         if isinstance(payload, dict):
             nested = payload.get("data")

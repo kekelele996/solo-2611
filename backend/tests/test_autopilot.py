@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from solo_auto.app import create_app
-from solo_auto.gateway.skill import SkillGateway
+from solo_auto.gateway.skill import SkillGateway, SkillResult
 from solo_auto.pipeline.autopilot import Autopilot, Job, _chatgpt_launch_timeout, _meaningful_progress_at, build_prompt
 from solo_auto.pipeline.desktop_chatgpt import RolloutIndex
 
@@ -67,15 +67,13 @@ async def test_autopilot_launches_agent_and_fails_honestly(
             started = await client.post("/api/autopilot/start", json={"task_ids": [task_id]})
             assert started.status_code == 200 and started.json()["added"] == [task_id]
 
-            for attempt in (1, 2):
-                await pilot.tick()
-                job = pilot.jobs[task_id]
-                assert job.stage == "authoring" and job.attempts["authoring"] == attempt, job.detail
-                await pilot.agents[task_id].waiter
-                assert "难度论证不足" in job.detail
             await pilot.tick()
-            assert pilot.jobs[task_id].stage == "failed"
-            assert "已尝试 2 次" in pilot.jobs[task_id].detail
+            job = pilot.jobs[task_id]
+            await pilot.agents[task_id].waiter
+            await pilot.tick()
+            assert job.stage == "failed" and job.ignored
+            assert job.attempts["authoring"] == 1 and task_id not in pilot.agents
+            assert "难度论证不足" in job.detail
 
             log = (await client.get(f"/api/autopilot/{task_id}/log")).json()
             assert [line["kind"] for line in log["lines"]] == ["command", "message"]
@@ -103,6 +101,7 @@ async def test_autopilot_acks_as_autopilot_and_exports(
     ctx = app.state.context
     await ctx.startup()
     ctx.audits.settings.mode = "off"
+    ctx.settings.submission.auto_submit = False
     pilot = ctx.autopilot
     pilot.agent_command = [sys.executable, "-c", "raise SystemExit(1)"]
     try:
@@ -631,6 +630,46 @@ async def test_untracked_live_sessions_hold_capacity_until_they_go_quiet(
         await pilot.refresh_live_sessions(force=True)
         await pilot._launch_chatgpt(current, root, [])
         assert launched == [task["id"]]
+    finally:
+        await ctx.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_quota_deferred_waits_and_resumes_submission(
+    fixture_factory: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, root = await _app(tmp_path, monkeypatch, fixture_factory, "exported")
+    ctx = app.state.context
+    await ctx.startup()
+    pilot = ctx.autopilot
+    ctx.settings.submission.auto_submit = True
+    task = ctx.repo.get_task_by_root(root)
+    job = Job(task_id=task["id"], task_name=task["task_name"], stage="reviewing")
+    pilot.jobs = {job.task_id: job}
+    receipt = root / "monitor/submission/api-result.json"
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    receipt.unlink(missing_ok=True)
+    retry = (datetime.now().astimezone() + timedelta(hours=1)).isoformat()
+    calls: list[str] = []
+
+    async def submit(command: list[str], **kwargs: Any) -> SkillResult:
+        calls.append(command[0])
+        if len(calls) == 1:
+            data = {"status": "quota_deferred", "retryAt": retry, "message": "主号和副号今日均已满"}
+            receipt.write_text(json.dumps(data), encoding="utf-8")
+            return SkillResult(code=2, duration=0, data=data)
+        return SkillResult(code=0, duration=0, data={"status": "qc_passed", "submissionId": 123})
+
+    monkeypatch.setattr(pilot.gateway, "call", submit)
+    try:
+        await pilot._watch_submission(job, root)
+        assert job.stage == "waiting_quota" and job.quota_retry_at == retry
+        await pilot.tick()
+        assert calls == ["submit"]
+        job.quota_retry_at = (datetime.now().astimezone() - timedelta(seconds=1)).isoformat()
+        await pilot.tick()
+        await pilot.review_tasks[job.task_id]
+        assert job.stage == "done" and calls == ["submit", "submit"]
     finally:
         await ctx.shutdown()
 

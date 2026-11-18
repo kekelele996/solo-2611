@@ -16,6 +16,7 @@ from solo_auto.errors import ApiError, SourceAuthError
 from solo_auto.events.bus import EventBus
 from solo_auto.pipeline.autopilot import Autopilot
 from solo_auto.pipeline.notify import Notifier
+from solo_auto.pipeline.platform_result import platform_status
 from solo_auto.pipeline.task_service import TaskService
 from solo_auto.pipeline.usage import UsageLedger
 from solo_auto.settings import IntakeSettings, Paths, Settings
@@ -62,7 +63,7 @@ class IntakeService:
         self.ledger = ledger
         self.bus = bus
         self.notifier = notifier
-        self.state_file = paths.home / "intake.json"
+        self.state_file = self._plan_file(settings.active_profile)
         self.plan: dict[str, Any] | None = None
         self._loop_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
@@ -71,6 +72,28 @@ class IntakeService:
         self._preview_cache_at = 0.0
         self._preview_task: asyncio.Task[None] | None = None
         self._load()
+
+    def _plan_file(self, profile_id: str) -> Path:
+        return self.paths.home / ("intake.json" if profile_id == "default" else f"intake-{profile_id}.json")
+
+    def switch_profile(self, profile_id: str) -> StagingManager:
+        self.plan = None
+        self.state_file = self._plan_file(profile_id)
+        self.staging = StagingManager(self.paths, profile_id)
+        self._load()
+        return self.staging
+
+    def clear_preview(self) -> None:
+        if self._preview_task is not None:
+            self._preview_task.cancel()
+        self._preview_task = None
+        self._preview_cache_key = ""
+        self._preview_cache_at = 0
+        self._preview_cache = []
+
+    @property
+    def updating_plan(self) -> bool:
+        return self._lock.locked()
 
     async def start(self) -> None:
         if self._loop_task is None:
@@ -122,7 +145,7 @@ class IntakeService:
         durations = [
             float(job.get("elapsed_seconds") or 0)
             for task_id in self.plan.get("task_ids") or []
-            if (job := self.autopilot.job(str(task_id)))
+            if (job := self.autopilot.job(str(task_id), compact=True))
             and job.get("stage") in {"done", "awaiting_audit", "failed"}
         ]
         eta = ""
@@ -423,17 +446,22 @@ class IntakeService:
                 )
                 plan["updated_at"] = _now()
                 self._save()
-            await self._release_staged_claim(
+            released = await self._release_staged_claim(
                 meta,
                 f"会话终止（{reason}），工程已冷却并归还",
             )
             await self.tick()
-            return {"released": True, "engineering_id": engineering_id}
+            return {"released": released, "engineering_id": engineering_id}
         return {"released": False, "reason": "staging_not_found"}
 
     async def tick(self) -> None:
         async with self._lock:
             plan = self.plan
+            claims = self.repo.query("""SELECT DISTINCT COALESCE(c.task_id, t.id) AS task_id FROM claims c
+                LEFT JOIN tasks t ON t.claim_id = c.id WHERE c.released_at IS NULL""")
+            failed_ids = [job.task_id for claim in claims if (job := self.autopilot.jobs.get(claim["task_id"])) and job.ignored and job.stage == "failed"]
+            if failed_ids:
+                await self._release_finished_claims({"task_ids": failed_ids})
             if not plan or plan.get("status") != "running":
                 return
             if not self.settings.autopilot.enabled:
@@ -837,32 +865,25 @@ class IntakeService:
 
     def _counts(self, plan: dict[str, Any]) -> dict[str, int]:
         completed = active = failed = recoverable = orphaned = awaiting = 0
-        for task_id in plan.get("task_ids") or []:
-            job = self.autopilot.job(str(task_id))
-            if not job:
-                task = self.repo.get_task(str(task_id))
-                if task is None or task.get("job_status") == "aborted":
-                    failed += 1
-                    recoverable += 1
-                elif task.get("job_status") == "archived":
-                    if task.get("exported_at"):
-                        completed += 1
-                    else:
-                        failed += 1
-                else:
-                    orphaned += 1
-                    recoverable += 1
-            elif job.get("stage") in {"done", "awaiting_audit"}:
+        ids = list(dict.fromkeys(str(i) for i in plan.get("task_ids") or []))
+        tasks = self.repo.tasks_by_ids(ids)
+        for task_id in ids:
+            task = tasks.get(task_id) or {}
+            job = self.autopilot.jobs.get(task_id)
+            status = platform_status(str(task["task_root"])) if task.get("task_root") else ""
+            if status == "qc_passed":
                 completed += 1
-            elif job.get("active") and job.get("desktop_running") and job.get("awaiting_platform"):
-                # 已提交到 SOLO2、只等质检反馈：不占在手名额，后面的题可以补位。
+            elif job and job.active and job.awaiting_platform:
                 awaiting += 1
-            elif job.get("active"):
+            elif job and job.active:
                 active += 1
-            elif job.get("stage") in {"failed", "stopped"}:
+            elif job and job.stage in {"failed", "stopped"}:
                 failed += 1
-                if not job.get("ignored"):
+                if not job.ignored:
                     recoverable += 1
+            elif not job and task.get("job_status") not in {"archived", "exported", "aborted"}:
+                orphaned += 1
+                recoverable += 1
         staged = sum(
             1
             for item in self.staging.list()
@@ -890,7 +911,7 @@ class IntakeService:
             task = self.repo.get_task(str(task_id))
             if not task or str(task.get("job_status") or "") in {"archived", "aborted"}:
                 continue
-            if self.autopilot.job(str(task_id)) is None:
+            if self.autopilot.job(str(task_id), compact=True) is None:
                 missing.append(str(task_id))
         if not missing:
             return []
@@ -949,15 +970,9 @@ class IntakeService:
         self.bus.publish("intake.updated", {"counts": self._counts(plan), "status": plan["status"]})
 
     async def _release_finished_claims(self, plan: dict[str, Any]) -> None:
-        tasks = {
-            str(task.get("task_root") or ""): task
-            for task in self.repo.query("SELECT * FROM tasks")
-        }
-        plan_task_roots = {
-            str(task.get("task_root") or "")
-            for task_id in plan.get("task_ids") or []
-            if (task := self.repo.get_task(str(task_id))) is not None
-        }
+        plan_tasks = self.repo.tasks_by_ids(plan.get("task_ids") or [])
+        tasks = {str(task["task_root"]): task for task in plan_tasks.values()}
+        plan_task_roots = tasks.keys()
         for meta in self.staging.list():
             # 任务可能来自计划切换前的项目；按任务根归还，避免旧项目工程长期占用。
             if not meta.get("taskRoot") or str(meta.get("taskRoot") or "") not in plan_task_roots:
@@ -965,13 +980,15 @@ class IntakeService:
             task = tasks.get(str(meta.get("taskRoot") or ""))
             if not task:
                 continue
-            job = self.autopilot.job(str(task["id"]))
+            job = self.autopilot.job(str(task["id"]), compact=True)
             terminal_job = bool(job and job.get("stage") in {"done", "awaiting_audit", "failed", "stopped"})
             terminal_task = str(task.get("job_status") or "") in {"exported", "archived", "aborted"}
-            if terminal_job or terminal_task:
+            if terminal_job or (not job and terminal_task):
                 await self._release_staged_claim(meta, "任务已结束，已归还原工程供后续复题")
 
-    async def _release_staged_claim(self, meta: dict[str, Any], event_message: str) -> None:
+    async def _release_staged_claim(self, meta: dict[str, Any], event_message: str) -> bool:
+        task = self.repo.get_task_by_root(Path(str(meta["taskRoot"]))) if meta.get("taskRoot") else None
+        task_id = str(task["id"]) if task else None
         try:
             await self.source.release(
                 str(meta.get("projectId") or ""),
@@ -984,17 +1001,17 @@ class IntakeService:
                     "claim.release_failed",
                     f"{meta.get('name') or meta.get('engineeringId')} 归还失败：{exc.message}",
                     level="warn",
-                    actor="intake",
+                    actor="intake", task_id=task_id,
                 )
-                return
+                return False
         except Exception as exc:
             self.repo.add_event(
                 "claim.release_failed",
                 f"{meta.get('name') or meta.get('engineeringId')} 归还失败：{exc}",
                 level="warn",
-                actor="intake",
+                actor="intake", task_id=task_id,
             )
-            return
+            return False
         self.repo.execute(
             "UPDATE claims SET released_at = ? WHERE id = ?",
             (_now(), str(meta.get("claimId") or "")),
@@ -1003,8 +1020,9 @@ class IntakeService:
         self.repo.add_event(
             "claim.released",
             f"{meta.get('name') or meta.get('engineeringId')}：{event_message}",
-            actor="intake",
+            actor="intake", task_id=task_id,
         )
+        return True
 
     def _daily(self, plan: dict[str, Any]) -> dict[str, Any]:
         raw = plan.get("daily")

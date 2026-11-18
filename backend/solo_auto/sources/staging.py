@@ -14,12 +14,14 @@ from solo_auto.settings import Paths
 
 
 class StagingManager:
-    def __init__(self, paths: Paths) -> None:
+    def __init__(self, paths: Paths, profile_id: str = "default") -> None:
         self.paths = paths
+        self.profile_id = profile_id
+        self.root = paths.staging if profile_id == "default" else paths.staging / ".profiles" / profile_id
 
     def directory(self, engineering_id: str) -> Path:
         safe = "".join(character if character.isalnum() or character in "-_" else "-" for character in engineering_id)
-        return self.paths.staging / (safe or "engineering")
+        return self.root / (safe or "engineering")
 
     async def stage(
         self,
@@ -47,6 +49,7 @@ class StagingManager:
         source_dir = directory / "source"
         self._safe_extract(zip_path, source_dir)
         meta = {
+            "profileId": self.profile_id,
             "engineeringId": engineering_id,
             "projectId": project_id,
             "projectName": project_name or project_id,
@@ -68,7 +71,7 @@ class StagingManager:
 
     def list(self) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
-        for meta_path in sorted(self.paths.staging.glob("*/meta.json")):
+        for meta_path in sorted(self.root.glob("*/meta.json")):
             try:
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):

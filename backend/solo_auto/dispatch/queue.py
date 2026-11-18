@@ -10,7 +10,7 @@ from typing import Any
 
 from solo_auto.store.repo import Repository
 
-TERMINAL = {"done", "failed", "removed"}
+TERMINAL = {"done", "failed", "removed", "stopped"}
 WAITABLE = {"queued", "launching", "active", "backoff", "interrupted", "quarantined"}
 IN_HAND = {"queued", "launching", "active", "backoff", "interrupted"}
 
@@ -63,9 +63,9 @@ class DispatchQueue:
         self.repo = repo
 
     def all_items(self, *, include_terminal: bool = True) -> list[DispatchItem]:
-        rows = self.repo.query("SELECT * FROM dispatch_items ORDER BY updated_at DESC")
-        items = [_from_row(row) for row in rows]
-        return items if include_terminal else [item for item in items if item.status not in TERMINAL]
+        where = "" if include_terminal else "WHERE status NOT IN ('done','failed','removed','stopped')"
+        rows = self.repo.query(f"SELECT * FROM dispatch_items {where} ORDER BY updated_at DESC")
+        return [_from_row(row) for row in rows]
 
     def get(self, task_id: str) -> DispatchItem | None:
         row = self.repo.query_one("SELECT * FROM dispatch_items WHERE task_id = ?", (task_id,))
@@ -114,6 +114,8 @@ class DispatchQueue:
         front: bool = False,
     ) -> DispatchItem:
         existing = self.get(task_id)
+        if front:
+            priority = max(priority, max(self.manual_priorities().values(), default=0) + 1)
         if existing and existing.status not in TERMINAL:
             existing.stage = stage or existing.stage
             existing.plan_id = plan_id or existing.plan_id
@@ -161,7 +163,11 @@ class DispatchQueue:
         )
 
     def ordered(self, *, include_unavailable: bool = False) -> list[DispatchItem]:
-        items = [item for item in self.all_items(include_terminal=False) if item.status in WAITABLE]
+        return self.order_items(self.all_items(include_terminal=False), include_unavailable=include_unavailable)
+
+    @staticmethod
+    def order_items(items: list[DispatchItem], *, include_unavailable: bool = False) -> list[DispatchItem]:
+        items = [item for item in items if item.status in WAITABLE]
         if not include_unavailable:
             items = [item for item in items if item.status not in {"quarantined"}]
         return sorted(
@@ -175,6 +181,32 @@ class DispatchQueue:
                 item.enqueued_at,
             ),
         )
+
+    def move_waiting(self, task_id: str, direction: str) -> bool:
+        """移动的是待处理栏中的相对顺序；资源和重试门禁仍在启动时判定。"""
+        with self.repo.transaction() as conn:
+            waiting = [item for item in self.ordered() if not item.active]
+            index = next((i for i, item in enumerate(waiting) if item.task_id == task_id), None)
+            if index is None:
+                return False
+            target = 0 if direction == "top" else max(0, min(len(waiting) - 1, index + (1 if direction == "down" else -1)))
+            if target == index:
+                return True
+            waiting.insert(target, waiting.pop(index))
+            # 一次事务写入有变化的名次。调度时 priority 先于重试时间和默认位置排序。
+            stamp = _now()
+            conn.executemany(
+                "UPDATE dispatch_items SET priority=?, updated_at=? WHERE task_id=?",
+                [(rank, stamp, item.task_id) for rank, item in enumerate(reversed(waiting), 1) if item.priority != rank],
+            )
+        return True
+
+    def manual_priorities(self) -> dict[str, int]:
+        rows = self.repo.query(
+            "SELECT task_id, priority FROM dispatch_items WHERE priority>0 "
+            "AND status IN ('queued','interrupted','backoff','launching','active')"
+        )
+        return {str(row["task_id"]): int(row["priority"]) for row in rows}
 
     def due_retry(self, now: datetime | None = None) -> list[DispatchItem]:
         current = (now or datetime.now(UTC)).timestamp()

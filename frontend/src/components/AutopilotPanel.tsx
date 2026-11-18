@@ -22,7 +22,7 @@ export function AutopilotPanel() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [logFor, setLogFor] = useState<AutopilotJob | null>(null);
-  const pilot = useQuery({ queryKey: ["autopilot"], queryFn: api.autopilot, refetchInterval: 3000 });
+  const pilot = useQuery({ queryKey: ["autopilot", "summary"], queryFn: api.autopilotSummary, refetchInterval: 3000 });
   const stop = useMutation({
     mutationFn: (ids: string[]) => api.autopilotStop(ids),
     onSuccess: (result) => {

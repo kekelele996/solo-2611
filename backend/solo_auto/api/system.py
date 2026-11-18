@@ -13,12 +13,17 @@ import zipfile
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
-from urllib.parse import urlsplit, urlunsplit
+from typing import Any, Literal, cast
+from urllib.parse import urlsplit
 
+from cryptography.exceptions import InvalidTag
 from fastapi import APIRouter, Depends, Query, Request, Response
+from pydantic import BaseModel, Field
 
+from solo_auto import account_profile, skill_profile
+from solo_auto.api.account_view import require_access, trusted_skill
 from solo_auto.api.dependencies import context
+from solo_auto.api.profiles import serialize_account_changes, standby_credentials, submission_quota_directory
 from solo_auto.api.types import (
     ClaimRequest,
     ConfigPatchRequest,
@@ -33,14 +38,15 @@ from solo_auto.build_info import build_id
 from solo_auto.context import AppContext
 from solo_auto.errors import ApiError, SourceAuthError, SourceOfflineError
 from solo_auto.pipeline.reaper import reap_and_record
-from solo_auto.pipeline.usage import UsageLedger
+from solo_auto.sources import github
+from solo_auto.sources.solo2 import Solo2Client
 
 router = APIRouter(prefix="/api")
 
 
 @router.get("/health")
 async def health(ctx: AppContext = Depends(context)) -> dict[str, Any]:
-    snapshot = ctx.dispatcher.snapshot()
+    snapshot = ctx.dispatcher.status_summary()
     loops = ctx.dispatcher.health.snapshot()
     holds = ctx.dispatcher.holds.active()
     return {
@@ -61,7 +67,7 @@ async def health(ctx: AppContext = Depends(context)) -> dict[str, Any]:
 
 @router.get("/version")
 async def version(ctx: AppContext = Depends(context)) -> dict[str, Any]:
-    skill_config = await ctx.gateway.config()
+    skill_config = _runtime_profile(ctx)
     raw_claude = skill_config.get("claude")
     claude = cast(dict[str, Any], raw_claude) if isinstance(raw_claude, dict) else {}
     return {
@@ -145,42 +151,79 @@ async def diagnostics(ctx: AppContext = Depends(context)) -> dict[str, Any]:
     return {"path": str(target), "size": target.stat().st_size}
 
 
+def _runtime_profile(ctx: AppContext) -> dict[str, Any]:
+    limit = ctx.dispatcher.effective_container_limit if ctx.dispatcher.v3_enabled else ctx.settings.execution.max_containers
+    return skill_profile.runtime_profile(ctx.settings, limit)
+
+
+@router.get("/system/skill/config")
+async def skill_runtime(request: Request, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    if not trusted_skill(request):
+        require_access(request, ctx)
+    return _runtime_profile(ctx)
+
+
+@router.post("/system/skill/credential/{purpose}", include_in_schema=False)
+async def skill_credential(purpose: Literal["github", "github_standby", "model"], request: Request, response: Response,
+                           ctx: AppContext = Depends(context)) -> dict[str, str]:
+    if (not request.client or request.client.host not in {"127.0.0.1", "::1"}
+            or request.url.hostname not in {"127.0.0.1", "::1", "localhost"}
+            or "origin" in request.headers or request.headers.get("x-solo-skill") != "solo-2611"):
+        raise ApiError(403, "LOCAL_ONLY", "凭据只能由本机技能领取")
+    value: str | None
+    if purpose == "github_standby":
+        async with ctx.profile_lock:
+            standby = standby_credentials(ctx)
+            if (not standby or request.headers.get("x-account-profile") != ctx.settings.active_profile
+                    or request.headers.get("x-standby-revision") != standby.revision):
+                raise ApiError(409, "STANDBY_CHANGED", "副号绑定已变更，请重新预检")
+            value = standby.github_token
+    else:
+        value = ctx.secrets.get("github.token" if purpose == "github" else "model.key")
+    if not value:
+        raise ApiError(409, "CREDENTIAL_MISSING", "请在工作台保存对应凭据")
+    response.headers["Cache-Control"] = "no-store"
+    return {"value": value}
+
+
 @router.get("/system/config")
-async def get_config(ctx: AppContext = Depends(context)) -> dict[str, Any]:
-    skill_config = await ctx.gateway.config()
-    raw_skill_claude = skill_config.get("claude")
-    skill_claude = cast(dict[str, Any], raw_skill_claude) if isinstance(raw_skill_claude, dict) else {}
-    raw_skill_submission = skill_config.get("submission")
-    skill_submission = cast(dict[str, Any], raw_skill_submission) if isinstance(raw_skill_submission, dict) else {}
-    execution = ctx.settings.execution.model_dump()
-    execution["open_terminal_on_run"] = bool(
-        skill_claude.get("openTerminalOnRun", execution["open_terminal_on_run"])
-    )
-    submission = ctx.settings.submission.model_dump()
-    submission.update(
-        {
-            "auto_submit": bool(
-                skill_submission.get("autoSubmit", submission["auto_submit"])
-            ),
-            "poll_interval_seconds": int(
-                skill_submission.get(
-                    "pollIntervalSeconds", submission["poll_interval_seconds"]
-                )
-            ),
-            "poll_timeout_seconds": int(
-                skill_submission.get(
-                    "pollTimeoutSeconds", submission["poll_timeout_seconds"]
-                )
-            ),
+async def get_config(request: Request, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    locked = not ctx.account_access.allows(request.headers.get("x-account-view", ""))
+    if trusted_skill(request):
+        standby = standby_credentials(ctx)
+        return {
+            "active_profile": ctx.settings.active_profile,
+            "submission": {"auto_submit": ctx.settings.submission.auto_submit,
+                           "quota_directory": str(ctx.paths.run / "solo2-daily-quota")},
+            "solo2": {
+                "username": ctx.settings.solo2.username,
+                "base_url": ctx.settings.solo2.base_url,
+                "locked_domain": ctx.settings.solo2.locked_domain,
+                "password": "<set>" if ctx.secrets.has("solo2.password") else "<unset>",
+                "quota_directory": submission_quota_directory(ctx, ctx.settings.solo2.username),
+                "standby": {
+                    "username": standby.username,
+                    "base_url": ctx.settings.solo2.base_url,
+                    "locked_domain": standby.domain,
+                    "quota_directory": submission_quota_directory(ctx, standby.username),
+                    "revision": standby.revision,
+                } if standby else None,
+            },
         }
-    )
+    skill_config = {} if locked else _runtime_profile(ctx)
+    execution = ctx.settings.execution.model_dump()
+    submission = ctx.settings.submission.model_dump()
+    submission["poll_timeout_seconds"] = min(600, submission["poll_timeout_seconds"])
+    submission["poll_interval_seconds"] = min(300, submission["poll_interval_seconds"])
     return {
+        "accounts_locked": locked,
+        "active_profile": None if locked else ctx.settings.active_profile,
         "host": ctx.settings.host,
         "port": ctx.settings.port,
         "skill_root": str(ctx.settings.skill_root),
         "skill_version": ctx.skill_version,
         "tasks_dir": str(ctx.settings.tasks_dir),
-        "source": {
+        "source": {} if locked else {
             **ctx.settings.source.model_dump(),
             "password": "<set>" if ctx.secrets.has("projecthub.password") else "<unset>",
             "bearer_token": "<set>" if ctx.secrets.has("projecthub.bearer") else "<unset>",
@@ -201,20 +244,25 @@ async def get_config(ctx: AppContext = Depends(context)) -> dict[str, Any]:
             **ctx.settings.notify.model_dump(),
             "webhook_url": "<set>" if ctx.secrets.has("notify.webhook") else "",
         },
-        "solo2": {
+        "solo2": {} if locked else {
             **ctx.settings.solo2.model_dump(),
             "password": "<set>" if ctx.secrets.has("solo2.password") else "<unset>",
         },
         "skill_config": skill_config,
-        "github_token": "<set>"
-        if ctx.secrets.has("github.token") or _skill_has_github_token(skill_config)
-        else "<unset>",
+        "github_token": "<set>" if not locked and ctx.secrets.has("github.token") else "<unset>",
+        "gateway_key": "<set>" if not locked and ctx.secrets.has("model.key") else "<unset>",
+        "model_base_url": "" if locked else ctx.settings.skill.base_url,
     }
 
 
-@router.patch("/system/config")
-async def patch_config(payload: ConfigPatchRequest, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+@router.patch("/system/config", dependencies=[Depends(serialize_account_changes)])
+async def patch_config(payload: ConfigPatchRequest, request: Request, ctx: AppContext = Depends(context)) -> dict[str, Any]:
     payload_data = payload.model_dump(exclude_none=True)
+    if payload_data.keys() & {"solo2", "source", "skill", "secrets"}:
+        require_access(request, ctx)
+        expected = request.headers.get("x-account-profile")
+        if expected and expected != ctx.settings.active_profile:
+            raise ApiError(409, "PROFILE_CHANGED", "当前配置已切换，请重新打开账号设置")
     autopilot_mode = (payload_data.get("autopilot") or {}).get("agent_mode") if isinstance(
         payload_data.get("autopilot"), dict
     ) else None
@@ -231,8 +279,15 @@ async def patch_config(payload: ConfigPatchRequest, ctx: AppContext = Depends(co
                 "执行方式切换前必须先停止当前运行中的 Agent",
                 detail={"task_ids": busy},
             )
+    account_patch = payload_data.get("solo2") or {}
+    identity_changed = any(key in account_patch and account_patch[key] != getattr(ctx.settings.solo2, key)
+                           for key in ("base_url", "username"))
+    if identity_changed:
+        payload_data.setdefault("secrets", {}).setdefault("solo2_password", "")
+        account_patch.setdefault("locked_domain", "")
     allowed_top = {"host", "port", "skill_root", "tasks_dir"}
     groups = {
+        "skill",
         "source",
         "execution",
         "storage",
@@ -253,7 +308,13 @@ async def patch_config(payload: ConfigPatchRequest, ctx: AppContext = Depends(co
     for key in allowed_top:
         if key in payload_data:
             setattr(ctx.settings, key, payload_data[key])
+    account_patch = payload_data.get("solo2") or {}
+    if "locked_domain" in account_patch:
+        ctx.settings.solo2.managed_domain = True
+    if "github_token" in (payload_data.get("secrets") or {}):
+        ctx.settings.solo2.managed_github = True
     nested = {
+        "skill": ctx.settings.skill,
         "source": ctx.settings.source,
         "execution": ctx.settings.execution,
         "storage": ctx.settings.storage,
@@ -303,6 +364,8 @@ async def patch_config(payload: ConfigPatchRequest, ctx: AppContext = Depends(co
     secrets = payload_data.get("secrets")
     if isinstance(secrets, dict):
         for key, account in (
+            ("gateway_key", "model.key"),
+            ("github_token", "github.token"),
             ("source_password", "projecthub.password"),
             ("source_bearer", "projecthub.bearer"),
             ("solo2_password", "solo2.password"),
@@ -314,22 +377,6 @@ async def patch_config(payload: ConfigPatchRequest, ctx: AppContext = Depends(co
                 else:
                     ctx.secrets.delete(account)
     ctx.save_settings()
-    if "submission" in payload_data or "solo2" in payload_data:
-        parsed = urlsplit(ctx.settings.solo2.base_url)
-        server = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
-        submission_pairs = [
-            f"submission.autoSubmit={'true' if ctx.settings.submission.auto_submit else 'false'}",
-            f"submission.pollIntervalSeconds={ctx.settings.submission.poll_interval_seconds}",
-            f"submission.pollTimeoutSeconds={ctx.settings.submission.poll_timeout_seconds}",
-            f"submission.server={server}",
-        ]
-        result = await ctx.gateway.call(["config", "set", *submission_pairs], timeout=60)
-        if result.code != 0:
-            raise ApiError(
-                500,
-                "SKILL_SUBMISSION_CONFIG_UPDATE_FAILED",
-                result.err.strip() or "技能自动提交配置更新失败",
-            )
     ctx.autopilot.apply_settings(ctx.settings.autopilot)
     ctx.audits.settings = ctx.settings.audit
     ctx.intake.intake_settings = ctx.settings.intake
@@ -338,56 +385,91 @@ async def patch_config(payload: ConfigPatchRequest, ctx: AppContext = Depends(co
     ctx.notifier.settings = ctx.settings.notify
     ctx.reconciler.tasks_dir = ctx.settings.tasks_dir
     source_change = isinstance(payload_data.get("source"), dict)
-    if source_change:
-        await ctx.source.close()
+    if source_change or "source_password" in (payload_data.get("secrets") or {}):
         from solo_auto.sources.project_hub import ProjectHubClient
 
-        ctx.source = ProjectHubClient(ctx.settings.source, ctx.secrets)
-        ctx.source_online = False
-        ctx.preflight.source = ctx.source
-        ctx.intake.source = ctx.source
-        ctx.ledger = UsageLedger(ctx.repo, ctx.settings.source.base_url)
-        ctx.tasks.attach_ledger(ctx.ledger)
-        ctx.autopilot.attach_ledger(ctx.ledger)
-        ctx.batch.ledger = ctx.ledger
+        previous = ctx.source
+        ctx.replace_source(ProjectHubClient(ctx.settings.source, ctx.secrets))
+        await previous.close()
     execution = payload_data.get("execution")
     if isinstance(execution, dict):
-        pairs: list[str] = []
-        if "max_containers" in execution:
-            pairs.append(f"claude.maxContainers={execution['max_containers']}")
-        if "run_timeout_seconds" in execution:
-            pairs.append(f"claude.timeoutSeconds={execution['run_timeout_seconds']}")
-        if "attempts" in execution:
-            pairs.append(f"claude.attempts={execution['attempts']}")
-        if "run_mode" in execution:
-            pairs.append(f"claude.runMode={execution['run_mode']}")
-        if "open_terminal_on_run" in execution:
-            value = "true" if execution["open_terminal_on_run"] else "false"
-            pairs.append(f"claude.openTerminalOnRun={value}")
-        if "continue_max" in execution:
-            pairs.append(f"claude.continueMax={execution['continue_max']}")
-        if "start_attempts" in execution:
-            pairs.append(f"claude.startAttempts={execution['start_attempts']}")
-        if "silent_seconds" in execution:
-            pairs.append(f"claude.silentSeconds={execution['silent_seconds']}")
-        if "no_progress_seconds" in execution:
-            pairs.append(f"claude.noProgressSeconds={execution['no_progress_seconds']}")
-        if "fatal_hold_minutes" in execution:
-            pairs.append(f"claude.fatalHoldMinutes={execution['fatal_hold_minutes']}")
-        if pairs:
-            result = await ctx.gateway.call(["config", "set", *pairs], timeout=60)
-            if result.code != 0:
-                raise ApiError(500, "SKILL_CONFIG_UPDATE_FAILED", result.err.strip() or "技能配置更新失败")
-            await ctx.scheduler.refresh_limit()
+        await ctx.scheduler.refresh_limit()
         ctx.settings.execution.attempts = 1
         ctx.scheduler.attempt_total = 1
         ctx.scheduler.run_mode = ctx.settings.execution.run_mode
     ctx.repo.add_event("system.config_updated", "系统配置已更新", actor="user")
-    return await get_config(ctx)
+    return await get_config(request, ctx)
+
+
+@router.post("/system/accounts/export", dependencies=[Depends(require_access), Depends(serialize_account_changes)])
+async def export_accounts(payload: dict[str, str], ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    password = payload.get("password", "")
+    profile: dict[str, Any] = {"solo2": ctx.settings.solo2.model_dump(exclude={"managed_domain", "managed_github"})}
+    if password:
+        profile["secrets"] = {k: ctx.secrets.get(v) or "" for k, v in
+                              (("solo2_password", "solo2.password"), ("github_token", "github.token"))}
+    return await asyncio.to_thread(account_profile.pack, profile, password)
+
+
+@router.post("/system/accounts/import", dependencies=[Depends(require_access), Depends(serialize_account_changes)])
+async def import_accounts(payload: dict[str, Any], request: Request, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    try:
+        profile = await asyncio.to_thread(account_profile.unpack, payload["bundle"], payload.get("password", ""))
+        account = type(ctx.settings.solo2).model_validate(profile["solo2"])
+        if urlsplit(account.base_url).scheme not in {"https", "http"} or not urlsplit(account.base_url).hostname:
+            raise ValueError("无效平台地址")
+        secrets = profile.get("secrets", {})
+        if not isinstance(secrets, dict) or set(secrets) - {"github_token", "solo2_password"}:
+            raise ValueError("无效凭据字段")
+        if (account.username, account.base_url) != (ctx.settings.solo2.username, ctx.settings.solo2.base_url):
+            secrets.setdefault("solo2_password", "")
+        patch = ConfigPatchRequest.model_validate({"solo2": account.model_dump(), "secrets": secrets})
+    except (KeyError, TypeError, ValueError, InvalidTag):
+        raise ApiError(422, "ACCOUNT_IMPORT_INVALID", "配置文件或备份密码不正确") from None
+    return await patch_config(patch, request, ctx)
+
+
+@router.post("/system/accounts/migrate", dependencies=[Depends(require_access), Depends(serialize_account_changes)])
+async def migrate_account(request: Request, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    codex = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser()
+    path = Path(os.environ.get("SOLO2611_CONFIG") or codex / "solo-2611/config.json").expanduser()
+    if not path.exists() and path.parent.is_dir():
+        # 仅在用户点击迁入时选用安装程序移出的最近一份备份。
+        prefix = path.name + ".retired-"
+        path = max((entry for entry in path.parent.iterdir() if entry.name.startswith(prefix) and entry.is_file()),
+                   default=path)
+    if not path.is_file():
+        raise ApiError(404, "PROFILE_MISSING", "没有找到技能账号配置")
+    try:
+        previous = json.loads(path.read_text())
+        token = previous.get("github", {}).get("accessTokens")
+        if isinstance(token, list):
+            token = next(iter(token), "")
+        domain = ctx.settings.solo2.locked_domain if ctx.settings.solo2.managed_domain else previous.get("submission", {}).get("lockedDomain", "")
+        current_token = ctx.secrets.get("github.token")
+        effective_token = current_token if ctx.settings.solo2.managed_github else current_token or token
+        secrets = {"github_token": effective_token} if effective_token else {}
+        runtime = None
+        if not ctx.settings.skill.migrated:
+            runtime = skill_profile.legacy_runtime(previous)
+            if ctx.settings.skill.base_url != type(runtime)().base_url or ctx.secrets.has("model.key"):
+                runtime.base_url = ctx.settings.skill.base_url
+            gateway_key = previous.get("claude", {}).get("apiKey")
+            if gateway_key and not ctx.secrets.has("model.key"):
+                secrets["gateway_key"] = gateway_key
+            runtime.migrated = True
+        patch = ConfigPatchRequest.model_validate({"solo2": {"locked_domain": domain}, "secrets": secrets})
+    except (OSError, AttributeError, TypeError, ValueError):
+        raise ApiError(422, "PROFILE_INVALID", "原账号配置无法读取，请检查配置格式") from None
+    if runtime is not None:
+        ctx.settings.skill = runtime
+    return await patch_config(patch, request, ctx)
 
 
 @router.post("/system/config/test")
-async def test_config(payload: ConfigTestRequest, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+async def test_config(payload: ConfigTestRequest, request: Request, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    if payload.target in {"solo2", "github", "source"}:
+        require_access(request, ctx)
     if payload.target == "skill":
         try:
             version_value = await ctx.gateway.version()
@@ -403,6 +485,8 @@ async def test_config(payload: ConfigTestRequest, ctx: AppContext = Depends(cont
             "message": "Docker 可用" if ok else "Docker daemon 不可用",
             "detail": {},
         }
+    if payload.target == "github":
+        return await github.test_credentials(ctx.secrets.get("github.token"))
     if payload.target == "solo2":
         return await ctx.solo2.test()
     if payload.target == "api":
@@ -410,7 +494,7 @@ async def test_config(payload: ConfigTestRequest, ctx: AppContext = Depends(cont
     raise ApiError(400, "TEST_TARGET_INVALID", "未知测试目标")
 
 
-@router.post("/system/solo2/session")
+@router.post("/system/solo2/session", dependencies=[Depends(serialize_account_changes)])
 async def solo2_session(request: Request, ctx: AppContext = Depends(context)) -> dict[str, Any]:
     """Issue a short-lived SOLO2 session to the local skill only.
 
@@ -420,6 +504,11 @@ async def solo2_session(request: Request, ctx: AppContext = Depends(context)) ->
     client_host = request.client.host if request.client else ""
     if client_host not in {"127.0.0.1", "::1", "localhost"}:
         raise ApiError(403, "LOCAL_ONLY", "SOLO2 会话只能由本机技能获取")
+    if not trusted_skill(request) and ctx.account_access.configured:
+        raise ApiError(403, "LOCAL_ONLY", "SOLO2 会话只能由本机技能获取")
+    expected = request.headers.get("x-account-profile")
+    if expected and expected != ctx.settings.active_profile:
+        raise ApiError(409, "PROFILE_CHANGED", "当前用户配置已切换，请重新预检")
     result = await ctx.solo2.login_session()
     if not result.get("ok"):
         raise ApiError(
@@ -428,7 +517,37 @@ async def solo2_session(request: Request, ctx: AppContext = Depends(context)) ->
             str(result.get("message") or "SOLO2 登录失败"),
             detail=result.get("detail") or {},
         )
-    return result
+    return {**result, "active_profile": ctx.settings.active_profile, "locked_domain": ctx.settings.solo2.locked_domain,
+            "auto_submit": ctx.settings.submission.auto_submit}
+
+
+class StandbySessionRequest(BaseModel):
+    primary_username: str = Field(min_length=1, max_length=200, pattern=r'\S')
+    primary_address: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/system/solo2/standby-session", dependencies=[Depends(serialize_account_changes)])
+async def solo2_standby_session(payload: StandbySessionRequest, request: Request,
+                                ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    if (not request.client or request.client.host not in {"127.0.0.1", "::1"}
+            or request.url.hostname not in {"127.0.0.1", "::1", "localhost"}
+            or "origin" in request.headers or request.headers.get("x-solo-skill") != "solo-2611"):
+        raise ApiError(403, "LOCAL_ONLY", "副号会话只能由本机技能获取")
+    expected = request.headers.get("x-account-profile")
+    if expected and expected != ctx.settings.active_profile:
+        raise ApiError(409, "PROFILE_CHANGED", "当前用户配置已切换，请重新预检")
+    standby = standby_credentials(ctx)
+    primary = ctx.settings.solo2
+    if (not standby or standby.primary_username != payload.primary_username.strip()
+            or standby.primary_address != payload.primary_address.strip()):
+        raise ApiError(409, "STANDBY_CHANGED", "副号绑定已变更，请重新预检")
+    settings = primary.model_copy(update={"username": standby.username, "locked_domain": standby.domain})
+    result = await Solo2Client(settings, ctx.secrets).login_session(password=standby.password)
+    if not result.get("ok"):
+        raise ApiError(502, "SOLO2_STANDBY_SESSION_FAILED",
+                       str(result.get("message") or "副号 SOLO2 登录失败"), detail=result.get("detail") or {})
+    return {**result, "active_profile": ctx.settings.active_profile, "locked_domain": standby.domain,
+            "standby": True, "standby_revision": standby.revision, "auto_submit": ctx.settings.submission.auto_submit}
 
 
 @router.get("/system/logs")
@@ -470,7 +589,7 @@ async def prune(payload: PruneRequest, ctx: AppContext = Depends(context)) -> di
     candidates: list[Path] = []
     if "staging" in payload.scopes:
         candidates.extend(
-            path for path in ctx.paths.staging.iterdir() if path.is_dir() and not (path / "meta.json").exists()
+            path for path in ctx.staging.root.glob("*") if path.name != ".profiles" and path.is_dir() and not (path / "meta.json").exists()
         )
     if "logs" in payload.scopes:
         cutoff = datetime.now().timestamp() - ctx.settings.storage.skill_log_retention_days * 86400
@@ -488,8 +607,10 @@ async def prune(payload: PruneRequest, ctx: AppContext = Depends(context)) -> di
     return {"dry_run": payload.dry_run, "items": items, "total_bytes": sum(item["size"] for item in items)}
 
 
-@router.post("/source/login")
-async def source_login(payload: SourceLoginRequest, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+@router.post("/source/login", dependencies=[Depends(serialize_account_changes)])
+async def source_login(payload: SourceLoginRequest, request: Request, ctx: AppContext = Depends(context)) -> dict[str, Any]:
+    if not payload.username or not payload.password:
+        require_access(request, ctx)
     try:
         data = await ctx.source.login(payload.username or None, payload.password or None)
         ctx.settings.source.username = payload.username or ctx.settings.source.username
@@ -654,7 +775,7 @@ async def source_asset(asset_id: str, ctx: AppContext = Depends(context)) -> Res
     return Response(content=content, media_type=media_type, headers={"Cache-Control": "private, max-age=300"})
 
 
-@router.post("/claims")
+@router.post("/claims", dependencies=[Depends(serialize_account_changes)])
 async def claim(payload: ClaimRequest, ctx: AppContext = Depends(context)) -> dict[str, Any]:
     if not ctx.source_online:
         raise ApiError(503, "SOURCE_OFFLINE", "题源离线，禁止领取新工程")
@@ -714,7 +835,7 @@ async def claim(payload: ClaimRequest, ctx: AppContext = Depends(context)) -> di
         raise
 
 
-@router.delete("/claims/{claim_id}")
+@router.delete("/claims/{claim_id}", dependencies=[Depends(serialize_account_changes)])
 async def release_claim(
     claim_id: str,
     force: bool = False,
@@ -771,7 +892,7 @@ async def staging(ctx: AppContext = Depends(context)) -> dict[str, Any]:
     return {"items": items, "total": len(items)}
 
 
-@router.post("/tasks", status_code=201)
+@router.post("/tasks", status_code=201, dependencies=[Depends(serialize_account_changes)])
 async def create_task(payload: CreateTaskRequest, ctx: AppContext = Depends(context)) -> dict[str, Any]:
     _require_disk(ctx)
     return await ctx.tasks.create(
@@ -788,11 +909,6 @@ def _read_starts(path: Path) -> list[dict[str, Any]]:
     except (OSError, json.JSONDecodeError):
         return []
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
-
-
-def _skill_has_github_token(config: dict[str, Any]) -> bool:
-    github = config.get("github")
-    return bool(isinstance(github, dict) and github.get("accessTokens"))
 
 
 def _path_size(path: Path) -> int:

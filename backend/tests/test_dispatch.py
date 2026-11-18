@@ -20,6 +20,7 @@ from solo_auto.dispatch.pools import PoolBook
 from solo_auto.dispatch.probes import ProbeManager
 from solo_auto.dispatch.queue import DispatchItem, DispatchQueue
 from solo_auto.gateway.skill import SkillGateway
+from solo_auto.pipeline.scheduler import QueueEntry
 from solo_auto.settings import DispatchSettings, ExecutionSettings, app_paths, load_settings, save_settings
 from solo_auto.store.repo import Repository
 
@@ -547,7 +548,7 @@ async def test_compact_snapshot_caps_history_and_skips_capacity_timeline(
 
         compact = kernel.snapshot(compact=True)
         assert compact["counts"]["finished"] == 30
-        assert len(compact["queue"]) == 20
+        assert compact["queue"] == []
         assert compact["capacity"]["items"] == []
 
         overview = kernel.snapshot(compact=True, include_queue=False)
@@ -696,3 +697,116 @@ async def test_config_file_edits_apply_without_restart(
         assert "config.reloaded" in actions and "config.reload_failed" in actions and "config.restart_required" in actions
     finally:
         await context.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_queue_poll_and_health_skip_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = await _v3_context(tmp_path, monkeypatch)
+    try:
+        kernel = ctx.dispatcher
+        kernel.queue.enqueue("waiting")
+        kernel.queue.enqueue("ended")
+        kernel.queue.remove("ended", status="done")
+        full = kernel.snapshot(compact=True)
+
+        def unexpected(*args: Any, **kwargs: Any) -> None:
+            pytest.fail("轮询不应读取历史统计")
+
+        monkeypatch.setattr(kernel.throughput, "summary", unexpected)
+        monkeypatch.setattr(kernel.throughput, "capacity", unexpected)
+        lean = kernel.snapshot(compact=True, metrics=False)
+        assert {"throughput", "capacity"}.isdisjoint(lean)
+        for key in ("queue", "counts", "effective_state", "pools", "sentence"):
+            assert lean[key] == full[key]
+        summary = kernel.status_summary()
+        assert summary["effective_state"] == lean["effective_state"]
+        assert summary["counts"]["waiting"] == 1
+        assert [row["task_id"] for row in lean["queue"]] == ["waiting"]
+        kernel.desired_state = "running"
+        kernel.config.startup_grace_seconds = 300
+        for stage in ("chatgpt", "running"):
+            kernel.queue.update("waiting", stage=stage)
+            explanation = kernel.explain("waiting")
+            assert explanation["decision"]["code"] == "startup.grace"
+            assert "状态核对" in explanation["sentence"]
+    finally:
+        await ctx.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replace", [False, True])
+async def test_container_probe_uses_current_queue_head(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replace: bool) -> None:
+    ctx = await _v3_context(tmp_path, monkeypatch)
+    try:
+        kernel, scheduler = ctx.dispatcher, ctx.scheduler
+        kernel.desired_state = "running"
+        kernel.config.startup_grace_seconds = 0
+        scheduler.queue.append(QueueEntry("first", "第一题", tmp_path))
+        facts_started, resume = asyncio.Event(), asyncio.Event()
+
+        async def delayed_probe() -> FactsSnapshot:
+            facts_started.set()
+            await resume.wait()
+            return FactsSnapshot(DockerFacts(known=True, healthy=True), 1000, time.monotonic())
+
+        async def skip_execution(run: Any) -> None:
+            pass
+
+        monkeypatch.setattr(kernel.facts, "snapshot", delayed_probe)
+        monkeypatch.setattr(scheduler, "_execute", skip_execution)
+        tick = asyncio.create_task(scheduler._tick())
+        await asyncio.wait_for(facts_started.wait(), 2)
+        await scheduler.stop_task("first")
+        if replace:
+            scheduler.queue.append(QueueEntry("second", "第二题", tmp_path))
+        resume.set()
+        await tick
+        assert kernel.queue.get("first") is None
+        assert set(scheduler.active) == ({"second"} if replace else set())
+        assert kernel.pools_book.container_waiting() == int(replace)
+        if replace:
+            assert kernel.queue.get("second").status == "active"
+    finally:
+        await ctx.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_manual_order_reaches_session_and_container_dispatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from solo_auto.pipeline.autopilot import Job
+
+    ctx = await _v3_context(tmp_path, monkeypatch)
+    try:
+        pilot, scheduler, kernel = ctx.autopilot, ctx.scheduler, ctx.dispatcher
+        kernel.config.startup_grace_seconds = 0
+        kernel.desired_state = "running"
+        pilot.settings.agent_mode = "cli"
+        pilot.settings.enabled = True
+        pilot.paused = False
+        seen: list[str] = []
+
+        async def observe(job: Job) -> None:
+            seen.append(job.task_id)
+
+        async def facts() -> FactsSnapshot:
+            return FactsSnapshot(DockerFacts(known=True, healthy=True), 1000, time.monotonic())
+
+        async def skip(run: Any) -> None:
+            pass
+
+        monkeypatch.setattr(pilot, "_advance", observe)
+        monkeypatch.setattr(kernel.facts, "snapshot", facts)
+        monkeypatch.setattr(scheduler, "_execute", skip)
+        for name in ("a", "b", "c"):
+            kernel.queue.enqueue(name)
+            pilot.jobs[name] = Job(name, name)
+            scheduler.queue.append(QueueEntry(name, name, tmp_path))
+        assert kernel.queue.move_waiting("c", "top")
+        assert kernel.queue.move_waiting("a", "down")
+        assert [i.task_id for i in kernel.queue.ordered()] == ["c", "b", "a"]
+        await pilot.tick()
+        assert seen == ["c", "b", "a"]
+        await scheduler._tick()
+        assert list(scheduler.active) == ["c"]
+        assert not kernel.queue.move_waiting("c", "down")
+    finally:
+        await ctx.shutdown()

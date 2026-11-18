@@ -4,12 +4,13 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api/client";
-import type { DispatchSnapshot } from "../api/types";
+import type { DispatchPreviewItem, DispatchSnapshot, IntakeSnapshot } from "../api/types";
 import { ToastProvider } from "../components/toast";
 import { DispatchPage } from "../pages/DispatchPage";
 
 const SNAPSHOT: DispatchSnapshot = {
   engine: "v3",
+  active_profile_name: "数仓评审组",
   enabled: true,
   desired_state: "running",
   effective_state: "held",
@@ -97,7 +98,7 @@ const SNAPSHOT: DispatchSnapshot = {
     {
       task_id: "task-1",
       task_name: "列级血缘增量分析",
-      status: "quarantined",
+      status: "queued",
       stage: "running",
       priority: 100,
       position: 0,
@@ -156,10 +157,29 @@ const SNAPSHOT: DispatchSnapshot = {
   keep_awake: true,
 };
 
+const INTAKE: IntakeSnapshot = {
+  plan: {
+    id: "plan-1", project_id: "project-1", status: "running", target: 0, filters: {},
+    created_at: "", updated_at: "", task_ids: [], failed_claims: [],
+  },
+  counts: { target: 0, completed: 0, active: 0, failed: 0, recoverable: 0, orphaned: 0, claimed: 0, staged: 0, in_hand: 0 },
+  max_in_hand: 1, eta: "",
+};
+
+const CANDIDATE: DispatchPreviewItem = {
+  task_id: "preview:eng-2:0", task_name: "下一道候补工程", engineering_id: "eng-2",
+  project_id: "project-1", preview: true, cycle: 0, used: 0, last_used_at: "",
+};
+
 describe("dispatch page", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.spyOn(api, "viewCodeStatus").mockResolvedValue({ configured: false });
+    // jsdom 尚未实现原生模态对话框，真实键盘行为另在浏览器验证。
+    HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+    HTMLDialogElement.prototype.close = function () { this.open = false; };
     vi.spyOn(api, "dispatch").mockResolvedValue(SNAPSHOT);
+    vi.spyOn(api, "intake").mockResolvedValue({ ...INTAKE, plan: null });
     vi.spyOn(api, "dispatchUpcoming").mockResolvedValue({ items: [] });
     vi.spyOn(api, "dispatchLimits").mockResolvedValue({
       snapshot: SNAPSHOT,
@@ -193,16 +213,20 @@ describe("dispatch page", () => {
 
   it("renders the state sentence, scoped hold and queue reason", async () => {
     renderPage();
-    expect(await screen.findByRole("heading", { name: "任务队列" })).toBeInTheDocument();
+    const title = await screen.findByRole("heading", { name: "任务队列" });
+    const header = within(title.closest("header")!);
+    expect(header.getByText("当前配置")).toBeVisible();
+    expect(header.getByText("数仓评审组")).toBeVisible();
+    expect(await screen.findByRole("button", {name: "保存查看码"})).toBeVisible();
     expect(screen.getByText(SNAPSHOT.sentence)).toBeInTheDocument();
     expect(screen.getByText("网关连续 2 次探测失败")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /待处理/ })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /正在处理/ })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /已处理/ })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /已处理/ })).not.toBeInTheDocument();
     expect(screen.getByText("门禁连续两次返回相同错误")).toBeInTheDocument();
     expect(screen.getByText("自动重试 1/2")).toBeInTheDocument();
     fireEvent.click(screen.getByText("门禁连续两次返回相同错误"));
-    expect(screen.getByText("WHY NOT RUNNING")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: /等待原因/ })).toBeInTheDocument();
     expect(screen.getByText("G12")).toBeInTheDocument();
   });
 
@@ -236,29 +260,48 @@ describe("dispatch page", () => {
     expect(strip).not.toHaveTextContent("任务3/5");
   });
 
-  it("shows the next 20 queue with a rotation preview", async () => {
-    (api.dispatchUpcoming as ReturnType<typeof vi.fn>).mockResolvedValue({
+  it("explains an empty pending queue using the live creation gate", async () => {
+    const text = "容器名额已满（运行 1/1），等容器释放再建题";
+    vi.mocked(api.dispatch).mockResolvedValue({
+      ...SNAPSHOT, effective_state: "running", holds: [], queue: [],
+      creation: { ...SNAPSHOT.creation!, code: "containers.full", text },
+    });
+    renderPage();
+    expect(await screen.findByText("暂无待处理工程")).toBeInTheDocument();
+    expect(screen.getByText(text)).toBeInTheDocument();
+    expect(api.dispatchUpcoming).not.toHaveBeenCalled();
+  });
+
+  it("shows unique candidates after queued tasks and skips already scheduled engineering", async () => {
+    vi.mocked(api.intake).mockResolvedValue(INTAKE);
+    vi.mocked(api.dispatchUpcoming).mockResolvedValue({
       items: [
-        {
-          task_id: "preview:eng-2:0",
-          task_name: "下一道候补工程",
-          engineering_id: "eng-2",
-          project_id: "project-1",
-          preview: true,
-          cycle: 0,
-          used: 0,
-          last_used_at: "",
-        },
+        { ...CANDIDATE, engineering_id: "eng-1", task_name: "已入队工程的候补" },
+        CANDIDATE, { ...CANDIDATE, task_id: "preview:eng-2:1", cycle: 1 },
       ],
     });
     renderPage();
-    expect(await screen.findByText("下一道候补工程")).toBeInTheDocument();
-    expect(screen.getByText("QUEUE / NEXT 20")).toBeInTheDocument();
-    expect(screen.getByText(/工程不足时循环补位/)).toBeInTheDocument();
+    const list = await screen.findByRole("list", { name: "候补工程" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(1);
+    expect(list).toHaveTextContent("下一道候补工程");
+    expect(screen.getByText("列级血缘增量分析").compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("heading", { name: /待处理/ })).toHaveTextContent("1 已排队1 候补");
+  });
+
+  it("loads candidates from a cold preview cache when there are no queued tasks", async () => {
+    vi.mocked(api.intake).mockResolvedValue(INTAKE);
+    vi.mocked(api.dispatch).mockResolvedValue({ ...SNAPSHOT, queue: [] });
+    vi.mocked(api.dispatchUpcoming).mockResolvedValueOnce({ items: [] }).mockResolvedValue({ items: [CANDIDATE] });
+    renderPage();
+    expect(await screen.findByText("下一道候补工程", {}, { timeout: 4000 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /待处理/ })).toHaveTextContent("0 已排队1 候补");
+    expect(screen.queryByText("暂无待处理工程")).not.toBeInTheDocument();
+    expect(screen.getByText(SNAPSHOT.creation!.text)).toBeInTheDocument();
   });
 
   it("switches between container-first and task-first modes", async () => {
     renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /调度参数/ }));
     const group = await screen.findByRole("radiogroup", { name: "调度模式" });
     const containerFirst = within(group).getByRole("radio", { name: "容器优先" });
     const taskFirst = within(group).getByRole("radio", { name: "任务优先" });
@@ -270,11 +313,16 @@ describe("dispatch page", () => {
     expect(screen.getByText(/任务优先：在手任务数小于最大任务数/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "应用" }));
     await waitFor(() => expect(api.dispatchLimits).toHaveBeenCalledTimes(1));
-    expect((api.dispatchLimits as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({ mode: "tasks", max_tasks: 5 });
+    expect((api.dispatchLimits as ReturnType<typeof vi.fn>).mock.calls[0][0]).toEqual({ mode: "tasks" });
   });
 
   it("applies in-page limits and queue actions", async () => {
+    const second = { ...SNAPSHOT.queue[0], task_id: "task-2", queue_position: 2 };
+    vi.mocked(api.dispatch).mockResolvedValue({ ...SNAPSHOT, queue: [...SNAPSHOT.queue, second] });
     renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /调度参数/ }));
+    expect(screen.getByLabelText("最大任务数")).toBeDisabled();
+    fireEvent.click(screen.getByRole("radio", { name: "任务优先" }));
     const containers = await screen.findByLabelText("最大容器数");
     fireEvent.change(containers, { target: { value: "5" } });
     fireEvent.change(screen.getByLabelText("最大任务数"), { target: { value: "7" } });
@@ -283,27 +331,58 @@ describe("dispatch page", () => {
     fireEvent.click(screen.getByRole("button", { name: "应用" }));
     await waitFor(() => expect(api.dispatchLimits).toHaveBeenCalledTimes(1));
     expect((api.dispatchLimits as ReturnType<typeof vi.fn>).mock.calls[0][0]).toEqual({
-      mode: "containers",
+      mode: "tasks",
       containers: 5,
-      elastic: { enabled: false, ceiling: 8 },
       max_tasks: 7,
       create_cooldown_seconds: 240,
     });
-    fireEvent.click(screen.getByTitle("置顶"));
-    await waitFor(() => expect(api.dispatchQueueAction).toHaveBeenCalledWith("task-1", "pin"));
+    expect(screen.getAllByTitle("置顶")[0]).toBeDisabled();
+    fireEvent.click(screen.getAllByLabelText("更多操作")[1]);
+    fireEvent.click(screen.getAllByTitle("置顶")[1]);
+    await waitFor(() => expect(api.dispatchQueueAction).toHaveBeenCalledWith("task-2", "pin"));
   });
 
   it("enables elastic containers and applies the ceiling with the limits", async () => {
     renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /调度参数/ }));
     fireEvent.click(await screen.findByRole("checkbox", { name: "启用弹性扩容" }));
     fireEvent.change(screen.getByLabelText("弹性上限"), { target: { value: "6" } });
     fireEvent.click(screen.getByRole("button", { name: "应用" }));
     await waitFor(() => expect(api.dispatchLimits).toHaveBeenCalledTimes(1));
-    expect((api.dispatchLimits as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({
-      containers: 4,
+    expect((api.dispatchLimits as ReturnType<typeof vi.fn>).mock.calls[0][0]).toEqual({
       elastic: { enabled: true, ceiling: 6 },
     });
   });
+  it("preserves local edits across refresh and submits only changed fields", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /调度参数/ }));
+    const cooldown = screen.getByLabelText("建题冷却");
+    fireEvent.change(cooldown, { target: { value: "5" } });
+    expect(screen.getByRole("button", { name: "应用" })).toBeDisabled();
+    fireEvent.change(cooldown, { target: { value: "250" } });
+    vi.mocked(api.dispatch).mockResolvedValue({ ...SNAPSHOT, limits: { ...SNAPSHOT.limits, containers: 6 } });
+    fireEvent.click(screen.getByRole("button", { name: "刷新队列" }));
+    await waitFor(() => expect(screen.getByLabelText("最大容器数")).toHaveValue(6));
+    expect(cooldown).toHaveValue(250);
+    fireEvent.click(screen.getByRole("button", { name: "应用" }));
+    await waitFor(() => expect(api.dispatchLimits).toHaveBeenCalledWith({ create_cooldown_seconds: 250 }));
+  });
+
+  it("loads metrics on demand and marks only the first pending task", async () => {
+    vi.spyOn(api, "dispatchThroughput").mockResolvedValue(SNAPSHOT.throughput);
+    vi.spyOn(api, "sessionStats").mockResolvedValue({ accepted: 2, acceptedWithContinue: 1, continueRate: 0.5, sessionsPerContainerHour: 1, abortReasons: [] });
+    const first = SNAPSHOT.queue[0];
+    vi.mocked(api.dispatch).mockResolvedValue({ ...SNAPSHOT, queue: [first, { ...first, task_id: "second", queue_position: 2 }] });
+    renderPage();
+    expect(await screen.findAllByText("队首")).toHaveLength(1);
+    expect(api.dispatchThroughput).not.toHaveBeenCalled();
+    expect(api.sessionStats).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /运行监控/ }));
+    expect(await screen.findByText("87%")).toBeVisible();
+    expect(api.dispatchThroughput).toHaveBeenCalledWith(24);
+    expect(api.sessionStats).toHaveBeenCalledTimes(1);
+  });
+
 });
 
 function renderPage() {
