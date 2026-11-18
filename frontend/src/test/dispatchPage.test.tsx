@@ -174,7 +174,6 @@ const CANDIDATE: DispatchPreviewItem = {
 describe("dispatch page", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.spyOn(api, "viewCodeStatus").mockResolvedValue({ configured: false });
     // jsdom 尚未实现原生模态对话框，真实键盘行为另在浏览器验证。
     HTMLDialogElement.prototype.showModal = function () { this.open = true; };
     HTMLDialogElement.prototype.close = function () { this.open = false; };
@@ -245,16 +244,17 @@ describe("dispatch page", () => {
     vi.mocked(api.dispatch).mockResolvedValue(response(69, 0));
     renderPage();
 
-    const runningId = await screen.findByText("任务编号 task-running");
+    await screen.findByText("任务编号 task-running");
     const queuedId = screen.getByText("任务编号 task-queued");
-    expect(runningId.parentElement).toHaveTextContent("预计第 70 条");
-    expect(queuedId.parentElement).toHaveTextContent("预计第 71 条 · 超出今日上限");
+    expect(screen.getByText("主号-在途-70")).toBeVisible();
+    expect(screen.getByText("主号-在途-71")).toBeVisible();
+    expect(queuedId.parentElement).toHaveTextContent("超出今日上限");
     vi.mocked(api.dispatch).mockResolvedValue(response(67, 2));
     fireEvent.click(screen.getByRole("button", { name: "刷新队列" }));
 
     expect(await screen.findByText("已扣除今日废弃 2 条")).toBeVisible();
-    expect(runningId.parentElement).toHaveTextContent("预计第 68 条");
-    expect(queuedId.parentElement).toHaveTextContent("预计第 69 条");
+    expect(await screen.findByText("主号-在途-68")).toBeVisible();
+    expect(screen.getByText("主号-在途-69")).toBeVisible();
   });
 
   it("renders the state sentence, scoped hold and queue reason", async () => {
@@ -263,7 +263,7 @@ describe("dispatch page", () => {
     const header = within(title.closest("header")!);
     expect(header.getByText("当前配置")).toBeVisible();
     expect(header.getByText("数仓评审组")).toBeVisible();
-    expect(await screen.findByRole("button", {name: "保存查看码"})).toBeVisible();
+    expect(screen.queryByRole("button", { name: "保存查看码" })).not.toBeInTheDocument();
     expect(screen.getByText(SNAPSHOT.sentence)).toBeInTheDocument();
     expect(screen.getByText("网关连续 2 次探测失败")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /待处理/ })).toBeInTheDocument();
@@ -332,6 +332,28 @@ describe("dispatch page", () => {
     expect(list).toHaveTextContent("下一道候补工程");
     expect(screen.getByText("列级血缘增量分析").compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByRole("heading", { name: /待处理/ })).toHaveTextContent("1 已排队1 候补");
+  });
+
+  it("numbers standby candidates by their next daily submission slot", async () => {
+    vi.mocked(api.intake).mockResolvedValue(INTAKE);
+    vi.mocked(api.dispatch).mockResolvedValue({
+      ...SNAPSHOT,
+      queue: [],
+      submission_quota: {
+        open: true, date: "2026-11-18", limit: 70, selected: "standby", pools_configured: true,
+        primary: { account: "first", domain: "数据工程", open: false, platform_closed: true, submitted: 70, reserved: 0, remaining: 0 },
+        standby: { account: "second", domain: "数据工程", open: true, fresh: true, submitted: 0, reserved: 0, remaining: 70,
+          project: "副号专属项目", project_id: "project-1" },
+      },
+    });
+    vi.mocked(api.dispatchUpcoming).mockResolvedValue({ items: [
+      { ...CANDIDATE, account_role: "standby", task_name: "副号候补一" },
+      { ...CANDIDATE, account_role: "standby", task_id: "preview:eng-3:0", engineering_id: "eng-3", task_name: "副号候补二" },
+    ] });
+    renderPage();
+
+    expect(await screen.findByText("副号-等待-1")).toBeVisible();
+    expect(screen.getByText("副号-等待-2")).toBeVisible();
   });
 
   it("loads candidates from a cold preview cache when there are no queued tasks", async () => {

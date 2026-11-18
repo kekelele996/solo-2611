@@ -18,6 +18,7 @@ import { Link } from "react-router-dom";
 
 import { api } from "../api/client";
 import type {
+  AccountRole,
   DispatchHold,
   DispatchLimitsRequest,
   DispatchMode,
@@ -26,7 +27,6 @@ import type {
   DispatchQueueSnapshot,
   AccountQuota,
 } from "../api/types";
-import { AccountViewPanel } from "../components/AccountViewPanel";
 import { IntakePanel } from "../components/IntakePanel";
 import { CoreTracePanel } from "../components/task/CoreTracePanel";
 import { useToast } from "../components/toast-context";
@@ -206,6 +206,8 @@ export function DispatchPage() {
     candidateLane ? snapshot.submission_quota?.[candidateLane]?.remaining ?? 0 : NEXT_QUEUE_LIMIT);
   const occupied = new Set([...groups.pending, ...groups.processing].map(item => `${item.account_role || ""}/${item.engineering_id}`));
   const candidates: DispatchPreviewItem[] = [];
+  const candidateSlots = new Map<string, number>();
+  const candidateCounts = new Map<string, number>();
   if (showCandidates) {
     for (const item of upcoming.data?.items ?? []) {
       if (!("preview" in item) || item.project_id !== candidateProject || (item.account_role && item.account_role !== candidateLane)
@@ -213,6 +215,12 @@ export function DispatchPage() {
       if (candidates.length >= candidateLimit) break;
       candidates.push(item);
       occupied.add(`${item.account_role || ""}/${item.engineering_id}`);
+      const role = item.account_role || candidateLane || "";
+      const quota = role ? snapshot.submission_quota?.[role] : undefined;
+      const taken = quota?.submitted != null ? quota.submitted + (quota.reserved ?? 0) : 0;
+      const offset = candidateCounts.get(role) ?? 0;
+      candidateSlots.set(item.task_id, taken + offset + 1);
+      candidateCounts.set(role, offset + 1);
     }
   }
 
@@ -249,8 +257,8 @@ export function DispatchPage() {
         </div>}>
           <p className="form-note">{snapshot.submission_quota.date} · 每号上限 {snapshot.submission_quota.limit} 条 · 后台每分钟同步 · 北京时间 00:00 换日。仅统计当天首次提交，并扣除已废弃条目。</p>
           <div className="dispatch-quota-accounts">
-            <QuotaAccount label="主号" account={snapshot.submission_quota.primary} />
-            <QuotaAccount label="副号" account={snapshot.submission_quota.standby} />
+            <QuotaAccount role="primary" account={snapshot.submission_quota.primary} />
+            <QuotaAccount role="standby" account={snapshot.submission_quota.standby} />
           </div>
           {snapshot.submission_quota.reason && <p className="form-note" role="status">{snapshot.submission_quota.reason}</p>}
         </Panel>
@@ -316,7 +324,11 @@ export function DispatchPage() {
                     <li key={item.task_id}>
                       <span className="dispatch-queue-index mono" aria-hidden="true">{String(pendingItems.length + index + 1).padStart(2, "0")}</span>
                       <span className="dispatch-candidate-name" title={item.task_name}>{item.task_name}</span>
-                      <small>{item.account_role ? `${item.account_role === "primary" ? "主号" : "副号"}候补` : "候补"}</small>
+                      {item.account_role || candidateLane ? <QuotaSlot
+                        role={item.account_role || candidateLane}
+                        state="等待"
+                        position={candidateSlots.get(item.task_id)}
+                      /> : <small>候补</small>}
                     </li>
                   ))}
                 </ol>
@@ -366,7 +378,6 @@ export function DispatchPage() {
         </main>
 
         <aside className="dispatch-rail">
-          <AccountViewPanel />
           <IntakePanel />
           <section className="dispatch-fold">
             <button type="button" aria-expanded={limitsOpen} aria-controls="dispatch-limits" onClick={() => setLimitsOpen(!limitsOpen)}>
@@ -629,7 +640,8 @@ function QueueLane({
   );
 }
 
-function QuotaAccount({ label, account }: { label: string; account: AccountQuota | null }) {
+function QuotaAccount({ role, account }: { role: AccountRole; account: AccountQuota | null }) {
+  const label = role === "primary" ? "主号" : "副号";
   return <section className="dispatch-quota-account" aria-label={`${label}提交额度`}>
     <strong>{label}{account?.account ? ` · ${account.account}` : ""}</strong>
     <p>{account?.project ? `工程池 ${account.project}` : "工程池待配置"}</p>
@@ -643,6 +655,7 @@ function QuotaAccount({ label, account }: { label: string; account: AccountQuota
     {!!account?.deferred?.length && <ul className="dispatch-quota-waiting" aria-label={`${label}待续交项目`}>
       {account.deferred.map((item) => <li key={item.task_id}>
         <Link className="text-link" to={`/tasks/${item.task_id}`}>{item.task_name}</Link>
+        <QuotaSlot role={role} state="等待" position={item.estimated_submission} />
         <TaskSubmissionNumber id={item.task_id} estimated={item.estimated_submission} />
         <span>{item.project} · {item.reason} · {formatDateTime(item.retry_at)}</span>
       </li>)}
@@ -654,9 +667,29 @@ function TaskSubmissionNumber({ id, estimated, limit }: { id: string; estimated?
   const overLimit = estimated != null && limit != null && estimated > limit;
   return <small className={overLimit ? "danger-text" : undefined}>
     <code title={id}>任务编号 {id.slice(0, 13)}</code>
-    {estimated != null && ` · 预计第 ${estimated} 条`}
     {overLimit && " · 超出今日上限"}
   </small>;
+}
+
+function QuotaSlot({
+  role,
+  state,
+  position,
+}: {
+  role?: AccountRole | "";
+  state: "在途" | "等待";
+  position?: number | null;
+}) {
+  if (!role) return null;
+  const label = role === "primary" ? "主号" : "副号";
+  const slot = position == null ? "" : `-${position}`;
+  return <span
+    className="dispatch-slot-badge"
+    data-state={state === "在途" ? "active" : "waiting"}
+    title={`${label}今日${position == null ? "" : `第 ${position} 个`}提交位 · ${state}`}
+  >
+    {label}-{state}{slot}
+  </span>;
 }
 
 function pendingQueueHint({ desired_state, creation }: DispatchQueueSnapshot): string {
@@ -718,7 +751,7 @@ function QueueRow({
             pulse={item.active}
           />
           {pending && rank === 1 ? <span>队首</span> : null}
-          {item.account_role && <span>{item.account_role === "primary" ? "主号" : "副号"}</span>}
+          <QuotaSlot role={item.account_role} state="在途" position={item.estimated_submission} />
         </div>
         <Link className="dispatch-queue-name" to={`/tasks/${item.task_id}`} title={item.task_name}>
           {item.task_name}
